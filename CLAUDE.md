@@ -64,6 +64,34 @@ The shared input system (`shared/src/input/`) provides a unified `GameActions` t
 
 Uses npm with workspaces. If disk/speed starts to matter (multiple game projects from the templates), switching to pnpm is a one-liner: `npm install -g pnpm && pnpm import && pnpm install`.
 
+## SpacetimeDB Integration
+
+**Setup:**
+```bash
+curl -sSf https://install.spacetimedb.com | sh -s -- -y   # install CLI
+spacetime start                                            # start local server on :3000
+spacetime publish <name> -s local -y --module-path ./server # publish module
+spacetime generate --lang typescript --out-dir ./client/src/module_bindings --module-path ./server
+```
+
+**SDK API gotchas (v2.1.0):**
+- Builder method is `withDatabaseName()`, NOT `withModuleName()`
+- Subscribe method is `subscribeToAllTables()`, NOT `subscribeToAll()`
+- Reducer calls use object syntax: `conn.reducers.foo({ param: 'value' })`, NOT positional args
+- Import `DbConnection` from generated `./module_bindings`, NOT from `spacetimedb`
+- All u64 fields use BigInt: `0n`, `1n`, NOT `0`, `1`
+
+**Multi-tab / multi-player local testing:**
+Do NOT persist auth tokens in localStorage — tabs on the same origin share localStorage, so both tabs get the same identity and the second connection kicks the first. For local testing, omit `.withToken()` so each tab gets a fresh anonymous identity. For production, use per-session token storage or incognito windows.
+
+**Room/match patterns:**
+- Single database with `room_id` columns on every game table + filtered subscriptions (`SELECT * FROM player WHERE room_id = X`) handles 10-20 concurrent matches
+- Open world: spatial partitioning with `cell_id` columns, clients subscribe to surrounding cells, re-subscribe on boundary crossing
+- For 50+ concurrent matches: multiple database instances + external orchestrator
+- No built-in room/lobby abstraction — you build it with tables and reducers
+
+**Asset storage:** Don't store large binary data in tables (everything is in-memory, synced to all subscribers). Store URLs/filenames in tables, serve actual files from public/ or a CDN.
+
 ## Testing
 
 - **Unit tests:** `vitest` in `client/src/*.test.ts`
