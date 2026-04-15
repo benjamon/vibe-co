@@ -19,17 +19,35 @@ npm run test:unit  # vitest unit tests
 npm run test:e2e   # playwright integration tests
 ```
 
+### 2D Template (`templates/phaser/`)
+Phaser 4 + Arcade physics + Vite + TypeScript monorepo.
+
+**Structure:** `client/` (Phaser app), `server/` (SpacetimeDB stub), `shared/` (input system, types)
+
+**Build:**
+```bash
+cd templates/phaser
+npm install
+npm run dev        # dev server at localhost:5173
+npm run build      # production build
+npm run test:unit  # vitest unit tests
+npm run test:e2e   # playwright integration tests
+```
+
 ## Creating a New Game
 
 ```bash
-./scripts/create-game-3d.sh <project-name> [target-dir]
+./scripts/create-game-3d.sh <project-name> [target-dir]   # 3D (Three.js)
+./scripts/create-game-2d.sh <project-name> [target-dir]   # 2D (Phaser)
 ```
 
-This copies the 3D template into a new project folder, updates package names, and initializes git.
+These copy the chosen template into a new project folder, update package names, and initialize git.
 
 ## Asset Management
 
-Assets live in `public/assets/` with a `manifest.json` index. Use `.glb` for 3D models, `.webp` for textures, `.ogg` for audio, `.woff2` for fonts, `.json` for data.
+Assets live in `public/assets/` with a `manifest.json` index.
+- **3D:** `.glb` (models), `.webp` (textures), `.ogg` (audio), `.woff2` (fonts), `.json` (data)
+- **2D:** `.webp`/`.png` (spritesheets), `.json` (tilemaps), `.ogg` (audio), `.woff2` (fonts), `.json` (data)
 
 ## Input System
 
