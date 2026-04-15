@@ -1,6 +1,14 @@
 import { test, expect } from '@playwright/test'
 
 test('game loads and runs for 5 seconds without crashing', async ({ page }) => {
+  // Collect page errors (ignore WebSocket connection failures)
+  const errors: string[] = []
+  page.on('pageerror', (err) => {
+    if (!err.message.includes('WebSocket') && !err.message.includes('Connection')) {
+      errors.push(err.message)
+    }
+  })
+
   // Navigate to the game
   await page.goto('/')
 
@@ -33,9 +41,6 @@ test('game loads and runs for 5 seconds without crashing', async ({ page }) => {
   const totalCoins = await page.evaluate(() => (window as any).__gameState?.totalCoins)
   expect(totalCoins).toBeGreaterThan(0)
 
-  // Verify no console errors
-  const errors: string[] = []
-  page.on('pageerror', (err) => errors.push(err.message))
-  await page.waitForTimeout(500)
+  // Verify no unexpected console errors
   expect(errors).toHaveLength(0)
 })

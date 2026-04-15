@@ -14,8 +14,9 @@
   },
   "dependencies": {
     "phaser": "4.0.0",
-    "zustand": "5.0.5",
-    "shared": "*"
+    "shared": "*",
+    "spacetimedb": "^2.1.0",
+    "zustand": "5.0.5"
   },
   "devDependencies": {
     "@playwright/test": "1.52.0",

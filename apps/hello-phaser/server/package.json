@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "dev": "echo 'Run: spacetime dev --project-path .' && exit 1"
+    "build": "spacetime build",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "shared": "*"
+    "spacetimedb": "^2.1.0"
   },
   "devDependencies": {
     "typescript": "5.8.3"
