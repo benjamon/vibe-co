@@ -42,6 +42,10 @@ The shared input system (`shared/src/input/`) provides a unified `GameActions` t
 - **Android/iOS:** Capacitor (see `capacitor.config.ts`)
 - See `PLATFORM_SETUP.md` in each template for details.
 
+## Package Management
+
+Uses npm with workspaces. If disk/speed starts to matter (multiple game projects from the templates), switching to pnpm is a one-liner: `npm install -g pnpm && pnpm import && pnpm install`.
+
 ## Testing
 
 - **Unit tests:** `vitest` in `client/src/*.test.ts`
