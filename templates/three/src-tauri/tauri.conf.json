@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicira/tauri/dev/core/tauri-config-schema/schema.json",
+  "productName": "Game",
+  "version": "0.1.0",
+  "identifier": "com.example.game3d",
+  "build": {
+    "frontendDist": "../client/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev --workspace=client",
+    "beforeBuildCommand": "npm run build --workspace=client"
+  },
+  "app": {
+    "title": "Game",
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "width": 1280,
+        "height": 720
+      }
+    ]
+  }
+}
