@@ -4,6 +4,7 @@ import { RigidBody, CuboidCollider, type RapierRigidBody } from '@react-three/ra
 import { Vector3 } from 'three'
 import { useGameStore } from './store'
 import { useKeyboard } from './hooks/useKeyboard'
+import { useSfx } from './hooks/useSfx'
 
 const MOVE_SPEED = 5
 const JUMP_FORCE = 5
@@ -55,6 +56,8 @@ function Player() {
   const keys = useKeyboard()
   const camera = useThree((s) => s.camera)
   const started = useGameStore((s) => s.started)
+  const sfx = useSfx()
+  const wasJumping = useRef(false)
 
   useFrame((_state, delta) => {
     const body = bodyRef.current
@@ -82,9 +85,12 @@ function Player() {
     body.setLinvel({ x: _moveDir.x, y: vel.y, z: _moveDir.z }, true)
 
     // Jump
-    if (keys.has('Space') && grounded) {
+    const wantsJump = keys.has('Space')
+    if (wantsJump && grounded && !wasJumping.current) {
       body.setLinvel({ x: vel.x, y: JUMP_FORCE, z: vel.z }, true)
+      sfx.jump()
     }
+    wasJumping.current = wantsJump
 
     // Camera follow
     _cameraTarget.set(pos.x, pos.y + 1, pos.z)
