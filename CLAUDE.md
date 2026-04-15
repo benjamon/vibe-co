@@ -37,11 +37,11 @@ npm run test:e2e   # playwright integration tests
 ## Creating a New Game
 
 ```bash
-./scripts/create-game-3d.sh <project-name> [target-dir]   # 3D (Three.js)
-./scripts/create-game-2d.sh <project-name> [target-dir]   # 2D (Phaser)
+./scripts/create-game-3d.sh <project-name>   # 3D (Three.js)
+./scripts/create-game-2d.sh <project-name>   # 2D (Phaser)
 ```
 
-These copy the chosen template into a new project folder, update package names, and initialize git.
+Games are created in `apps/<project-name>` within the monorepo.
 
 ## Asset Management
 

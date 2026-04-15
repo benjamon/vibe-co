@@ -2,26 +2,26 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE_DIR="$SCRIPT_DIR/../templates/three"
+REPO_ROOT="$SCRIPT_DIR/.."
+TEMPLATE_DIR="$REPO_ROOT/templates/three"
+APPS_DIR="$REPO_ROOT/apps"
 
 # Usage
 if [ $# -lt 1 ]; then
-  echo "Usage: create-game-3d <project-name> [target-dir]"
+  echo "Usage: create-game-3d <project-name>"
   echo ""
   echo "Creates a new 3D game project from the Three.js template."
+  echo "Project is created in apps/<project-name> within the vibe-co monorepo."
   echo ""
   echo "  project-name  Name of the game (used for package name and folder)"
-  echo "  target-dir    Where to create it (default: current directory)"
   echo ""
   echo "Example:"
   echo "  create-game-3d my-cool-game"
-  echo "  create-game-3d my-cool-game ~/source"
   exit 1
 fi
 
 PROJECT_NAME="$1"
-TARGET_DIR="${2:-.}"
-DEST="$TARGET_DIR/$PROJECT_NAME"
+DEST="$APPS_DIR/$PROJECT_NAME"
 
 # Validate
 if [ -d "$DEST" ]; then
@@ -56,12 +56,6 @@ sed -i "s/\"Game\"/\"${PROJECT_NAME}\"/" "$DEST/src-tauri/tauri.conf.json"
 
 # Update HTML title
 sed -i "s/<title>Game<\/title>/<title>${PROJECT_NAME}<\/title>/" "$DEST/client/index.html"
-
-# Initialize git repo
-cd "$DEST"
-git init
-git add .
-git commit -m "Initial project from create-game-3d template"
 
 echo ""
 echo "Done! Your 3D game project is ready at: $DEST"
