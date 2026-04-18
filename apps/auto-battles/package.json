@@ -1,0 +1,20 @@
+{
+  "name": "auto-battles",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=client",
+    "build": "npm run build --workspace=client",
+    "preview": "npm run preview --workspace=client",
+    "dev:server": "echo 'SpacetimeDB server not configured yet. Run: spacetime dev --project-path server'",
+    "test": "npm run test --workspace=client",
+    "test:unit": "npm run test:unit --workspace=client",
+    "test:e2e": "npm run test:e2e --workspace=client",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}
