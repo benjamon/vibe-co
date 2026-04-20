@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - claude/github-app-auto-battles-5A7Nq
   workflow_dispatch:
 
 permissions:
@@ -19,9 +18,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/auto-battles
     steps:
       - uses: actions/checkout@v4
 
@@ -31,18 +27,31 @@ jobs:
           cache: npm
           cache-dependency-path: apps/auto-battles/package-lock.json
 
-      - run: npm ci
+      - name: Install
+        working-directory: apps/auto-battles
+        run: npm ci
 
       - name: Build
+        working-directory: apps/auto-battles
         env:
           GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/auto-battles/
         run: npm run build
 
-      - name: Stage site under auto-battles/
+      - name: Stage site
         run: |
-          mkdir -p ../../_site/auto-battles
-          cp -r client/dist/. ../../_site/auto-battles/
-          cp client/dist/index.html ../../_site/auto-battles/404.html
+          mkdir -p _site/auto-battles
+          cp -r apps/auto-battles/client/dist/. _site/auto-battles/
+          cp apps/auto-battles/client/dist/index.html _site/auto-battles/404.html
+          cat > _site/index.html <<'HTML'
+          <!DOCTYPE html>
+          <meta charset="utf-8">
+          <title>vibe-co</title>
+          <meta http-equiv="refresh" content="0; url=./auto-battles/">
+          <link rel="canonical" href="./auto-battles/">
+          <p><a href="./auto-battles/">auto-battles</a></p>
+          HTML
+          echo '--- artifact tree ---'
+          find _site -maxdepth 3 -print
 
       - uses: actions/configure-pages@v5
 
