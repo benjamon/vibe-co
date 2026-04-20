@@ -35,17 +35,20 @@ jobs:
 
       - name: Build
         env:
-          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/
+          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/auto-battles/
         run: npm run build
 
-      - name: Add SPA 404 fallback
-        run: cp client/dist/index.html client/dist/404.html
+      - name: Stage site under auto-battles/
+        run: |
+          mkdir -p ../../_site/auto-battles
+          cp -r client/dist/. ../../_site/auto-battles/
+          cp client/dist/index.html ../../_site/auto-battles/404.html
 
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: apps/auto-battles/client/dist
+          path: _site
 
   deploy:
     needs: build
