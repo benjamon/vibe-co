@@ -25,7 +25,7 @@ export function App() {
         touchAction: 'manipulation',
       }}
     >
-      <Canvas camera={{ position: [0, 1.5, 6], fov: 45 }}>
+      <Canvas camera={{ position: [0, 4, 4.5], fov: 45 }}>
         <color attach="background" args={['#0f1020']} />
         <ambientLight intensity={0.55} />
         <directionalLight position={[4, 6, 5]} intensity={1.2} />

@@ -1,5 +1,5 @@
 import { useFrame } from '@react-three/fiber'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { Group, MathUtils } from 'three'
 import { useGameStore } from './store'
 
@@ -12,15 +12,19 @@ function Coin() {
   const result = useGameStore((s) => s.result)
   const finishFlip = useGameStore((s) => s.finishFlip)
 
-  const anim = useRef({ active: false, t: 0, startRot: 0, endRot: 0, spins: 6 })
+  const anim = useRef({ active: false, t: 0, startRot: 0, endRot: 0 })
 
   useEffect(() => {
     if (!flipping || !pendingResult) return
-    const startRot = groupRef.current?.rotation.x ?? 0
-    const base = pendingResult === 'heads' ? 0 : Math.PI
+    const g = groupRef.current
+    const startRot = g?.rotation.x ?? 0
+    // Heads face is +Y (rotation.x ≡ 0 mod 2π). Tails is -Y (rotation.x ≡ π).
+    const target = pendingResult === 'heads' ? 0 : Math.PI
     const spins = 5 + Math.floor(Math.random() * 3)
-    const endRot = startRot + Math.PI * 2 * spins + (base - ((startRot % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2))
-    anim.current = { active: true, t: 0, startRot, endRot, spins }
+    const currentMod = ((startRot % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+    const delta = target - currentMod
+    const endRot = startRot + Math.PI * 2 * spins + delta
+    anim.current = { active: true, t: 0, startRot, endRot }
   }, [flipping, pendingResult])
 
   useFrame((_state, delta) => {
@@ -36,79 +40,62 @@ function Coin() {
       if (p >= 1) {
         anim.current.active = false
         g.position.y = 0
+        g.rotation.x = anim.current.endRot
         finishFlip()
       }
     } else if (!flipping) {
-      // Idle: gentle hover rotation around Y so both faces aren't static-looking
-      g.rotation.y += delta * 0.6
-      // Settle the flip axis to show the current face
-      if (result === 'tails') g.rotation.x = Math.PI
-      else g.rotation.x = 0
-      g.position.y = Math.sin(performance.now() * 0.002) * 0.1
+      g.rotation.x = result === 'tails' ? Math.PI : 0
+      g.position.y = 0
     }
   })
 
-  // Cylinder oriented as a coin: axis along Y, we rotate around X for flip.
-  // Rotate the geometry so the round face looks forward-ish initially isn't needed;
-  // we'll use a cylinder lying flat (rotated 90° on Z).
-  const materials = useMemo(
-    () => ({
-      edge: { color: '#b8860b' },
-      heads: { color: '#ffd700' },
-      tails: { color: '#d4a017' },
-    }),
-    [],
-  )
-
   return (
     <group ref={groupRef} position={[0, 0, 0]}>
-      {/* Cylinder: args = [radiusTop, radiusBottom, height, radialSegments] */}
-      <mesh rotation={[0, 0, Math.PI / 2]} castShadow>
+      {/* Coin body — cylinder axis along Y, flat faces ±Y */}
+      <mesh castShadow>
         <cylinderGeometry args={[1.5, 1.5, 0.25, 64]} />
-        <meshStandardMaterial color={materials.edge.color} metalness={0.7} roughness={0.3} />
+        <meshStandardMaterial color="#b8860b" metalness={0.7} roughness={0.3} />
       </mesh>
-      {/* Heads face (front, +Z) */}
-      <mesh position={[0, 0, 0.13]}>
+
+      {/* Heads face (+Y) */}
+      <mesh position={[0, 0.126, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <circleGeometry args={[1.45, 64]} />
-        <meshStandardMaterial color={materials.heads.color} metalness={0.8} roughness={0.25} />
+        <meshStandardMaterial color="#ffd700" metalness={0.8} roughness={0.25} />
       </mesh>
-      <mesh position={[0, 0, 0.14]}>
-        <torusGeometry args={[0.9, 0.08, 16, 64]} />
+      <mesh position={[0, 0.135, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[0.9, 0.06, 16, 64]} />
         <meshStandardMaterial color="#8b6914" metalness={0.6} roughness={0.4} />
       </mesh>
-      {/* H marker */}
-      <mesh position={[0, 0, 0.14]}>
-        <boxGeometry args={[0.15, 0.9, 0.02]} />
+      {/* H: two posts + crossbar, lying flat on top */}
+      <mesh position={[-0.3, 0.14, 0]}>
+        <boxGeometry args={[0.15, 0.02, 0.9]} />
         <meshStandardMaterial color="#8b6914" />
       </mesh>
-      <mesh position={[0.3, 0, 0.14]}>
-        <boxGeometry args={[0.15, 0.9, 0.02]} />
+      <mesh position={[0.3, 0.14, 0]}>
+        <boxGeometry args={[0.15, 0.02, 0.9]} />
         <meshStandardMaterial color="#8b6914" />
       </mesh>
-      <mesh position={[-0.3, 0, 0.14]}>
-        <boxGeometry args={[0.15, 0.9, 0.02]} />
+      <mesh position={[0, 0.14, 0]}>
+        <boxGeometry args={[0.6, 0.02, 0.15]} />
         <meshStandardMaterial color="#8b6914" />
       </mesh>
-      <mesh position={[0, 0, 0.14]} rotation={[0, 0, Math.PI / 2]}>
-        <boxGeometry args={[0.15, 0.9, 0.02]} />
-        <meshStandardMaterial color="#8b6914" />
-      </mesh>
-      {/* Tails face (back, -Z) */}
-      <mesh position={[0, 0, -0.13]} rotation={[0, Math.PI, 0]}>
+
+      {/* Tails face (-Y) */}
+      <mesh position={[0, -0.126, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <circleGeometry args={[1.45, 64]} />
-        <meshStandardMaterial color={materials.tails.color} metalness={0.8} roughness={0.25} />
+        <meshStandardMaterial color="#d4a017" metalness={0.8} roughness={0.25} />
       </mesh>
-      <mesh position={[0, 0, -0.14]}>
-        <torusGeometry args={[0.9, 0.08, 16, 64]} />
+      <mesh position={[0, -0.135, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[0.9, 0.06, 16, 64]} />
         <meshStandardMaterial color="#6b4e0f" metalness={0.6} roughness={0.4} />
       </mesh>
-      {/* T marker */}
-      <mesh position={[0, 0.25, -0.14]}>
-        <boxGeometry args={[0.9, 0.15, 0.02]} />
+      {/* T: top bar + stem, lying flat on bottom */}
+      <mesh position={[0, -0.14, -0.35]}>
+        <boxGeometry args={[0.9, 0.02, 0.15]} />
         <meshStandardMaterial color="#6b4e0f" />
       </mesh>
-      <mesh position={[0, -0.1, -0.14]}>
-        <boxGeometry args={[0.15, 0.7, 0.02]} />
+      <mesh position={[0, -0.14, 0.05]}>
+        <boxGeometry args={[0.15, 0.02, 0.7]} />
         <meshStandardMaterial color="#6b4e0f" />
       </mesh>
     </group>
@@ -116,9 +103,5 @@ function Coin() {
 }
 
 export function GameScene() {
-  return (
-    <>
-      <Coin />
-    </>
-  )
+  return <Coin />
 }
