@@ -1,0 +1,25 @@
+node_modules/
+dist/
+dist-itch/
+*.zip
+
+# Tauri
+src-tauri/target/
+
+# Capacitor
+android/.gradle/
+android/app/build/
+ios/App/Pods/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+tsconfig.tsbuildinfo
