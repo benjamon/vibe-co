@@ -43,6 +43,20 @@ npm run test:e2e   # playwright integration tests
 
 Games are created in `apps/<project-name>` within the monorepo.
 
+## GitHub Pages Deployment
+
+Apps are published via `.github/workflows/deploy-pages.yml` on pushes to `main`.
+Each app is served under `https://benjamon.github.io/vibe-co/<app-name>/`, with
+an index at the repo root linking to all apps.
+
+**When adding a new app:** extend the workflow with an install/build step (using
+`GITHUB_PAGES_BASE=/${repository_name}/<app-name>/`), stage its `client/dist/`
+under `_site/<app-name>/`, and add a link to the generated `_site/index.html`.
+
+**Whenever finishing a task that deploys or changes a deployed app, share the
+live Pages URL** (e.g. `https://benjamon.github.io/vibe-co/<app-name>/`) in the
+reply — and the PR URL if a PR was opened. Don't make the user ask.
+
 ## Asset Management
 
 Assets live in `public/assets/` with a `manifest.json` index.
