@@ -1,4 +1,4 @@
-name: Deploy auto-battles to GitHub Pages
+name: Deploy apps to GitHub Pages
 
 on:
   push:
@@ -24,31 +24,54 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: apps/auto-battles/package-lock.json
 
-      - name: Install
+      - name: Install auto-battles
         working-directory: apps/auto-battles
         run: npm ci
 
-      - name: Build
+      - name: Build auto-battles
         working-directory: apps/auto-battles
         env:
           GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/auto-battles/
         run: npm run build
 
+      - name: Install coin-flip
+        working-directory: apps/coin-flip
+        run: npm ci
+
+      - name: Build coin-flip
+        working-directory: apps/coin-flip
+        env:
+          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/coin-flip/
+        run: npm run build
+
       - name: Stage site
         run: |
-          mkdir -p _site/auto-battles
+          mkdir -p _site/auto-battles _site/coin-flip
           cp -r apps/auto-battles/client/dist/. _site/auto-battles/
           cp apps/auto-battles/client/dist/index.html _site/auto-battles/404.html
+          cp -r apps/coin-flip/client/dist/. _site/coin-flip/
+          cp apps/coin-flip/client/dist/index.html _site/coin-flip/404.html
           cat > _site/index.html <<'HTML'
           <!DOCTYPE html>
           <meta charset="utf-8">
           <title>vibe-co</title>
-          <meta http-equiv="refresh" content="0; url=./auto-battles/">
-          <link rel="canonical" href="./auto-battles/">
-          <p><a href="./auto-battles/">auto-battles</a></p>
+          <style>
+            body { font-family: system-ui, sans-serif; background: #0f1020; color: #eee; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+            .wrap { text-align: center; }
+            h1 { margin: 0 0 1rem; }
+            ul { list-style: none; padding: 0; }
+            li { margin: 0.5rem 0; }
+            a { color: #ffd700; font-size: 1.2rem; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+          </style>
+          <div class="wrap">
+            <h1>vibe-co</h1>
+            <ul>
+              <li><a href="./auto-battles/">auto-battles</a></li>
+              <li><a href="./coin-flip/">coin-flip</a></li>
+            </ul>
+          </div>
           HTML
           echo '--- artifact tree ---'
           find _site -maxdepth 3 -print
