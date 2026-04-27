@@ -6,6 +6,51 @@ import { BattleScene } from './scenes/BattleScene'
 import { GameOverScene } from './scenes/GameOverScene'
 import { gameStore } from './store'
 
+declare const __APP_VERSION__: string
+const APP_VERSION =
+  typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev'
+
+let reloading = false
+async function checkForUpdate() {
+  if (reloading) return
+  try {
+    const url = `${import.meta.env.BASE_URL}version.json?_=${Date.now()}`
+    const res = await fetch(url, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    })
+    if (!res.ok) return
+    const data = (await res.json()) as { version?: string }
+    if (data.version && data.version !== APP_VERSION) {
+      reloading = true
+      // Force a non-cached reload of the document.
+      location.reload()
+    }
+  } catch {
+    // Network error — try again on the next tick.
+  }
+}
+
+checkForUpdate()
+setInterval(checkForUpdate, 60_000)
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) checkForUpdate()
+})
+window.addEventListener('focus', checkForUpdate)
+window.addEventListener('pageshow', (e) => {
+  // bfcache restores can serve a stale page — force-check on restore.
+  if ((e as PageTransitionEvent).persisted) checkForUpdate()
+})
+
+// Clean up any service workers that may have been registered previously,
+// since they can pin Firefox to a stale bundle.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker
+    .getRegistrations()
+    .then((regs) => regs.forEach((r) => r.unregister()))
+    .catch(() => {})
+}
+
 function viewportSize() {
   const vv = window.visualViewport
   return {
