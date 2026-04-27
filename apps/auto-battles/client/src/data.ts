@@ -1,7 +1,12 @@
 import type { Hero } from './types'
 import heroData from './heroes.json'
 
-export const HERO_POOL: Hero[] = heroData
+const BASE = import.meta.env.BASE_URL ?? '/'
+
+export const HERO_POOL: Hero[] = (heroData as Hero[]).map((h) => ({
+  ...h,
+  sprite: h.sprite ? `${BASE}${h.sprite.replace(/^\/+/, '')}` : h.sprite,
+}))
 
 export const FIRST_SHOP_GOLD = 7
 export const SHOP_GOLD = 10

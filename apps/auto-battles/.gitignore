@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-itch/
 *.zip
+*.tsbuildinfo
 
 # Tauri
 src-tauri/target/
