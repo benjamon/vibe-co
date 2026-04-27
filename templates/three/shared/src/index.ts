@@ -5,3 +5,13 @@ export { TouchInput } from './input/touch'
 export { GamepadInput } from './input/gamepad'
 export type { GameActions, InputSource } from './input/actions'
 export { createDefaultActions } from './input/actions'
+export {
+  enableMobileFullscreen,
+  enablePauseOnHidden,
+  enableAutoReload,
+} from './platform'
+export type {
+  MobileFullscreenOptions,
+  PauseOnHiddenOptions,
+  AutoReloadOptions,
+} from './platform'
