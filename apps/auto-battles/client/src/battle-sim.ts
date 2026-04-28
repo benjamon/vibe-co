@@ -1,4 +1,4 @@
-import type { OwnedHero, BattleResult, BattleStep, PreBattleEffect, StatChange, StepStatBoost } from './types'
+import type { OwnedHero, BattleResult, BattleStep, BattleOutcome, PreBattleEffect, StatChange, StepStatBoost } from './types'
 
 interface BattleUnit {
   hero: { id: string; name: string; hp: number; attack: number; ability: string }
@@ -6,7 +6,17 @@ interface BattleUnit {
   maxHp: number
   stars: number
   originalIndex: number // index in original team array
+  /**
+   * One-shot bonus (applied by Apollo's Solar Flare to the unit immediately
+   * ahead of it). Added to the next ability this unit casts — increasing
+   * damage, buff magnitude, or debuff magnitude in the caster's favor — and
+   * then consumed. Not persisted past the battle.
+   */
+  abilityBonus: number
 }
+
+const APOLLO_BONUS_BY_STARS: Record<number, number> = { 1: 1, 2: 3, 3: 5 }
+const ZEUS_BASE_DAMAGE = 10
 
 function cloneQueue(team: OwnedHero[]): BattleUnit[] {
   return team.map((h, i) => ({
@@ -15,7 +25,14 @@ function cloneQueue(team: OwnedHero[]): BattleUnit[] {
     maxHp: h.hero.hp,
     stars: h.stars,
     originalIndex: i,
+    abilityBonus: 0,
   }))
+}
+
+function consumeBonus(unit: BattleUnit): number {
+  const b = unit.abilityBonus
+  unit.abilityBonus = 0
+  return b
 }
 
 function processOneHeroAbility(
@@ -35,15 +52,17 @@ function processOneHeroAbility(
     const alive = enemyQueue.map((e, i) => ({ e, i })).filter((x) => x.e.currentHp > 0)
     const shuffled = [...alive].sort(() => Math.random() - 0.5)
     const hits = shuffled.slice(0, Math.min(targetCount, alive.length))
+    const damage = ZEUS_BASE_DAMAGE + consumeBonus(unit)
 
     for (const hit of hits) {
-      hit.e.currentHp -= 15
+      hit.e.currentHp -= damage
       if (hit.e.currentHp < 0) hit.e.currentHp = 0
       effects.push({
-        text: `${unit.hero.name} [Thunder Strike] -15 to ${hit.e.hero.name}`,
+        text: `${unit.hero.name} [Thunder Strike] -${damage} to ${hit.e.hero.name}`,
         side, casterIndex: qi,
         targetIndices: [hit.i],
         targetSide: enemySide,
+        damage,
       })
     }
 
@@ -55,12 +74,13 @@ function processOneHeroAbility(
 
   if (id === 'poseidon') {
     if (enemyQueue.length > 1) {
+      const bonus = consumeBonus(unit)
       const backIdx = enemyQueue.length - 1
       const back = enemyQueue.splice(backIdx, 1)[0]
       if (stars === 3) {
         enemyQueue.unshift(back)
       } else {
-        const moveBy = stars === 1 ? 1 : 3
+        const moveBy = (stars === 1 ? 1 : 3) + bonus
         const newIdx = Math.max(0, backIdx - moveBy)
         enemyQueue.splice(newIdx, 0, back)
       }
@@ -78,7 +98,7 @@ function processOneHeroAbility(
   }
 
   if (id === 'hermes') {
-    const boost = stars
+    const boost = stars + consumeBonus(unit)
     const indices: number[] = []
     for (let i = 0; i < queue.length; i++) {
       queue[i].hero.attack += boost
@@ -88,6 +108,26 @@ function processOneHeroAbility(
       text: `${unit.hero.name} [Innovate] +${boost} ATK to all allies`,
       side, casterIndex: qi, targetIndices: indices, targetSide: side,
     })
+  }
+
+  if (id === 'apollo') {
+    // Solar Flare: amplify the next ability cast by the unit ahead in the
+    // queue (the one that will cast right after Apollo in back-to-front order).
+    // If Apollo himself was buffed by another Apollo behind him, that bonus
+    // chains into the buff he hands forward.
+    const aheadIdx = qi - 1
+    if (aheadIdx >= 0 && aheadIdx < queue.length) {
+      const target = queue[aheadIdx]
+      const base = APOLLO_BONUS_BY_STARS[stars] ?? APOLLO_BONUS_BY_STARS[1]
+      const bonus = base + consumeBonus(unit)
+      target.abilityBonus = (target.abilityBonus ?? 0) + bonus
+      effects.push({
+        text: `${unit.hero.name} [Solar Flare] amplifies ${target.hero.name}'s ability +${bonus}`,
+        side, casterIndex: qi,
+        targetIndices: [aheadIdx],
+        targetSide: side,
+      })
+    }
   }
 }
 
@@ -190,33 +230,35 @@ export function simulateBattle(
     // Athena: on surviving damage, boost HP
     if (!playerDied && pFront.hero.id === 'athena') {
       const stars = pFront.stars
+      const hpBoost = 1 + consumeBonus(pFront)
       const count = stars === 3 ? pQueue.length : stars === 1 ? 2 : 3
       const affected = Math.min(count, pQueue.length)
       for (let j = 0; j < affected; j++) {
-        pQueue[j].currentHp += 1; pQueue[j].maxHp += 1; pQueue[j].hero.hp += 1
-        statBoosts.push({ queueOffset: j, side: 'player', hpDelta: 1, attackDelta: 0 })
+        pQueue[j].currentHp += hpBoost; pQueue[j].maxHp += hpBoost; pQueue[j].hero.hp += hpBoost
+        statBoosts.push({ queueOffset: j, side: 'player', hpDelta: hpBoost, attackDelta: 0 })
       }
-      abilityText += `Athena [Bulwark] +1 HP to ${affected} allies. `
+      abilityText += `Athena [Bulwark] +${hpBoost} HP to ${affected} allies. `
     }
     if (!opponentDied && oFront.hero.id === 'athena') {
       const stars = oFront.stars
+      const hpBoost = 1 + consumeBonus(oFront)
       const count = stars === 3 ? oQueue.length : stars === 1 ? 2 : 3
       const affected = Math.min(count, oQueue.length)
       for (let j = 0; j < affected; j++) {
-        oQueue[j].currentHp += 1; oQueue[j].maxHp += 1; oQueue[j].hero.hp += 1
-        statBoosts.push({ queueOffset: j, side: 'opponent', hpDelta: 1, attackDelta: 0 })
+        oQueue[j].currentHp += hpBoost; oQueue[j].maxHp += hpBoost; oQueue[j].hero.hp += hpBoost
+        statBoosts.push({ queueOffset: j, side: 'opponent', hpDelta: hpBoost, attackDelta: 0 })
       }
     }
 
     // Ares: on kill, boost self
     if (opponentDied && pFront.hero.id === 'ares') {
-      const boost = pFront.stars
+      const boost = pFront.stars + consumeBonus(pFront)
       pFront.hero.attack += boost; pFront.hero.hp += boost; pFront.currentHp += boost; pFront.maxHp += boost
       statBoosts.push({ queueOffset: 0, side: 'player', hpDelta: boost, attackDelta: boost })
       abilityText += `Ares [Harvest] +${boost}/${boost} HP/ATK. `
     }
     if (playerDied && oFront.hero.id === 'ares') {
-      const boost = oFront.stars
+      const boost = oFront.stars + consumeBonus(oFront)
       oFront.hero.attack += boost; oFront.hero.hp += boost; oFront.currentHp += boost; oFront.maxHp += boost
       statBoosts.push({ queueOffset: 0, side: 'opponent', hpDelta: boost, attackDelta: boost })
     }

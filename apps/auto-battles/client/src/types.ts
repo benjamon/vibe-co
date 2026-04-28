@@ -45,6 +45,8 @@ export interface PreBattleEffect {
   targetIndices?: number[]
   /** Which side the targets are on */
   targetSide?: 'player' | 'opponent'
+  /** Damage applied to each targetIndex (used for Zeus visualization). */
+  damage?: number
   /** If set, the scene should rearrange the target side's sprites to match this id order */
   rearrangeOrder?: string[]
   rearrangeSide?: 'player' | 'opponent'

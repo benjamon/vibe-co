@@ -260,7 +260,7 @@ export class BattleScene extends Phaser.Scene {
     const targets = fx.targetIndices ?? []
     const targetSprites = fx.targetSide === 'player' ? this.playerSprites : this.opponentSprites
     const targetTeam = fx.targetSide === 'player' ? this.playerTeam : this.opponentTeam
-    const isZeus = fx.text.includes('Thunder Strike')
+    const damage = fx.damage ?? 0
     for (let t = 0; t < targets.length; t++) {
       const targetIdx = targets[t]; const sprite = targetSprites[targetIdx]
       if (!sprite) continue
@@ -269,10 +269,10 @@ export class BattleScene extends Phaser.Scene {
         const circle = this.add.graphics(); circle.setPosition(cx, cy)
         circle.lineStyle(2, 0xffffff, 0.8); circle.strokeCircle(0, 0, 8 * L.s)
         this.tweens.add({ targets: circle, scaleX: 2.5, scaleY: 2.5, alpha: 0, duration: 400, onComplete: () => circle.destroy() })
-        if (isZeus && targetIdx < targetTeam.length) {
-          targetTeam[targetIdx].currentHp -= 15
+        if (damage > 0 && targetIdx < targetTeam.length) {
+          targetTeam[targetIdx].currentHp -= damage
           if (targetTeam[targetIdx].currentHp < 0) targetTeam[targetIdx].currentHp = 0
-          this.showDamageNumber(cx, cy - L.s * 30, 15)
+          this.showDamageNumber(cx, cy - L.s * 30, damage)
           sprite.hpText.setText(`${targetTeam[targetIdx].currentHp}`)
           const pct = targetTeam[targetIdx].currentHp / sprite.maxHp
           const barColor = pct > 0.5 ? 0x4ecdc4 : pct > 0.25 ? 0xf39c12 : 0xe94560
