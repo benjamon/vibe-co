@@ -4,6 +4,9 @@ import { Group, MathUtils } from 'three'
 import { useGameStore } from './store'
 
 const FLIP_DURATION = 1.6
+const COIN_SCALE = 0.2
+const REST_Y = -2.5
+const FLIP_APEX_Y = 2.0
 
 function Coin() {
   const groupRef = useRef<Group>(null)
@@ -36,21 +39,21 @@ function Coin() {
       const p = Math.min(anim.current.t / FLIP_DURATION, 1)
       const eased = 1 - Math.pow(1 - p, 3)
       g.rotation.x = MathUtils.lerp(anim.current.startRot, anim.current.endRot, eased)
-      g.position.y = Math.sin(p * Math.PI) * 2.5
+      g.position.y = REST_Y + Math.sin(p * Math.PI) * (FLIP_APEX_Y - REST_Y)
       if (p >= 1) {
         anim.current.active = false
-        g.position.y = 0
+        g.position.y = REST_Y
         g.rotation.x = anim.current.endRot
         finishFlip()
       }
     } else if (!flipping) {
       g.rotation.x = result === 'tails' ? Math.PI : 0
-      g.position.y = 0
+      g.position.y = REST_Y
     }
   })
 
   return (
-    <group ref={groupRef} position={[0, 0, 0]}>
+    <group ref={groupRef} position={[0, REST_Y, 0]} scale={COIN_SCALE}>
       {/* Coin body — cylinder axis along Y, flat faces ±Y */}
       <mesh castShadow>
         <cylinderGeometry args={[1.5, 1.5, 0.25, 64]} />
