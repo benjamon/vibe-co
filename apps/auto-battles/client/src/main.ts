@@ -79,18 +79,63 @@ const game = new Game(config)
 function handleResize() {
   const { w, h } = viewportSize()
   game.scale.resize(w, h)
-  // Phaser updates its scale manager + canvas sizes here, but the WebGL
-  // viewport on the active scene's camera can lag behind, leaving the
-  // canvas half-rendered until the scene restarts. Push the new size into
-  // every active scene's main camera so the viewport stays in sync.
-  for (const scene of game.scene.scenes) {
-    if (scene.scene.isActive() && scene.cameras?.main) {
-      scene.cameras.main.setViewport(0, 0, w, h)
-      scene.cameras.main.setSize(w, h)
-    }
-  }
+  syncSceneCameras(w, h)
   game.scale.refresh()
 }
+
+function syncSceneCameras(w: number, h: number) {
+  // Phaser updates its scale manager + canvas size, but a scene's main
+  // camera viewport can stay at the pre-resize rectangle (especially right
+  // after a scene start, before the camera has reacted to the resize event).
+  // Push the new size into every scene's main camera so the WebGL viewport
+  // matches the canvas. We sync inactive scenes too so the next scene that
+  // becomes active doesn't inherit a stale viewport.
+  for (const scene of game.scene.scenes) {
+    const cam = scene.cameras?.main
+    if (!cam) continue
+    cam.setViewport(0, 0, w, h)
+    cam.setSize(w, h)
+  }
+}
+
+function syncAfterSceneEvent() {
+  const { w, h } = viewportSize()
+  game.scale.resize(w, h)
+  syncSceneCameras(w, h)
+  game.scale.refresh()
+  // The WebGL viewport state can land a frame behind a scene start, so
+  // re-sync on the next two animation frames to catch the new camera once
+  // it's attached.
+  requestAnimationFrame(() => syncSceneCameras(game.scale.width, game.scale.height))
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => syncSceneCameras(game.scale.width, game.scale.height)),
+  )
+}
+
+// Hook every scene's lifecycle so a transition (Menu → Shop → Battle → …)
+// always starts with a camera viewport that matches the current canvas.
+// Without this, rotating the device and then triggering the first scene
+// change leaves the new scene rendering only the upper portion of the
+// canvas until something else forces a resize.
+function attachSceneSyncListeners() {
+  for (const scene of game.scene.scenes) {
+    const events = scene.events
+    if (!events) continue
+    events.off('start', syncAfterSceneEvent)
+    events.off('create', syncAfterSceneEvent)
+    events.off('wake', syncAfterSceneEvent)
+    events.off('resume', syncAfterSceneEvent)
+    events.off('transitioncomplete', syncAfterSceneEvent)
+    events.on('start', syncAfterSceneEvent)
+    events.on('create', syncAfterSceneEvent)
+    events.on('wake', syncAfterSceneEvent)
+    events.on('resume', syncAfterSceneEvent)
+    events.on('transitioncomplete', syncAfterSceneEvent)
+  }
+}
+
+// Game emits 'ready' once all scenes have been added to the SceneManager.
+game.events.once('ready', attachSceneSyncListeners)
 
 // Mobile browsers report the post-rotation viewport over several hundred ms,
 // so re-resize at a series of delays after orientation change to make sure
