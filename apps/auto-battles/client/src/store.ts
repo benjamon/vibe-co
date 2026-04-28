@@ -315,7 +315,7 @@ export const gameStore = createStore<GameState & GameActions>((set, get) => ({
     const state = get()
     const newHearts = result.outcome === 'lost' ? state.hearts - 1 : state.hearts
     const newTeam = state.team.map((h, i) => {
-      const change = result.playerStatChanges.find((c) => c.index === i)
+      const change = result.playerStatChanges.find((c) => c.originalIndex === i)
       if (!change) return h
       const updatedHero: Hero = { ...h.hero, hp: h.hero.hp + change.hpDelta, attack: h.hero.attack + change.attackDelta }
       return { ...h, hero: updatedHero, currentHp: updatedHero.hp }

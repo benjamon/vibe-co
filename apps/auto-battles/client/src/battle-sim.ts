@@ -1,317 +1,270 @@
-import type { OwnedHero, BattleResult, BattleStep, BattleOutcome, PreBattleEffect, StatChange, StepStatBoost } from './types'
+import {
+  runAbility,
+  type RunContext,
+  type SimUnit,
+} from './abilities'
+import type {
+  AbilityBlock,
+  AbilityTrigger,
+  AtomicEvent,
+  AttackEvent,
+  BattleEventBlock,
+  BattleOutcome,
+  BattleResult,
+  CombatRoundBlock,
+  OwnedHero,
+  PermanentStatChange,
+  StatChangeAtom,
+  UnitRef,
+} from './types'
 
-interface BattleUnit {
-  hero: { id: string; name: string; hp: number; attack: number; ability: string }
-  currentHp: number
-  maxHp: number
-  stars: number
-  originalIndex: number // index in original team array
-  /**
-   * One-shot bonus (applied by Apollo's Solar Flare to the unit immediately
-   * ahead of it). Added to the next ability this unit casts — increasing
-   * damage, buff magnitude, or debuff magnitude in the caster's favor — and
-   * then consumed. Not persisted past the battle.
-   */
-  abilityBonus: number
-}
+// ── Setup ──────────────────────────────────────────────────────────────────
 
-const APOLLO_BONUS_BY_STARS: Record<number, number> = { 1: 1, 2: 3, 3: 5 }
-const ZEUS_BASE_DAMAGE = 10
-
-function cloneQueue(team: OwnedHero[]): BattleUnit[] {
+function toSim(team: OwnedHero[]): SimUnit[] {
   return team.map((h, i) => ({
     hero: { ...h.hero },
     currentHp: h.hero.hp,
     maxHp: h.hero.hp,
+    attack: h.hero.attack,
     stars: h.stars,
     originalIndex: i,
     abilityBonus: 0,
   }))
 }
 
-function consumeBonus(unit: BattleUnit): number {
-  const b = unit.abilityBonus
-  unit.abilityBonus = 0
-  return b
-}
-
-function processOneHeroAbility(
-  unit: BattleUnit,
-  qi: number,
-  queue: BattleUnit[],
-  enemyQueue: BattleUnit[],
+function makeContext(
+  caster: SimUnit,
   side: 'player' | 'opponent',
-  enemySide: 'player' | 'opponent',
-  effects: PreBattleEffect[]
-) {
-  const id = unit.hero.id
-  const stars = unit.stars
-
-  if (id === 'zeus') {
-    const targetCount = stars === 1 ? 1 : stars === 2 ? 2 : 4
-    const alive = enemyQueue.map((e, i) => ({ e, i })).filter((x) => x.e.currentHp > 0)
-    const shuffled = [...alive].sort(() => Math.random() - 0.5)
-    const hits = shuffled.slice(0, Math.min(targetCount, alive.length))
-    const damage = ZEUS_BASE_DAMAGE + consumeBonus(unit)
-
-    for (const hit of hits) {
-      hit.e.currentHp -= damage
-      if (hit.e.currentHp < 0) hit.e.currentHp = 0
-      effects.push({
-        text: `${unit.hero.name} [Thunder Strike] -${damage} to ${hit.e.hero.name}`,
-        side, casterIndex: qi,
-        targetIndices: [hit.i],
-        targetSide: enemySide,
-        damage,
-      })
-    }
-
-    // Remove killed enemies
-    for (let i = enemyQueue.length - 1; i >= 0; i--) {
-      if (enemyQueue[i].currentHp <= 0) enemyQueue.splice(i, 1)
-    }
-  }
-
-  if (id === 'poseidon') {
-    if (enemyQueue.length > 1) {
-      const bonus = consumeBonus(unit)
-      const backIdx = enemyQueue.length - 1
-      const back = enemyQueue.splice(backIdx, 1)[0]
-      if (stars === 3) {
-        enemyQueue.unshift(back)
-      } else {
-        const moveBy = (stars === 1 ? 1 : 3) + bonus
-        const newIdx = Math.max(0, backIdx - moveBy)
-        enemyQueue.splice(newIdx, 0, back)
-      }
-      // Emit the new order so the scene can rearrange sprites
-      const newOrder = enemyQueue.map((u) => u.hero.id + '-' + u.originalIndex)
-      effects.push({
-        text: `${unit.hero.name} [Grabbing Tide] rearranges the enemy line`,
-        side, casterIndex: qi,
-        targetIndices: [],
-        targetSide: enemySide,
-        rearrangeOrder: newOrder,
-        rearrangeSide: enemySide,
-      })
-    }
-  }
-
-  if (id === 'hermes') {
-    const boost = stars + consumeBonus(unit)
-    const indices: number[] = []
-    for (let i = 0; i < queue.length; i++) {
-      queue[i].hero.attack += boost
-      indices.push(i)
-    }
-    effects.push({
-      text: `${unit.hero.name} [Innovate] +${boost} ATK to all allies`,
-      side, casterIndex: qi, targetIndices: indices, targetSide: side,
-    })
-  }
-
-  if (id === 'apollo') {
-    // Solar Flare: amplify the next ability cast by the unit ahead in the
-    // queue (the one that will cast right after Apollo in back-to-front order).
-    // If Apollo himself was buffed by another Apollo behind him, that bonus
-    // chains into the buff he hands forward.
-    const aheadIdx = qi - 1
-    if (aheadIdx >= 0 && aheadIdx < queue.length) {
-      const target = queue[aheadIdx]
-      const base = APOLLO_BONUS_BY_STARS[stars] ?? APOLLO_BONUS_BY_STARS[1]
-      const bonus = base + consumeBonus(unit)
-      target.abilityBonus = (target.abilityBonus ?? 0) + bonus
-      effects.push({
-        text: `${unit.hero.name} [Solar Flare] amplifies ${target.hero.name}'s ability +${bonus}`,
-        side, casterIndex: qi,
-        targetIndices: [aheadIdx],
-        targetSide: side,
-      })
-    }
+  alliedQueue: SimUnit[],
+  enemyQueue: SimUnit[],
+  out: AtomicEvent[],
+): RunContext {
+  return {
+    caster,
+    casterIdx: alliedQueue.indexOf(caster),
+    side,
+    enemySide: side === 'player' ? 'opponent' : 'player',
+    alliedQueue,
+    enemyQueue,
+    out,
   }
 }
 
-function findBackmostUncast(queue: BattleUnit[], side: string, hasCast: Set<string>): number {
-  for (let i = queue.length - 1; i >= 0; i--) {
-    const key = `${side}-${queue[i].originalIndex}`
-    if (!hasCast.has(key)) return i
+function castAbility(
+  caster: SimUnit,
+  side: 'player' | 'opponent',
+  alliedQueue: SimUnit[],
+  enemyQueue: SimUnit[],
+): AbilityBlock | null {
+  if (caster.hero.ability.trigger === 'none') return null
+  const events: AtomicEvent[] = []
+  runAbility(makeContext(caster, side, alliedQueue, enemyQueue, events))
+  if (events.length === 0) return null
+  return {
+    kind: 'abilityBlock',
+    caster: { side, originalIndex: caster.originalIndex },
+    abilityName: caster.hero.ability.name,
+    events,
   }
-  return -1
 }
 
-function processPreBattleInterleaved(
-  pQueue: BattleUnit[],
-  oQueue: BattleUnit[],
-  effects: PreBattleEffect[]
+// ── Pre-battle phase: back-to-front, alternating sides ─────────────────────
+
+function runPreBattle(
+  pQueue: SimUnit[],
+  oQueue: SimUnit[],
+  blocks: BattleEventBlock[],
 ) {
   const hasCast = new Set<string>()
-  // Team with more or equal heroes goes first
+  const isUncast = (side: 'player' | 'opponent', u: SimUnit) =>
+    !hasCast.has(`${side}-${u.originalIndex}`)
+
+  const findBackmostUncast = (queue: SimUnit[], side: 'player' | 'opponent'): SimUnit | null => {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      if (queue[i].currentHp > 0 && isUncast(side, queue[i])) return queue[i]
+    }
+    return null
+  }
+
+  // Larger team goes first; ties to player.
   let playerTurn = pQueue.length >= oQueue.length
   let safety = 0
-
-  while (safety++ < 100) {
-    // Find the back-most uncast hero on the current side
-    // Alternates: player first, then opponent, then player, ...
-    const queue = playerTurn ? pQueue : oQueue
-    const enemyQueue = playerTurn ? oQueue : pQueue
+  while (safety++ < 64) {
     const side = playerTurn ? 'player' : 'opponent'
-    const enemySide = playerTurn ? 'opponent' : 'player'
+    const allied = playerTurn ? pQueue : oQueue
+    const enemy = playerTurn ? oQueue : pQueue
+    const caster = findBackmostUncast(allied, side)
 
-    const idx = findBackmostUncast(queue, side, hasCast)
-    if (idx >= 0) {
-      const key = `${side}-${queue[idx].originalIndex}`
-      hasCast.add(key)
-      processOneHeroAbility(queue[idx], idx, queue, enemyQueue, side, enemySide, effects)
+    if (caster && caster.hero.ability.trigger === 'preBattle') {
+      hasCast.add(`${side}-${caster.originalIndex}`)
+      const block = castAbility(caster, side, allied, enemy)
+      if (block) blocks.push(block)
+    } else if (caster) {
+      // Hero exists but doesn't trigger preBattle — mark it cast so we move on.
+      hasCast.add(`${side}-${caster.originalIndex}`)
     }
 
-    // Switch sides
     playerTurn = !playerTurn
-
-    // Check if both sides are done
-    const pDone = findBackmostUncast(pQueue, 'player', hasCast) === -1
-    const oDone = findBackmostUncast(oQueue, 'opponent', hasCast) === -1
+    const pDone = !findBackmostUncast(pQueue, 'player')
+    const oDone = !findBackmostUncast(oQueue, 'opponent')
     if (pDone && oDone) break
   }
 }
 
+// ── Combat phase: simultaneous front-row exchange + reactions ─────────────
+
+function nextAlive(queue: SimUnit[]): SimUnit | null {
+  for (const u of queue) if (u.currentHp > 0) return u
+  return null
+}
+
+function compactDead(queue: SimUnit[]) {
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (queue[i].currentHp <= 0) queue.splice(i, 1)
+  }
+}
+
+function runCombat(
+  pQueue: SimUnit[],
+  oQueue: SimUnit[],
+  blocks: BattleEventBlock[],
+) {
+  let safety = 0
+  while (pQueue.length > 0 && oQueue.length > 0 && safety++ < 256) {
+    const pFront = nextAlive(pQueue)
+    const oFront = nextAlive(oQueue)
+    if (!pFront || !oFront) break
+
+    const round: CombatRoundBlock = { kind: 'combatRound', attacks: [], reactions: [] }
+
+    // Simultaneous strikes — compute deltas first, then apply.
+    const pDamage = pFront.attack
+    const oDamage = oFront.attack
+    pFront.currentHp = Math.max(0, pFront.currentHp - oDamage)
+    oFront.currentHp = Math.max(0, oFront.currentHp - pDamage)
+    const pDied = pFront.currentHp === 0
+    const oDied = oFront.currentHp === 0
+
+    round.attacks.push(makeAttack(pFront, oFront, pDamage, 'player'))
+    round.attacks.push(makeAttack(oFront, pFront, oDamage, 'opponent'))
+
+    // Reactions fire after the simultaneous swing resolves. onSurviveDamage
+    // requires the reactor to still be alive; onKill requires the OTHER
+    // front to have just died.
+    const tryReaction = (
+      reactor: SimUnit,
+      reactorSide: 'player' | 'opponent',
+      reactorAllied: SimUnit[],
+      reactorEnemy: SimUnit[],
+      reactorDied: boolean,
+      enemyDied: boolean,
+    ) => {
+      const trigger = reactor.hero.ability.trigger
+      if (trigger === 'onSurviveDamage' && !reactorDied) {
+        const block = castAbility(reactor, reactorSide, reactorAllied, reactorEnemy)
+        if (block) round.reactions.push(block)
+      } else if (trigger === 'onKill' && enemyDied && !reactorDied) {
+        const block = castAbility(reactor, reactorSide, reactorAllied, reactorEnemy)
+        if (block) round.reactions.push(block)
+      }
+    }
+    tryReaction(pFront, 'player', pQueue, oQueue, pDied, oDied)
+    tryReaction(oFront, 'opponent', oQueue, pQueue, oDied, pDied)
+
+    blocks.push(round)
+    compactDead(pQueue)
+    compactDead(oQueue)
+  }
+}
+
+function makeAttack(
+  attacker: SimUnit,
+  defender: SimUnit,
+  damage: number,
+  attackerSide: 'player' | 'opponent',
+): AttackEvent {
+  const defenderSide = attackerSide === 'player' ? 'opponent' : 'player'
+  return {
+    attacker: { side: attackerSide, originalIndex: attacker.originalIndex },
+    defender: { side: defenderSide, originalIndex: defender.originalIndex },
+    damage,
+    defenderRemainingHp: defender.currentHp,
+    defenderDied: defender.currentHp === 0,
+  }
+}
+
+// ── Permanent stat change extraction ──────────────────────────────────────
+
+function aggregatePermanentChanges(
+  blocks: BattleEventBlock[],
+  side: 'player' | 'opponent',
+): PermanentStatChange[] {
+  const acc = new Map<number, PermanentStatChange>()
+
+  const visitAtom = (atom: AtomicEvent) => {
+    if (atom.kind !== 'statChange') return
+    const sc = atom as StatChangeAtom
+    if (!sc.permanent || sc.target.side !== side) return
+    const prev = acc.get(sc.target.originalIndex) ??
+      { originalIndex: sc.target.originalIndex, hpDelta: 0, attackDelta: 0 }
+    prev.hpDelta += sc.hpDelta
+    prev.attackDelta += sc.attackDelta
+    acc.set(sc.target.originalIndex, prev)
+  }
+
+  for (const block of blocks) {
+    if (block.kind === 'abilityBlock') {
+      for (const a of block.events) visitAtom(a)
+    } else if (block.kind === 'combatRound') {
+      for (const r of block.reactions) for (const a of r.events) visitAtom(a)
+    }
+  }
+  return Array.from(acc.values())
+}
+
+// ── Outcome ───────────────────────────────────────────────────────────────
+
+function determineOutcome(pQueue: SimUnit[], oQueue: SimUnit[]): BattleOutcome {
+  if (pQueue.length === 0 && oQueue.length === 0) return 'draw'
+  if (pQueue.length === 0) return 'lost'
+  if (oQueue.length === 0) return 'won'
+  // Both sides have survivors — count as draw (battle hit safety cap).
+  return 'draw'
+}
+
+// ── Public entry point ────────────────────────────────────────────────────
+
 export function simulateBattle(
   playerTeam: OwnedHero[],
-  opponentTeam: OwnedHero[]
+  opponentTeam: OwnedHero[],
 ): BattleResult {
-  const pQueue = cloneQueue(playerTeam)
-  const oQueue = cloneQueue(opponentTeam)
-  const steps: BattleStep[] = []
-  const preBattleEffects: PreBattleEffect[] = []
+  const pQueue = toSim(playerTeam)
+  const oQueue = toSim(opponentTeam)
+  const blocks: BattleEventBlock[] = []
 
-  // Track initial stats for permanent change calculation
-  const initialPlayerStats = playerTeam.map((h) => ({ hp: h.hero.hp, attack: h.hero.attack }))
+  blocks.push({ kind: 'phase', phase: 'preBattle' })
+  runPreBattle(pQueue, oQueue, blocks)
+  compactDead(pQueue)
+  compactDead(oQueue)
 
-  // Snapshot BEFORE pre-battle abilities — scene renders these first
-  const prePrePlayerTeam: OwnedHero[] = pQueue.map((u) => ({
-    hero: { ...u.hero }, currentHp: u.currentHp, stars: u.stars,
-  }))
-  const prePreOpponentTeam: OwnedHero[] = oQueue.map((u) => ({
-    hero: { ...u.hero }, currentHp: u.currentHp, stars: u.stars,
-  }))
+  blocks.push({ kind: 'phase', phase: 'combat' })
+  runCombat(pQueue, oQueue, blocks)
 
-  // Pre-battle abilities: interleaved back-to-front (player back, opponent back, ...)
-  processPreBattleInterleaved(pQueue, oQueue, preBattleEffects)
+  const outcome = determineOutcome(pQueue, oQueue)
+  blocks.push({ kind: 'phase', phase: 'end', outcome })
 
-  // Snapshot AFTER pre-battle abilities — used for combat phase rendering
-  const postPrePlayerTeam: OwnedHero[] = pQueue.map((u) => ({
-    hero: { ...u.hero },
-    currentHp: u.currentHp,
-    stars: u.stars,
-  }))
-  const postPreOpponentTeam: OwnedHero[] = oQueue.map((u) => ({
-    hero: { ...u.hero },
-    currentHp: u.currentHp,
-    stars: u.stars,
-  }))
-
-  let safety = 0
-  while (pQueue.length > 0 && oQueue.length > 0 && safety < 200) {
-    safety++
-    const pFront = pQueue[0]
-    const oFront = oQueue[0]
-
-    // Simultaneous damage
-    const pDamage = pFront.hero.attack
-    const oDamage = oFront.hero.attack
-    oFront.currentHp -= pDamage
-    pFront.currentHp -= oDamage
-
-    const playerDied = pFront.currentHp <= 0
-    const opponentDied = oFront.currentHp <= 0
-
-    let abilityText = ''
-    const statBoosts: StepStatBoost[] = []
-
-    // Athena: on surviving damage, boost HP
-    if (!playerDied && pFront.hero.id === 'athena') {
-      const stars = pFront.stars
-      const hpBoost = 1 + consumeBonus(pFront)
-      const count = stars === 3 ? pQueue.length : stars === 1 ? 2 : 3
-      const affected = Math.min(count, pQueue.length)
-      for (let j = 0; j < affected; j++) {
-        pQueue[j].currentHp += hpBoost; pQueue[j].maxHp += hpBoost; pQueue[j].hero.hp += hpBoost
-        statBoosts.push({ queueOffset: j, side: 'player', hpDelta: hpBoost, attackDelta: 0 })
-      }
-      abilityText += `Athena [Bulwark] +${hpBoost} HP to ${affected} allies. `
-    }
-    if (!opponentDied && oFront.hero.id === 'athena') {
-      const stars = oFront.stars
-      const hpBoost = 1 + consumeBonus(oFront)
-      const count = stars === 3 ? oQueue.length : stars === 1 ? 2 : 3
-      const affected = Math.min(count, oQueue.length)
-      for (let j = 0; j < affected; j++) {
-        oQueue[j].currentHp += hpBoost; oQueue[j].maxHp += hpBoost; oQueue[j].hero.hp += hpBoost
-        statBoosts.push({ queueOffset: j, side: 'opponent', hpDelta: hpBoost, attackDelta: 0 })
-      }
-    }
-
-    // Ares: on kill, boost self
-    if (opponentDied && pFront.hero.id === 'ares') {
-      const boost = pFront.stars + consumeBonus(pFront)
-      pFront.hero.attack += boost; pFront.hero.hp += boost; pFront.currentHp += boost; pFront.maxHp += boost
-      statBoosts.push({ queueOffset: 0, side: 'player', hpDelta: boost, attackDelta: boost })
-      abilityText += `Ares [Harvest] +${boost}/${boost} HP/ATK. `
-    }
-    if (playerDied && oFront.hero.id === 'ares') {
-      const boost = oFront.stars + consumeBonus(oFront)
-      oFront.hero.attack += boost; oFront.hero.hp += boost; oFront.currentHp += boost; oFront.maxHp += boost
-      statBoosts.push({ queueOffset: 0, side: 'opponent', hpDelta: boost, attackDelta: boost })
-    }
-
-    steps.push({
-      playerHp: Math.max(0, pFront.currentHp),
-      opponentHp: Math.max(0, oFront.currentHp),
-      playerDamage: pDamage,
-      opponentDamage: oDamage,
-      playerDied,
-      opponentDied,
-      playerHeroId: pFront.hero.id,
-      opponentHeroId: oFront.hero.id,
-      abilityText: abilityText || undefined,
-      statBoosts: statBoosts.length > 0 ? statBoosts : undefined,
-    })
-
-    if (playerDied) pQueue.shift()
-    if (opponentDied) oQueue.shift()
+  return {
+    outcome,
+    initialPlayerTeam: playerTeam.map(cloneOwned),
+    initialOpponentTeam: opponentTeam.map(cloneOwned),
+    blocks,
+    playerStatChanges: aggregatePermanentChanges(blocks, 'player'),
   }
-
-  // Calculate permanent stat changes for player heroes
-  const playerStatChanges: StatChange[] = []
-  // Build a map from originalIndex to final stats
-  const finalStats = new Map<number, { hp: number; attack: number }>()
-  for (const u of pQueue) {
-    finalStats.set(u.originalIndex, { hp: u.hero.hp, attack: u.hero.attack })
-  }
-  // Also check dead heroes — they had stats changed before dying
-  // We need to track all heroes that were in the queue... unfortunately dead ones are gone.
-  // For dead heroes, we can't recover their final stats. So permanent changes only apply to survivors.
-  // That's actually fine — Athena/Ares changes are "permanent" but if the hero dies, the changes are moot.
-  // However, heroes are revived after battle, so we want to keep the stat gains.
-  // We need a different approach: track stat deltas as they happen.
-
-  // Simpler: compare queue heroes' stats to initial stats
-  for (const [origIdx, final] of finalStats) {
-    const initial = initialPlayerStats[origIdx]
-    if (initial) {
-      const hpDelta = final.hp - initial.hp
-      const attackDelta = final.attack - initial.attack
-      if (hpDelta !== 0 || attackDelta !== 0) {
-        playerStatChanges.push({ index: origIdx, hpDelta, attackDelta })
-      }
-    }
-  }
-
-  const outcome: BattleOutcome =
-    pQueue.length === 0 && oQueue.length === 0 ? 'draw'
-    : oQueue.length === 0 ? 'won'
-    : pQueue.length === 0 ? 'lost'
-    : pQueue.length >= oQueue.length ? 'draw'
-    : 'lost'
-
-  return { outcome, preBattleEffects, prePrePlayerTeam, prePreOpponentTeam, postPrePlayerTeam, postPreOpponentTeam, steps, playerStatChanges }
 }
+
+function cloneOwned(h: OwnedHero): OwnedHero {
+  return { hero: { ...h.hero }, currentHp: h.hero.hp, stars: h.stars }
+}
+
+// Type re-export so other modules can import the trigger string directly.
+export type { AbilityTrigger, UnitRef }

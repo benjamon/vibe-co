@@ -176,7 +176,7 @@ export class ShopScene extends Phaser.Scene {
       cc.add(this.add.text(tx, S.cardH * 0.02, `${hero.hp}`, { fontSize: L.fs(14), color: cantAfford ? '#444444' : '#ffffff', fontFamily: 'monospace', fontStyle: 'bold' }))
       cc.add(this.add.text(tx + L.s * 35, S.cardH * 0.02, `${hero.attack}`, { fontSize: L.fs(14), color: cantAfford ? '#444444' : '#e94560', fontFamily: 'monospace', fontStyle: 'bold' }))
       cc.add(this.add.text(tx, S.cardH * 0.17, `${HERO_COST} gold`, { fontSize: L.fs(11), color: cantAfford ? '#333333' : '#f1c40f', fontFamily: 'monospace' }))
-      cc.add(this.add.text(0, S.cardH / 2 - L.s * 14, `[${hero.ability}]`, { fontSize: L.fs(10), color: cantAfford ? '#333333' : '#7788aa', fontFamily: 'monospace', fontStyle: 'italic' }).setOrigin(0.5))
+      cc.add(this.add.text(0, S.cardH / 2 - L.s * 14, `[${hero.ability.name}]`, { fontSize: L.fs(10), color: cantAfford ? '#333333' : '#7788aa', fontFamily: 'monospace', fontStyle: 'italic' }).setOrigin(0.5))
 
       if (!cantAfford) {
         const heroId = hero.id

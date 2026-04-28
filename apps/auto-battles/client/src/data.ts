@@ -3,7 +3,9 @@ import heroData from './heroes.json'
 
 const BASE = import.meta.env.BASE_URL ?? '/'
 
-export const HERO_POOL: Hero[] = (heroData as Hero[]).map((h) => ({
+// JSON-typed inference flattens our [s1,s2,s3] tuples to number[], so widen
+// through unknown rather than maintain a parallel TS hero list.
+export const HERO_POOL: Hero[] = (heroData as unknown as Hero[]).map((h) => ({
   ...h,
   sprite: h.sprite ? `${BASE}${h.sprite.replace(/^\/+/, '')}` : h.sprite,
 }))

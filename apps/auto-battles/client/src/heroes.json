@@ -1,10 +1,166 @@
 [
-  { "id": "zeus",       "name": "Zeus",       "hp": 10, "attack": 8,  "cost": 3, "sprite": "assets/sprites/zeus.png",       "ability": "Thunder Strike" },
-  { "id": "athena",     "name": "Athena",     "hp": 12, "attack": 5,  "cost": 3, "sprite": "assets/sprites/athena.png",     "ability": "Bulwark" },
-  { "id": "ares",       "name": "Ares",       "hp": 8,  "attack": 10, "cost": 3, "sprite": "assets/sprites/ares.png",       "ability": "Harvest" },
-  { "id": "artemis",    "name": "Artemis",    "hp": 7,  "attack": 9,  "cost": 3, "sprite": "assets/sprites/artemis.png",    "ability": "Moon Arrow" },
-  { "id": "poseidon",   "name": "Poseidon",   "hp": 14, "attack": 4,  "cost": 3, "sprite": "assets/sprites/poseidon.png",   "ability": "Grabbing Tide" },
-  { "id": "hermes",     "name": "Hermes",     "hp": 5,  "attack": 11, "cost": 3, "sprite": "assets/sprites/hermes.png",     "ability": "Innovate" },
-  { "id": "hephaestus", "name": "Hephaestus", "hp": 15, "attack": 3,  "cost": 3, "sprite": "assets/sprites/hephaestus.png", "ability": "Forge Armor" },
-  { "id": "apollo",     "name": "Apollo",     "hp": 9,  "attack": 7,  "cost": 3, "sprite": "assets/sprites/apollo.png",     "ability": "Solar Flare" }
+  {
+    "id": "zeus",
+    "name": "Zeus",
+    "hp": 10,
+    "attack": 8,
+    "cost": 3,
+    "sprite": "assets/sprites/zeus.png",
+    "ability": {
+      "name": "Thunder Strike",
+      "description": "Deal 10 damage to 1/2/4 random enemies before battle",
+      "trigger": "preBattle",
+      "effects": [
+        {
+          "kind": "damage",
+          "target": { "side": "enemy", "pick": "random", "count": [1, 2, 4] },
+          "amount": 10
+        }
+      ]
+    }
+  },
+  {
+    "id": "athena",
+    "name": "Athena",
+    "hp": 12,
+    "attack": 5,
+    "cost": 3,
+    "sprite": "assets/sprites/athena.png",
+    "ability": {
+      "name": "Bulwark",
+      "description": "When struck and surviving, +1 HP to 2/3/all front allies (permanent)",
+      "trigger": "onSurviveDamage",
+      "effects": [
+        {
+          "kind": "statBoost",
+          "target": { "side": "ally", "pick": "all", "count": [2, 3, 5] },
+          "hp": 1,
+          "permanent": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ares",
+    "name": "Ares",
+    "hp": 8,
+    "attack": 10,
+    "cost": 3,
+    "sprite": "assets/sprites/ares.png",
+    "ability": {
+      "name": "Harvest",
+      "description": "On kill, +1/2/3 HP and ATK to self (permanent)",
+      "trigger": "onKill",
+      "effects": [
+        {
+          "kind": "statBoost",
+          "target": { "side": "self", "pick": "all" },
+          "hp": [1, 2, 3],
+          "attack": [1, 2, 3],
+          "permanent": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "artemis",
+    "name": "Artemis",
+    "hp": 7,
+    "attack": 9,
+    "cost": 3,
+    "sprite": "assets/sprites/artemis.png",
+    "ability": {
+      "name": "Moon Arrow",
+      "description": "Deal 6/9/12 damage to the back-most enemy before battle",
+      "trigger": "preBattle",
+      "effects": [
+        {
+          "kind": "damage",
+          "target": { "side": "enemy", "pick": "back" },
+          "amount": [6, 9, 12]
+        }
+      ]
+    }
+  },
+  {
+    "id": "poseidon",
+    "name": "Poseidon",
+    "hp": 14,
+    "attack": 4,
+    "cost": 3,
+    "sprite": "assets/sprites/poseidon.png",
+    "ability": {
+      "name": "Grabbing Tide",
+      "description": "Pull the back-most enemy 1/3/all slots forward",
+      "trigger": "preBattle",
+      "effects": [
+        {
+          "kind": "rearrangeBack",
+          "side": "enemy",
+          "moveForwardBy": [1, 3, 99]
+        }
+      ]
+    }
+  },
+  {
+    "id": "hermes",
+    "name": "Hermes",
+    "hp": 5,
+    "attack": 11,
+    "cost": 3,
+    "sprite": "assets/sprites/hermes.png",
+    "ability": {
+      "name": "Innovate",
+      "description": "+1/2/3 ATK to all allies for this battle",
+      "trigger": "preBattle",
+      "effects": [
+        {
+          "kind": "statBoost",
+          "target": { "side": "ally", "pick": "all" },
+          "attack": [1, 2, 3],
+          "permanent": false
+        }
+      ]
+    }
+  },
+  {
+    "id": "hephaestus",
+    "name": "Hephaestus",
+    "hp": 15,
+    "attack": 3,
+    "cost": 3,
+    "sprite": "assets/sprites/hephaestus.png",
+    "ability": {
+      "name": "Forge Armor",
+      "description": "+1/2/3 HP to all allies for this battle",
+      "trigger": "preBattle",
+      "effects": [
+        {
+          "kind": "statBoost",
+          "target": { "side": "ally", "pick": "all" },
+          "hp": [1, 2, 3],
+          "permanent": false
+        }
+      ]
+    }
+  },
+  {
+    "id": "apollo",
+    "name": "Apollo",
+    "hp": 9,
+    "attack": 7,
+    "cost": 3,
+    "sprite": "assets/sprites/apollo.png",
+    "ability": {
+      "name": "Solar Flare",
+      "description": "Amplify the next ally's ability by +1/3/5",
+      "trigger": "preBattle",
+      "effects": [
+        {
+          "kind": "amplifyAhead",
+          "bonus": [1, 3, 5]
+        }
+      ]
+    }
+  }
 ]
