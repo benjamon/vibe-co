@@ -79,11 +79,37 @@ const game = new Game(config)
 function handleResize() {
   const { w, h } = viewportSize()
   game.scale.resize(w, h)
-  game.renderer.resize(w, h)
+  // Phaser updates its scale manager + canvas sizes here, but the WebGL
+  // viewport on the active scene's camera can lag behind, leaving the
+  // canvas half-rendered until the scene restarts. Push the new size into
+  // every active scene's main camera so the viewport stays in sync.
+  for (const scene of game.scene.scenes) {
+    if (scene.scene.isActive() && scene.cameras?.main) {
+      scene.cameras.main.setViewport(0, 0, w, h)
+      scene.cameras.main.setSize(w, h)
+    }
+  }
+  game.scale.refresh()
+}
+
+// Mobile browsers report the post-rotation viewport over several hundred ms,
+// so re-resize at a series of delays after orientation change to make sure
+// we land on the final dimensions.
+function scheduleResizeRetries() {
+  ;[0, 50, 150, 350, 700, 1200].forEach((delay) => setTimeout(handleResize, delay))
 }
 
 window.addEventListener('resize', handleResize)
-window.addEventListener('orientationchange', () => setTimeout(handleResize, 100))
+window.addEventListener('orientationchange', scheduleResizeRetries)
+if (typeof window.matchMedia === 'function') {
+  const mq = window.matchMedia('(orientation: landscape)')
+  // Older Safari uses addListener; modern browsers use addEventListener.
+  if (typeof mq.addEventListener === 'function') {
+    mq.addEventListener('change', scheduleResizeRetries)
+  } else if (typeof (mq as any).addListener === 'function') {
+    ;(mq as any).addListener(scheduleResizeRetries)
+  }
+}
 if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', handleResize)
   window.visualViewport.addEventListener('scroll', handleResize)
