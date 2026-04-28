@@ -1,13 +1,34 @@
 import * as Phaser from 'phaser'
 import { HERO_POOL } from '../data'
 
+const GOD_COLORS: Record<string, number> = {
+  zeus: 0xf1c40f,
+  athena: 0x9b59b6,
+  ares: 0xe94560,
+  artemis: 0x2ecc71,
+  poseidon: 0x3498db,
+  hermes: 0x4ecdc4,
+  hephaestus: 0xe67e22,
+  apollo: 0xf39c12,
+}
+
 export class BootScene extends Phaser.Scene {
+  /** Hero ids whose PNG load failed (404, decode error, LFS pointer file). */
+  private readonly failedSprites = new Set<string>()
+
   constructor() {
     super('Boot')
   }
 
   preload() {
-    // Attempt to load each hero's sprite PNG
+    // Some sprite PNGs may be missing or stored as Git LFS pointer files
+    // (which fail to decode). Track failures so we can replace them with a
+    // generated fallback below — leaving the texture entry around would
+    // otherwise leak Phaser's "missing texture" placeholder onto cards.
+    this.load.on(Phaser.Loader.Events.FILE_LOAD_ERROR, (file: Phaser.Loader.File) => {
+      if (file.type === 'image') this.failedSprites.add(file.key)
+    })
+
     for (const hero of HERO_POOL) {
       if (hero.sprite) {
         this.load.image(hero.id, hero.sprite)
@@ -22,28 +43,44 @@ export class BootScene extends Phaser.Scene {
   }
 
   private generateFallbackTextures() {
-    const godColors: Record<string, number> = {
-      zeus: 0xf1c40f,
-      athena: 0x9b59b6,
-      ares: 0xe94560,
-      artemis: 0x2ecc71,
-      poseidon: 0x3498db,
-      hermes: 0x4ecdc4,
-      hephaestus: 0xe67e22,
-      apollo: 0xf39c12,
-    }
-
     for (const hero of HERO_POOL) {
-      // Skip if the real sprite loaded successfully
+      // Replace fallbacks for sprites whose load failed even if the texture
+      // key was registered, so we never render Phaser's missing-texture
+      // placeholder for a hero card.
+      if (this.failedSprites.has(hero.id) && this.textures.exists(hero.id)) {
+        this.textures.remove(hero.id)
+      }
       if (this.textures.exists(hero.id)) continue
 
-      const color = godColors[hero.id] ?? 0x888888
+      const color = GOD_COLORS[hero.id] ?? 0x888888
+      const w = 64
+      const h = 80
       const gfx = this.add.graphics()
-      gfx.fillStyle(color)
-      gfx.fillCircle(20, 20, 18)
-      gfx.fillRoundedRect(8, 36, 24, 16, 4)
-      gfx.generateTexture(hero.id, 40, 52)
+      gfx.fillStyle(color, 1)
+      gfx.fillCircle(w / 2, w / 2 - 4, 26)
+      gfx.fillRoundedRect(w / 2 - 18, h - 30, 36, 22, 5)
+      gfx.lineStyle(2, 0x000000, 0.35)
+      gfx.strokeCircle(w / 2, w / 2 - 4, 26)
+      gfx.generateTexture(hero.id, w, h)
       gfx.destroy()
+
+      // Bake the hero's first initial into the texture so each fallback is
+      // distinguishable on a shop card without relying on the colour alone.
+      const initial = (hero.name?.[0] ?? '?').toUpperCase()
+      const text = this.add.text(w / 2, w / 2 - 6, initial, {
+        fontFamily: 'monospace',
+        fontStyle: 'bold',
+        fontSize: '28px',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 3,
+      }).setOrigin(0.5)
+      const rt = this.add.renderTexture(0, 0, w, h).setVisible(false)
+      rt.draw(hero.id, 0, 0)
+      rt.draw(text, 0, 0)
+      this.textures.remove(hero.id)
+      rt.saveTexture(hero.id)
+      text.destroy()
     }
   }
 
