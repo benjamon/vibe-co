@@ -175,12 +175,35 @@ function isInFullscreen() {
   )
 }
 
+function tryLockLandscape() {
+  // The Screen Orientation lock API only works in fullscreen on most
+  // browsers, and isn't supported at all on iOS Safari. Try, ignore
+  // failure, and let the rotate-prompt overlay handle the rest.
+  const orientation = (screen as any).orientation as ScreenOrientation | undefined
+  if (!orientation || typeof (orientation as any).lock !== 'function') return
+  try {
+    const result = (orientation as any).lock('landscape')
+    if (result && typeof result.then === 'function') {
+      ;(result as Promise<unknown>).catch(() => {})
+    }
+  } catch {
+    // Some browsers throw synchronously when not in fullscreen. Ignore.
+  }
+}
+
 function tryRequestFullscreen() {
   if (!isMobile) return
   if (!supportsFullscreen) return
-  if (isInFullscreen()) return
+  if (isInFullscreen()) {
+    tryLockLandscape()
+    return
+  }
   try {
     game.scale.startFullscreen()
+    // Lock orientation as soon as we're in fullscreen — schedule a retry
+    // since the lock API may need a tick after fullscreen takes effect.
+    requestAnimationFrame(tryLockLandscape)
+    setTimeout(tryLockLandscape, 200)
   } catch {
     // Older iOS Safari throws — caller will retry on the next gesture.
   }
@@ -197,6 +220,11 @@ function nudgeHideAddressBar() {
 }
 
 if (isMobile) {
+  // Re-attempt the orientation lock whenever fullscreen state flips —
+  // the lock can only be acquired while fullscreen on most browsers.
+  document.addEventListener('fullscreenchange', tryLockLandscape)
+  document.addEventListener('webkitfullscreenchange' as any, tryLockLandscape)
+
   // Try fullscreen on every pointer/touch interaction until it sticks.
   // Browsers require a user gesture, so we can't request it on load.
   const onUserGesture = () => {
