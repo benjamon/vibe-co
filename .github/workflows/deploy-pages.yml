@@ -45,13 +45,25 @@ jobs:
           GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/coin-flip/
         run: npm run build
 
+      - name: Install mapoguesser
+        working-directory: apps/mapoguesser
+        run: npm ci
+
+      - name: Build mapoguesser
+        working-directory: apps/mapoguesser
+        env:
+          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/mapoguesser/
+        run: npm run build
+
       - name: Stage site
         run: |
-          mkdir -p _site/auto-battles _site/coin-flip
+          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser
           cp -r apps/auto-battles/client/dist/. _site/auto-battles/
           cp apps/auto-battles/client/dist/index.html _site/auto-battles/404.html
           cp -r apps/coin-flip/client/dist/. _site/coin-flip/
           cp apps/coin-flip/client/dist/index.html _site/coin-flip/404.html
+          cp -r apps/mapoguesser/client/dist/. _site/mapoguesser/
+          cp apps/mapoguesser/client/dist/index.html _site/mapoguesser/404.html
           cat > _site/index.html <<'HTML'
           <!DOCTYPE html>
           <meta charset="utf-8">
@@ -70,6 +82,7 @@ jobs:
             <ul>
               <li><a href="./auto-battles/">auto-battles</a></li>
               <li><a href="./coin-flip/">coin-flip</a></li>
+              <li><a href="./mapoguesser/">mapoguesser</a></li>
             </ul>
           </div>
           HTML
