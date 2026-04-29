@@ -1,0 +1,16 @@
+{
+  "name": "server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "echo 'Run: spacetime dev --project-path .' && exit 1"
+  },
+  "dependencies": {
+    "shared": "*"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  }
+}
