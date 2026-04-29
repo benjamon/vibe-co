@@ -11,6 +11,10 @@ export default defineConfig({
   plugins: [
     react(),
     cesium({
+      // Bundle Cesium with the app instead of injecting a separate
+      // <script src="cesium/Cesium.js"> global. Avoids `Cesium is not
+      // defined` errors when the global script load races the module bundle.
+      rebuildCesium: true,
       cesiumBuildRootPath: cesiumBuildRoot,
       cesiumBuildPath: path.join(cesiumBuildRoot, 'Cesium/'),
     }),
