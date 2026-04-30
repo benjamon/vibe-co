@@ -254,9 +254,29 @@ export const gameStore = createStore<GameState & GameActions>((set, get) => ({
   buyHeroToBench: (shopIndex: number) => {
     const state = get()
     const hero = state.shopChoices[shopIndex]
-    if (!hero || state.gold < HERO_COST || state.bench.length >= MAX_BENCH) return
+    if (!hero || state.gold < HERO_COST) return
+
     const newChoices = [...state.shopChoices]
     newChoices.splice(shopIndex, 1)
+
+    // Check for 1-star merge on bench
+    const benchMergeIdx = state.bench.findIndex((h) => h.hero.id === hero.id && h.stars === 1)
+    if (benchMergeIdx !== -1) {
+      const result = doMerge(state.team, state.bench, benchMergeIdx, 'bench', hero)
+      set({ gold: state.gold - HERO_COST, team: result.team, bench: result.bench, shopChoices: newChoices, pendingMerge: result.merge })
+      return
+    }
+
+    // Check for 1-star merge on team (auto-merge even when targeting bench)
+    const teamMergeIdx = state.team.findIndex((h) => h.hero.id === hero.id && h.stars === 1)
+    if (teamMergeIdx !== -1) {
+      const result = doMerge(state.team, state.bench, teamMergeIdx, 'team', hero)
+      set({ gold: state.gold - HERO_COST, team: result.team, bench: result.bench, shopChoices: newChoices, pendingMerge: result.merge })
+      return
+    }
+
+    // No merge — add to bench if space
+    if (state.bench.length >= MAX_BENCH) return
     set({ gold: state.gold - HERO_COST, bench: [...state.bench, { hero: { ...hero }, currentHp: hero.hp, stars: 1 }], shopChoices: newChoices })
   },
 

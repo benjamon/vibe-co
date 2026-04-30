@@ -256,11 +256,14 @@ export class BattleScene extends Phaser.Scene {
       }
     }
 
-    // Target circles + Zeus damage
+    // Target circles + damage/stat effects
     const targets = fx.targetIndices ?? []
     const targetSprites = fx.targetSide === 'player' ? this.playerSprites : this.opponentSprites
     const targetTeam = fx.targetSide === 'player' ? this.playerTeam : this.opponentTeam
     const isZeus = fx.text.includes('Thunder Strike')
+    const isHermes = fx.text.includes('Innovate')
+    let killsThisEffect = false
+
     for (let t = 0; t < targets.length; t++) {
       const targetIdx = targets[t]; const sprite = targetSprites[targetIdx]
       if (!sprite) continue
@@ -269,6 +272,7 @@ export class BattleScene extends Phaser.Scene {
         const circle = this.add.graphics(); circle.setPosition(cx, cy)
         circle.lineStyle(2, 0xffffff, 0.8); circle.strokeCircle(0, 0, 8 * L.s)
         this.tweens.add({ targets: circle, scaleX: 2.5, scaleY: 2.5, alpha: 0, duration: 400, onComplete: () => circle.destroy() })
+
         if (isZeus && targetIdx < targetTeam.length) {
           targetTeam[targetIdx].currentHp -= 15
           if (targetTeam[targetIdx].currentHp < 0) targetTeam[targetIdx].currentHp = 0
@@ -279,8 +283,26 @@ export class BattleScene extends Phaser.Scene {
           sprite.hpBarFill.clear(); sprite.hpBarFill.fillStyle(barColor)
           sprite.hpBarFill.fillRoundedRect(-b.barW / 2, b.barY, b.barW * pct, b.barH, 2)
           if (targetTeam[targetIdx].currentHp <= 0) {
-            this.tweens.add({ targets: sprite.container, alpha: 0, y: sprite.container.y + L.s * 20, duration: 300 })
+            killsThisEffect = true
+            this.tweens.add({
+              targets: sprite.container, alpha: 0, y: sprite.container.y + L.s * 20, duration: 300,
+              onComplete: () => {
+                sprite.container.destroy()
+                // Remove from arrays and compact
+                const sArr = fx.targetSide === 'player' ? this.playerSprites : this.opponentSprites
+                const tArr = fx.targetSide === 'player' ? this.playerTeam : this.opponentTeam
+                const deadIdx = sArr.indexOf(sprite)
+                if (deadIdx !== -1) { sArr.splice(deadIdx, 1); tArr.splice(deadIdx, 1) }
+                this.compactSprites(fx.targetSide!)
+              },
+            })
           }
+        }
+
+        if (isHermes && targetIdx < targetTeam.length) {
+          // Show +ATK floating text above the hero
+          const boost = fx.text.match(/\+(\d+)/)?.[1] || '1'
+          this.showStatChange(cx + L.s * 14, cy - L.s * 42, `+${boost}`, '#e94560')
         }
       })
     }
@@ -332,6 +354,17 @@ export class BattleScene extends Phaser.Scene {
       this.updateHpDisplays()
     })
     this.time.delayedCall(STEP_DELAY, () => this.playStep())
+  }
+
+  private compactSprites(side: 'player' | 'opponent') {
+    const L = this.L; const b = L.battle
+    const sprites = side === 'player' ? this.playerSprites : this.opponentSprites
+    for (let i = 0; i < sprites.length; i++) {
+      const targetX = side === 'player'
+        ? b.centerX - L.s * 60 - i * b.spriteGap
+        : b.centerX + L.s * 60 + i * b.spriteGap
+      this.tweens.add({ targets: sprites[i].container, x: targetX, duration: 300, ease: 'Power2' })
+    }
   }
 
   private showStatChange(x: number, y: number, text: string, color: string) {
