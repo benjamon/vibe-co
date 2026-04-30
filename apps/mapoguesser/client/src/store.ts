@@ -3,9 +3,13 @@ import { create } from 'zustand'
 interface GameState {
   heading: number
   setHeading: (heading: number) => void
+  country: string | null
+  setCountry: (country: string | null) => void
 }
 
 export const useGameStore = create<GameState>((set) => ({
   heading: 0,
   setHeading: (heading) => set({ heading }),
+  country: null,
+  setCountry: (country) => set({ country }),
 }))

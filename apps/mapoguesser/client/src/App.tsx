@@ -2,7 +2,18 @@ import { useEffect } from 'react'
 import { WorldViewer } from './WorldViewer'
 import { useGameStore } from './store'
 
+const overlayBase = {
+  position: 'absolute',
+  color: 'white',
+  fontFamily: 'system-ui, sans-serif',
+  pointerEvents: 'none',
+  userSelect: 'none',
+  textShadow: '0 1px 2px rgba(0,0,0,0.85)',
+} as const
+
 export function App() {
+  const country = useGameStore((s) => s.country)
+
   useEffect(() => {
     ;(window as any).__gameState = useGameStore.getState()
     return useGameStore.subscribe((state) => {
@@ -15,20 +26,27 @@ export function App() {
       <WorldViewer />
       <div
         style={{
-          position: 'absolute',
+          ...overlayBase,
           top: 16,
-          left: 16,
-          color: 'white',
-          fontFamily: 'system-ui, sans-serif',
-          pointerEvents: 'none',
-          userSelect: 'none',
-          textShadow: '0 1px 2px rgba(0,0,0,0.85)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          fontSize: 24,
+          fontWeight: 600,
+          letterSpacing: 0.3,
         }}
       >
-        <div style={{ fontSize: 22, fontWeight: 700 }}>mapoguesser</div>
-        <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>
-          Drag to spin the world
-        </div>
+        {country ?? ''}
+      </div>
+      <div
+        style={{
+          ...overlayBase,
+          bottom: 16,
+          right: 16,
+          fontSize: 22,
+          fontWeight: 700,
+        }}
+      >
+        mapoguesser
       </div>
     </>
   )
