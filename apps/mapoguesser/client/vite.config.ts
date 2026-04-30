@@ -68,6 +68,7 @@ function cesium(): Plugin {
 export default defineConfig({
   plugins: [react(), cesium()],
   base,
+  publicDir: path.resolve(__dirname, '../public'),
   resolve: {
     alias: {
       shared: path.resolve(__dirname, '../shared/src'),

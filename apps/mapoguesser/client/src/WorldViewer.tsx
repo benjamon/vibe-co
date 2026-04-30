@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import {
   buildModuleUrl,
+  Color,
+  GeoJsonDataSource,
   HeadingPitchRange,
   ImageryLayer,
   Ion,
-  Math as CesiumMath,
   Matrix4,
   TileMapServiceImageryProvider,
   Viewer,
@@ -16,12 +17,24 @@ import { useGameStore } from './store'
 // bundled Natural Earth basemap, so blank the token to avoid stray network calls.
 Ion.defaultAccessToken = ''
 
-// Camera distance from Earth's centre (metres). The Earth's radius is ~6.4 Mm,
-// so 25 Mm leaves the globe comfortably framed.
-const RANGE = 25_000_000
+const MIN_RANGE = 7_000_000 // m, just above the Earth's surface
+const MAX_RANGE = 60_000_000 // m
+const DEFAULT_RANGE = 25_000_000
 
-// Radians of horizontal rotation per pixel of pointer movement.
-const SENSITIVITY = 0.005
+// Pitch range: 0 = horizontal at the equator, ±π/2 = looking straight down at
+// a pole. Stop just shy of the singularity so the camera doesn't tip over.
+const PITCH_LIMIT = Math.PI / 2 - 0.01
+
+const DRAG_SENSITIVITY = 0.005 // rad / pixel
+const WHEEL_ZOOM_SENSITIVITY = 0.001
+const FRICTION = 3 // 1/sec; higher = momentum decays faster
+const STOP_THRESHOLD = 0.02 // rad/sec; below this we end the animation
+const FLICK_WINDOW_MS = 120 // only carry momentum if the last move was recent
+
+type PointerSample = { x: number; y: number; t: number }
+
+const clamp = (v: number, lo: number, hi: number) =>
+  Math.max(lo, Math.min(hi, v))
 
 export function WorldViewer() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -30,8 +43,6 @@ export function WorldViewer() {
     const container = containerRef.current
     if (!container) return
 
-    // Natural Earth II ships inside Cesium's static assets, so the basemap
-    // works offline and avoids OpenStreetMap's anti-scraping policy.
     const baseLayer = ImageryLayer.fromProviderAsync(
       TileMapServiceImageryProvider.fromUrl(
         buildModuleUrl('Assets/Textures/NaturalEarthII'),
@@ -55,8 +66,7 @@ export function WorldViewer() {
       shouldAnimate: false,
     })
 
-    // Disable Cesium's built-in camera controls; we drive the camera ourselves
-    // so that the only allowed motion is heading rotation around the poles.
+    // We drive the camera ourselves; disable Cesium's input handling.
     const ssc = viewer.scene.screenSpaceCameraController
     ssc.enableInputs = false
     ssc.enableRotate = false
@@ -65,58 +75,189 @@ export function WorldViewer() {
     ssc.enableTilt = false
     ssc.enableLook = false
 
-    // Heading is rotation about the Earth-fixed Z axis (the polar axis), so
-    // varying it spins the globe horizontally while keeping the poles fixed
-    // vertically on screen.
+    // Country borders, 4px wide, clamped to the ellipsoid so the line width
+    // is rendered as a ground primitive (which actually respects pixel width
+    // on every browser, unlike WebGL line primitives).
+    let countryDataSource: GeoJsonDataSource | undefined
+    GeoJsonDataSource.load(
+      `${import.meta.env.BASE_URL}assets/data/countries.geojson`,
+      {
+        stroke: Color.WHITE.withAlpha(0.9),
+        strokeWidth: 4,
+        fill: Color.TRANSPARENT,
+        clampToGround: true,
+      },
+    )
+      .then((ds) => {
+        countryDataSource = ds
+        viewer.dataSources.add(ds)
+      })
+      .catch((err) => {
+        console.warn('failed to load country borders', err)
+      })
+
+    // Camera state.
     let heading = 0
-    const updateCamera = () => {
+    let pitch = 0
+    let range = DEFAULT_RANGE
+    let velHeading = 0 // rad/sec
+    let velPitch = 0 // rad/sec
+
+    const applyCamera = () => {
+      pitch = clamp(pitch, -PITCH_LIMIT, PITCH_LIMIT)
+      range = clamp(range, MIN_RANGE, MAX_RANGE)
       viewer.scene.camera.lookAtTransform(
         Matrix4.IDENTITY,
-        new HeadingPitchRange(heading, 0, RANGE),
+        new HeadingPitchRange(heading, pitch, range),
       )
       useGameStore.getState().setHeading(heading)
     }
-    updateCamera()
+
+    // Pointer state.
+    const pointers = new Map<number, PointerSample>()
+    let pinchDist = 0
+    let lastMoveTime = 0
+
+    const cancelMomentum = () => {
+      velHeading = 0
+      velPitch = 0
+    }
+
+    // requestAnimationFrame loop, only running while there's momentum or an
+    // active pointer worth re-rendering for.
+    let rafHandle: number | null = null
+    let lastFrame = 0
+    const tick = (now: number) => {
+      const dt = lastFrame ? Math.min((now - lastFrame) / 1000, 0.05) : 1 / 60
+      lastFrame = now
+
+      if (pointers.size === 0) {
+        heading += velHeading * dt
+        pitch += velPitch * dt
+        // Stop pitch momentum once it hits a bound.
+        if (pitch >= PITCH_LIMIT && velPitch > 0) velPitch = 0
+        if (pitch <= -PITCH_LIMIT && velPitch < 0) velPitch = 0
+        const decay = Math.exp(-FRICTION * dt)
+        velHeading *= decay
+        velPitch *= decay
+      }
+
+      applyCamera()
+
+      const stillMoving =
+        Math.abs(velHeading) > STOP_THRESHOLD ||
+        Math.abs(velPitch) > STOP_THRESHOLD
+      if (pointers.size > 0 || stillMoving) {
+        rafHandle = requestAnimationFrame(tick)
+      } else {
+        velHeading = 0
+        velPitch = 0
+        rafHandle = null
+        lastFrame = 0
+      }
+    }
+    const ensureTick = () => {
+      if (rafHandle === null) {
+        lastFrame = 0
+        rafHandle = requestAnimationFrame(tick)
+      }
+    }
+
+    applyCamera() // initial pose
 
     const canvas = viewer.scene.canvas
     canvas.style.touchAction = 'none'
 
-    let activePointer: number | null = null
-    let lastX = 0
-
     const onPointerDown = (e: PointerEvent) => {
-      if (activePointer !== null) return
-      activePointer = e.pointerId
-      lastX = e.clientX
-      canvas.setPointerCapture(e.pointerId)
+      cancelMomentum()
+      pointers.set(e.pointerId, {
+        x: e.clientX,
+        y: e.clientY,
+        t: performance.now(),
+      })
+      if (pointers.size === 2) {
+        const [a, b] = [...pointers.values()]
+        pinchDist = Math.hypot(a.x - b.x, a.y - b.y)
+      }
+      try {
+        canvas.setPointerCapture(e.pointerId)
+      } catch {
+        // pointer capture is best-effort
+      }
     }
+
     const onPointerMove = (e: PointerEvent) => {
-      if (e.pointerId !== activePointer) return
-      const dx = e.clientX - lastX
-      lastX = e.clientX
-      heading = CesiumMath.zeroToTwoPi(heading - dx * SENSITIVITY)
-      updateCamera()
+      const prev = pointers.get(e.pointerId)
+      if (!prev) return
+      const now = performance.now()
+      const dx = e.clientX - prev.x
+      const dy = e.clientY - prev.y
+      const dt = (now - prev.t) / 1000
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: now })
+      lastMoveTime = now
+
+      if (pointers.size === 1) {
+        const dh = dx * DRAG_SENSITIVITY
+        const dp = dy * DRAG_SENSITIVITY
+        heading += dh
+        pitch += dp
+        if (dt > 0) {
+          velHeading = dh / dt
+          velPitch = dp / dt
+        }
+      } else if (pointers.size >= 2) {
+        cancelMomentum()
+        const [a, b] = [...pointers.values()]
+        const newDist = Math.hypot(a.x - b.x, a.y - b.y)
+        if (pinchDist > 0 && newDist > 0) {
+          range *= pinchDist / newDist
+        }
+        pinchDist = newDist
+      }
+
+      applyCamera()
     }
-    const endDrag = (e: PointerEvent) => {
-      if (e.pointerId !== activePointer) return
-      activePointer = null
+
+    const endPointer = (e: PointerEvent) => {
+      if (!pointers.has(e.pointerId)) return
+      pointers.delete(e.pointerId)
+      if (pointers.size < 2) pinchDist = 0
       try {
         canvas.releasePointerCapture(e.pointerId)
       } catch {
-        // pointer was already released
+        // already released
       }
+      if (pointers.size === 0) {
+        // Drop stale velocity if the user paused before lifting so we don't
+        // fling unexpectedly.
+        if (performance.now() - lastMoveTime > FLICK_WINDOW_MS) {
+          cancelMomentum()
+        }
+        ensureTick()
+      }
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      cancelMomentum()
+      range *= Math.exp(e.deltaY * WHEEL_ZOOM_SENSITIVITY)
+      applyCamera()
     }
 
     canvas.addEventListener('pointerdown', onPointerDown)
     canvas.addEventListener('pointermove', onPointerMove)
-    canvas.addEventListener('pointerup', endDrag)
-    canvas.addEventListener('pointercancel', endDrag)
+    canvas.addEventListener('pointerup', endPointer)
+    canvas.addEventListener('pointercancel', endPointer)
+    canvas.addEventListener('wheel', onWheel, { passive: false })
 
     return () => {
       canvas.removeEventListener('pointerdown', onPointerDown)
       canvas.removeEventListener('pointermove', onPointerMove)
-      canvas.removeEventListener('pointerup', endDrag)
-      canvas.removeEventListener('pointercancel', endDrag)
+      canvas.removeEventListener('pointerup', endPointer)
+      canvas.removeEventListener('pointercancel', endPointer)
+      canvas.removeEventListener('wheel', onWheel)
+      if (rafHandle !== null) cancelAnimationFrame(rafHandle)
+      if (countryDataSource) viewer.dataSources.remove(countryDataSource)
       viewer.destroy()
     }
   }, [])
