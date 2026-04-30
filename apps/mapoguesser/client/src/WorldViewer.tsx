@@ -1,14 +1,20 @@
 import { useEffect, useRef } from 'react'
 import {
+  buildModuleUrl,
   HeadingPitchRange,
   ImageryLayer,
+  Ion,
   Math as CesiumMath,
   Matrix4,
-  OpenStreetMapImageryProvider,
+  TileMapServiceImageryProvider,
   Viewer,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { useGameStore } from './store'
+
+// Cesium normally hits Cesium ion for default assets/terrain. We use only the
+// bundled Natural Earth basemap, so blank the token to avoid stray network calls.
+Ion.defaultAccessToken = ''
 
 // Camera distance from Earth's centre (metres). The Earth's radius is ~6.4 Mm,
 // so 25 Mm leaves the globe comfortably framed.
@@ -24,10 +30,13 @@ export function WorldViewer() {
     const container = containerRef.current
     if (!container) return
 
-    const baseLayer = new ImageryLayer(
-      new OpenStreetMapImageryProvider({
-        url: 'https://tile.openstreetmap.org/',
-      }),
+    // Natural Earth II ships inside Cesium's static assets, so the basemap
+    // works offline and avoids OpenStreetMap's anti-scraping policy.
+    const baseLayer = ImageryLayer.fromProviderAsync(
+      TileMapServiceImageryProvider.fromUrl(
+        buildModuleUrl('Assets/Textures/NaturalEarthII'),
+      ),
+      {},
     )
 
     const viewer = new Viewer(container, {
@@ -44,8 +53,6 @@ export function WorldViewer() {
       timeline: false,
       scene3DOnly: true,
       shouldAnimate: false,
-      requestRenderMode: true,
-      maximumRenderTimeChange: Infinity,
     })
 
     // Disable Cesium's built-in camera controls; we drive the camera ourselves
@@ -67,7 +74,6 @@ export function WorldViewer() {
         Matrix4.IDENTITY,
         new HeadingPitchRange(heading, 0, RANGE),
       )
-      viewer.scene.requestRender()
       useGameStore.getState().setHeading(heading)
     }
     updateCamera()
