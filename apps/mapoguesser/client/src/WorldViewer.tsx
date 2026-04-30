@@ -4,17 +4,19 @@ import {
   Cartesian3,
   Cartographic,
   Color,
-  ColorMaterialProperty,
   ConstantProperty,
-  Entity,
+  CustomDataSource,
   GeoJsonDataSource,
   HeadingPitchRange,
+  HeightReference,
   ImageryLayer,
   Ion,
   Math as CesiumMath,
   Matrix4,
+  PinBuilder,
   PolylineOutlineMaterialProperty,
   UrlTemplateImageryProvider,
+  VerticalOrigin,
   Viewer,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
@@ -34,19 +36,14 @@ const MAX_RANGE = 60_000_000
 const MAX_TILE_LEVEL = 12
 
 // Natural Earth 50m admin-0 datasets. Borders for visible lines, polygons for
-// hover hit-testing + fill highlight. Served via jsDelivr's GitHub mirror.
+// CPU point-in-polygon hit-testing. Served via jsDelivr's GitHub mirror.
 const COUNTRY_BORDERS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_boundary_lines_land.geojson'
 const COUNTRY_POLYGONS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson'
 
-// Light blue overlay applied to the country under the cursor.
-const HOVER_FILL = Color.fromCssColorString('#7ec8ff').withAlpha(0.35)
-
-// Cesium's pick pass discards alpha-0 fragments, so a fully-transparent fill
-// would make polygons unpickable. Use a tiny alpha that's imperceptible over
-// the satellite basemap but still writes to the pick buffer.
-const NO_FILL = Color.WHITE.withAlpha(0.005)
+// Reveal animation duration when the player misses twice on the same target.
+const REVEAL_MS = 1200
 
 // Fallback radians-per-pixel for drags that started off-globe (no anchor to
 // pin to). Anchored drags use a true 1:1 inverse projection instead.
@@ -114,6 +111,47 @@ const normalizeGeometry = (g: unknown): SubPolygon[] => {
   return []
 }
 
+// Mean-of-vertices centroid over each polygon's outer ring. Cheaper than a
+// proper area-weighted centroid and good enough for re-centering the camera
+// on a country whose actual shape is being revealed.
+const computeCentroid = (polys: SubPolygon[]): { lat: number; lon: number } => {
+  let lonSum = 0
+  let latSum = 0
+  let count = 0
+  for (const poly of polys) {
+    const ring = poly[0]
+    if (!ring) continue
+    for (const pt of ring) {
+      lonSum += pt[0]
+      latSum += pt[1]
+      count++
+    }
+  }
+  return count > 0
+    ? { lat: latSum / count, lon: lonSum / count }
+    : { lat: 0, lon: 0 }
+}
+
+// Sum of |shoelace| areas (outer rings minus holes) in degrees². Used only as
+// a relative size measure to exclude tiny island/city-state targets that are
+// effectively unclickable on a globe view.
+const computeArea = (polys: SubPolygon[]): number => {
+  const ringArea = (ring: Ring): number => {
+    let a = 0
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      a += (ring[j][0] - ring[i][0]) * (ring[j][1] + ring[i][1])
+    }
+    return Math.abs(a / 2)
+  }
+  let total = 0
+  for (const poly of polys) {
+    if (!poly[0]) continue
+    total += ringArea(poly[0])
+    for (let h = 1; h < poly.length; h++) total -= ringArea(poly[h])
+  }
+  return total
+}
+
 const computeBBox = (
   polys: SubPolygon[],
 ): [number, number, number, number] => {
@@ -172,90 +210,94 @@ export function WorldViewer() {
 
     let destroyed = false
 
-    // Reusable materials for the polygon hover swap.
-    const noFillMat = new ColorMaterialProperty(NO_FILL)
-    const hoverMat = new ColorMaterialProperty(HOVER_FILL)
-
-    // Clamp polygons to the globe so they render as ground classification
-    // primitives, avoiding z-fight with imagery.
+    // Clamp data-source primitives to the globe so they don't z-fight with
+    // imagery. Affects the borders datasource below and the markers below.
     GeoJsonDataSource.clampToGround = true
 
-    // Country polygons: rendered for the hover highlight, plus a parallel
-    // CPU index (bounding box + raw rings, grouped by NAME) used for fast
-    // point-in-polygon hit-testing on every cursor move.
+    // Game markers (guess pins, reveal X markers) live in their own data
+    // source so we can wipe them between games with one removeAll() call.
+    const gameMarkers = new CustomDataSource('gameMarkers')
+    viewer.dataSources.add(gameMarkers)
+
+    // Pin sprites — generated once on the canvas, reused for every marker.
+    const pinBuilder = new PinBuilder()
+    const wrongPinImg = pinBuilder
+      .fromText('✗', Color.fromCssColorString('#9aa0a6'), 44)
+      .toDataURL()
+    const correctPinImg = pinBuilder
+      .fromText('✓', Color.fromCssColorString('#3fb84e'), 44)
+      .toDataURL()
+    const revealXImg = pinBuilder
+      .fromText('✗', Color.fromCssColorString('#e64545'), 44)
+      .toDataURL()
+
+    // Country PIP/centroid index built from the raw GeoJSON. We don't render
+    // the polygons (the hover highlight effect is gone), only use them for
+    // hit-testing clicks and aiming the reveal animation.
     type CountryEntry = {
       name: string
       bbox: [number, number, number, number]
+      centroid: { lat: number; lon: number }
       polygons: SubPolygon[]
-      entities: Entity[]
+      area: number
     }
     let countryEntries: CountryEntry[] | null = null
+    // Min total polygon area (deg²) for a country to be eligible as a target.
+    // Excludes city-states and pinprick island nations that are effectively
+    // unclickable on the globe (Vatican, Monaco, Tuvalu, Nauru, …).
+    const MIN_TARGET_AREA = 0.1
 
     fetch(COUNTRY_POLYGONS_URL)
       .then((r) => {
         if (!r.ok) throw new Error(`http ${r.status}`)
         return r.json()
       })
-      .then(async (geo: { features: Array<{ properties?: Record<string, unknown>; geometry?: unknown }> }) => {
-        if (destroyed || viewer.isDestroyed()) return
-        const ds = await GeoJsonDataSource.load(geo, {
-          stroke: Color.TRANSPARENT,
-          fill: NO_FILL,
-          strokeWidth: 0,
-        })
-        if (destroyed || viewer.isDestroyed()) return
-
-        // Cesium splits MultiPolygon features into multiple entities. Group
-        // them by NAME so all parts of e.g. Indonesia highlight together.
-        const time = viewer.clock.currentTime
-        const entitiesByName = new Map<string, Entity[]>()
-        for (const entity of ds.entities.values) {
-          if (!entity.polygon) continue
-          entity.polygon.material = noFillMat
-          entity.polygon.outline = new ConstantProperty(false)
-          const nameProp = (entity.properties as Record<string, { getValue?: (t: unknown) => unknown }> | undefined)?.NAME
-          const raw = typeof nameProp?.getValue === 'function' ? nameProp.getValue(time) : null
-          const name = typeof raw === 'string' ? raw : null
-          if (!name) continue
-          const arr = entitiesByName.get(name) ?? []
-          arr.push(entity)
-          entitiesByName.set(name, arr)
-        }
-
-        const list: CountryEntry[] = []
-        for (const feature of geo.features ?? []) {
-          const name =
-            typeof feature?.properties?.NAME === 'string'
-              ? (feature.properties.NAME as string)
-              : null
-          if (!name || !feature.geometry) continue
-          const polygons = normalizeGeometry(feature.geometry)
-          if (polygons.length === 0) continue
-          const entities = entitiesByName.get(name) ?? []
-          list.push({
-            name,
-            polygons,
-            bbox: computeBBox(polygons),
-            entities,
-          })
-        }
-
-        viewer.dataSources.add(ds)
-        countryEntries = list
-      })
+      .then(
+        (geo: {
+          features?: Array<{
+            properties?: Record<string, unknown>
+            geometry?: unknown
+          }>
+        }) => {
+          if (destroyed || viewer.isDestroyed()) return
+          const list: CountryEntry[] = []
+          for (const feature of geo.features ?? []) {
+            const name =
+              typeof feature?.properties?.NAME === 'string'
+                ? (feature.properties.NAME as string)
+                : null
+            if (!name || !feature.geometry) continue
+            const polygons = normalizeGeometry(feature.geometry)
+            if (polygons.length === 0) continue
+            list.push({
+              name,
+              polygons,
+              bbox: computeBBox(polygons),
+              centroid: computeCentroid(polygons),
+              area: computeArea(polygons),
+            })
+          }
+          countryEntries = list
+          useGameStore
+            .getState()
+            .setCountries(
+              list.filter((c) => c.area >= MIN_TARGET_AREA).map((c) => c.name),
+            )
+        },
+      )
       .catch(() => {
-        // CDN unreachable / blocked — hover highlight will simply not appear.
+        // CDN unreachable / blocked — clicks won't resolve to country names.
       })
 
     // Country border lines: white core wrapped in a dark halo so the lines
     // stay readable over bright basemap features (deserts, ice, sun glare).
     const borderMat = new PolylineOutlineMaterialProperty({
-      color: Color.WHITE.withAlpha(0.95),
-      outlineColor: Color.BLACK.withAlpha(0.7),
+      color: Color.NAVY.withAlpha(0.95),
+      outlineColor: Color.WHITE.withAlpha(0.7),
       outlineWidth: 1.0,
     })
     GeoJsonDataSource.load(COUNTRY_BORDERS_URL, {
-      stroke: Color.WHITE,
+      stroke: Color.NAVY,
       strokeWidth: 1,
     })
       .then((ds) => {
@@ -263,7 +305,7 @@ export function WorldViewer() {
         for (const entity of ds.entities.values) {
           if (entity.polyline) {
             entity.polyline.material = borderMat
-            entity.polyline.width = new ConstantProperty(2.6)
+            entity.polyline.width = new ConstantProperty(1.5)
           }
         }
         viewer.dataSources.add(ds)
@@ -374,31 +416,6 @@ export function WorldViewer() {
       return viewer.scene.camera.pickEllipsoid(screen, ellipsoid) ?? null
     }
 
-    // CPU PIP: cast cursor → globe with pickEllipsoid (cheap), bbox-prefilter
-    // the country list, ray-cast PIP. Runs synchronously per pointermove so
-    // the highlight tracks the cursor in real time.
-    let hoveredCountryName: string | null = null
-    let hoveredEntities: Entity[] | null = null
-
-    const setHovered = (name: string | null) => {
-      if (name === hoveredCountryName) return
-      if (hoveredEntities) {
-        for (const e of hoveredEntities) {
-          if (e.polygon) e.polygon.material = noFillMat
-        }
-      }
-      const next = name && countryEntries
-        ? countryEntries.find((c) => c.name === name)?.entities ?? null
-        : null
-      if (next) {
-        for (const e of next) {
-          if (e.polygon) e.polygon.material = hoverMat
-        }
-      }
-      hoveredCountryName = name
-      hoveredEntities = next
-    }
-
     const lookupCountryName = (lat: number, lon: number): string | null => {
       const list = countryEntries
       if (!list) return null
@@ -417,22 +434,80 @@ export function WorldViewer() {
       return null
     }
 
-    const updateHover = (clientX: number, clientY: number) => {
-      if (!countryEntries) return
-      const rect = canvas.getBoundingClientRect()
-      const pos = new Cartesian2(clientX - rect.left, clientY - rect.top)
-      const cart = viewer.scene.camera.pickEllipsoid(pos, ellipsoid)
-      if (!cart) {
-        setHovered(null)
-        return
-      }
-      const carto = Cartographic.fromCartesian(cart, ellipsoid)
-      const lon = CesiumMath.toDegrees(carto.longitude)
-      const lat = CesiumMath.toDegrees(carto.latitude)
-      setHovered(lookupCountryName(lat, lon))
+    // Drop a sprite at the given lat/lon. Pins live on gameMarkers and are
+    // wiped between games via `gameMarkers.entities.removeAll()`.
+    const dropMarker = (lat: number, lon: number, image: string) => {
+      gameMarkers.entities.add({
+        position: Cartesian3.fromDegrees(lon, lat),
+        billboard: {
+          image,
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+        },
+      })
     }
 
-    const clearHover = () => setHovered(null)
+    // Cinematic camera fly to a country's centroid for the reveal animation.
+    // While true, drag/zoom/click are gated off so the animation finishes
+    // cleanly without conflicting with user input.
+    let cinematic = false
+    let revealRaf: number | null = null
+    let revealHoldTimeout: number | null = null
+
+    const flyToCountry = (name: string, onDone: (e: CountryEntry) => void) => {
+      const entry = countryEntries?.find((c) => c.name === name)
+      if (!entry) {
+        onDone({
+          name,
+          bbox: [0, 0, 0, 0],
+          centroid: { lat: 0, lon: 0 },
+          polygons: [],
+          area: 0,
+        })
+        return
+      }
+
+      stopMomentum()
+      if (revealRaf !== null) cancelAnimationFrame(revealRaf)
+      cinematic = true
+
+      // From the HPR offset derivation: subpoint_lon = -heading - π/2,
+      // subpoint_lat = -pitch. Inverting gives the camera angles needed to
+      // place a (lat, lon) at the centre of the screen.
+      const targetHeading = CesiumMath.zeroToTwoPi(
+        -CesiumMath.toRadians(entry.centroid.lon) - Math.PI / 2,
+      )
+      const targetPitch = clamp(
+        -CesiumMath.toRadians(entry.centroid.lat),
+        PITCH_MIN,
+        PITCH_MAX,
+      )
+
+      const startHeading = heading
+      const startPitch = pitch
+      let dh = targetHeading - startHeading
+      if (dh > Math.PI) dh -= 2 * Math.PI
+      else if (dh < -Math.PI) dh += 2 * Math.PI
+      const dp = targetPitch - startPitch
+
+      const startTime = performance.now()
+      const step = (now: number) => {
+        const t = Math.min((now - startTime) / REVEAL_MS, 1)
+        const eased =
+          t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+        heading = CesiumMath.zeroToTwoPi(startHeading + dh * eased)
+        pitch = clamp(startPitch + dp * eased, PITCH_MIN, PITCH_MAX)
+        updateCamera()
+        if (t < 1) {
+          revealRaf = requestAnimationFrame(step)
+        } else {
+          revealRaf = null
+          cinematic = false
+          onDone(entry)
+        }
+      }
+      revealRaf = requestAnimationFrame(step)
+    }
 
     // Reusable buffers — cartesianToCanvasCoordinates writes into its result
     // arg, so the three projections in one Newton step need separate buffers.
@@ -524,11 +599,30 @@ export function WorldViewer() {
       const lat = CesiumMath.toDegrees(carto.latitude)
       const lon = CesiumMath.toDegrees(carto.longitude)
       console.log(`lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`)
-      useGameStore.getState().setCountry(lookupCountryName(lat, lon))
+      const name = lookupCountryName(lat, lon)
+      // Drop a guess pin at the click location during play. Snapshot target
+      // BEFORE handleGlobeClick — that call may advance to a new target,
+      // which would corrupt the right/wrong determination.
+      const state = useGameStore.getState()
+      if (state.phase === 'playing' && name !== null && state.revealTarget === null) {
+        const correct = state.target === name
+        dropMarker(lat, lon, correct ? correctPinImg : wrongPinImg)
+      }
+      useGameStore.getState().handleGlobeClick(name)
     }
 
     const onPointerDown = (e: PointerEvent) => {
+      if (cinematic) return
       stopMomentum()
+
+      // First contact must hit the globe — clicks on empty space beyond the
+      // limb don't start a gesture at all (no drag, no tap).
+      let firstAnchor: Cartesian3 | null = null
+      if (pointers.size === 0) {
+        firstAnchor = pickAnchor(e.clientX, e.clientY)
+        if (!firstAnchor) return
+      }
+
       pointers.set(e.pointerId, {
         x: e.clientX,
         y: e.clientY,
@@ -542,7 +636,7 @@ export function WorldViewer() {
         // already captured / not capturable
       }
       if (pointers.size === 1) {
-        dragAnchor = pickAnchor(e.clientX, e.clientY)
+        dragAnchor = firstAnchor
       } else if (pointers.size === 2) {
         pinchDistance = computePinchDistance()
         dragAnchor = null
@@ -551,8 +645,7 @@ export function WorldViewer() {
     }
 
     const onPointerMove = (e: PointerEvent) => {
-      // Hover only makes sense when the user isn't dragging the globe.
-      if (pointers.size === 0) updateHover(e.clientX, e.clientY)
+      if (cinematic) return
 
       const p = pointers.get(e.pointerId)
       if (!p) return
@@ -663,6 +756,7 @@ export function WorldViewer() {
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
+      if (cinematic) return
       stopMomentum()
       const factor = Math.exp(e.deltaY * WHEEL_ZOOM_RATE)
       range = clamp(range * factor, MIN_RANGE, MAX_RANGE)
@@ -670,15 +764,56 @@ export function WorldViewer() {
       refreshAnchorIfActive(e.clientX, e.clientY)
     }
 
-    const onPointerLeave = () => {
-      if (pointers.size === 0) clearHover()
-    }
+    // Drive markers + reveal animation off store changes.
+    let prevPhase = useGameStore.getState().phase
+    let prevReveal = useGameStore.getState().revealTarget
+    let prevEnding = useGameStore.getState().endingTarget
+    let endingHoldTimeout: number | null = null
+    const unsub = useGameStore.subscribe((state) => {
+      // Wipe pins/X markers whenever a new game begins. The 'finished' phase
+      // intentionally retains them so the final guess stays visible.
+      if (state.phase === 'playing' && prevPhase !== 'playing') {
+        gameMarkers.entities.removeAll()
+      }
+      prevPhase = state.phase
+
+      if (state.revealTarget && state.revealTarget !== prevReveal) {
+        const name = state.revealTarget
+        flyToCountry(name, (entry) => {
+          if (entry.polygons.length > 0) {
+            dropMarker(entry.centroid.lat, entry.centroid.lon, revealXImg)
+          }
+          // Hold the missed-target label on screen for 500 ms after the pan
+          // finishes; the new target only takes over once this clears.
+          if (revealHoldTimeout !== null) clearTimeout(revealHoldTimeout)
+          revealHoldTimeout = window.setTimeout(() => {
+            revealHoldTimeout = null
+            useGameStore.getState().clearReveal()
+          }, 500)
+        })
+      }
+      prevReveal = state.revealTarget
+
+      // Final correct guess: pan to the country, hold 2 s on it, then
+      // transition the store into 'finished'. The pin from the click is
+      // already on the globe and stays put.
+      if (state.endingTarget && state.endingTarget !== prevEnding) {
+        const name = state.endingTarget
+        flyToCountry(name, () => {
+          if (endingHoldTimeout !== null) clearTimeout(endingHoldTimeout)
+          endingHoldTimeout = window.setTimeout(() => {
+            endingHoldTimeout = null
+            useGameStore.getState().finishGame()
+          }, 2000)
+        })
+      }
+      prevEnding = state.endingTarget
+    })
 
     canvas.addEventListener('pointerdown', onPointerDown)
     canvas.addEventListener('pointermove', onPointerMove)
     canvas.addEventListener('pointerup', endDrag)
     canvas.addEventListener('pointercancel', endDrag)
-    canvas.addEventListener('pointerleave', onPointerLeave)
     canvas.addEventListener('wheel', onWheel, { passive: false })
 
     return () => {
@@ -686,9 +821,12 @@ export function WorldViewer() {
       canvas.removeEventListener('pointermove', onPointerMove)
       canvas.removeEventListener('pointerup', endDrag)
       canvas.removeEventListener('pointercancel', endDrag)
-      canvas.removeEventListener('pointerleave', onPointerLeave)
       canvas.removeEventListener('wheel', onWheel)
       stopMomentum()
+      if (revealRaf !== null) cancelAnimationFrame(revealRaf)
+      if (revealHoldTimeout !== null) clearTimeout(revealHoldTimeout)
+      if (endingHoldTimeout !== null) clearTimeout(endingHoldTimeout)
+      unsub()
       destroyed = true
       viewer.destroy()
     }
