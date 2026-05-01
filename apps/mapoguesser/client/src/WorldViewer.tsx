@@ -9,8 +9,10 @@ import {
   GeoJsonDataSource,
   HeadingPitchRange,
   HeightReference,
+  HorizontalOrigin,
   ImageryLayer,
   Ion,
+  LabelStyle,
   Math as CesiumMath,
   Matrix4,
   PinBuilder,
@@ -206,6 +208,7 @@ export function WorldViewer() {
       timeline: false,
       scene3DOnly: true,
       shouldAnimate: false,
+      msaaSamples: 4,
     })
 
     let destroyed = false
@@ -222,13 +225,13 @@ export function WorldViewer() {
     // Pin sprites — generated once on the canvas, reused for every marker.
     const pinBuilder = new PinBuilder()
     const wrongPinImg = pinBuilder
-      .fromText('✗', Color.fromCssColorString('#9aa0a6'), 44)
+      .fromText('✗', Color.fromCssColorString('#9aa0a6'), 48)
       .toDataURL()
     const correctPinImg = pinBuilder
-      .fromText('✓', Color.fromCssColorString('#3fb84e'), 44)
+      .fromText('✓', Color.fromCssColorString('#3fb84e'), 48)
       .toDataURL()
     const revealXImg = pinBuilder
-      .fromText('✗', Color.fromCssColorString('#e64545'), 44)
+      .fromText('✗', Color.fromCssColorString('#e64545'), 48)
       .toDataURL()
 
     // Country PIP/centroid index built from the raw GeoJSON. We don't render
@@ -292,20 +295,20 @@ export function WorldViewer() {
     // Country border lines: white core wrapped in a dark halo so the lines
     // stay readable over bright basemap features (deserts, ice, sun glare).
     const borderMat = new PolylineOutlineMaterialProperty({
-      color: Color.NAVY.withAlpha(0.95),
-      outlineColor: Color.WHITE.withAlpha(0.7),
-      outlineWidth: 1.0,
+      color: Color.NAVY.withAlpha(0.55),
+      outlineColor: Color.WHITE.withAlpha(0.9),
+      outlineWidth: 1.5,
     })
     GeoJsonDataSource.load(COUNTRY_BORDERS_URL, {
       stroke: Color.NAVY,
-      strokeWidth: 1,
+      strokeWidth: 5.0,
     })
       .then((ds) => {
         if (destroyed || viewer.isDestroyed()) return
         for (const entity of ds.entities.values) {
           if (entity.polyline) {
             entity.polyline.material = borderMat
-            entity.polyline.width = new ConstantProperty(1.5)
+            entity.polyline.width = new ConstantProperty(5.0)
           }
         }
         viewer.dataSources.add(ds)
@@ -436,7 +439,12 @@ export function WorldViewer() {
 
     // Drop a sprite at the given lat/lon. Pins live on gameMarkers and are
     // wiped between games via `gameMarkers.entities.removeAll()`.
-    const dropMarker = (lat: number, lon: number, image: string) => {
+    const dropMarker = (
+      lat: number,
+      lon: number,
+      image: string,
+      label?: string | null,
+    ) => {
       gameMarkers.entities.add({
         position: Cartesian3.fromDegrees(lon, lat),
         billboard: {
@@ -444,6 +452,20 @@ export function WorldViewer() {
           verticalOrigin: VerticalOrigin.BOTTOM,
           heightReference: HeightReference.CLAMP_TO_GROUND,
         },
+        label: label
+          ? {
+              text: label,
+              font: '16px sans-serif',
+              fillColor: Color.WHITE,
+              outlineColor: Color.BLACK,
+              outlineWidth: 3,
+              style: LabelStyle.FILL_AND_OUTLINE,
+              verticalOrigin: VerticalOrigin.BOTTOM,
+              horizontalOrigin: HorizontalOrigin.LEFT,
+              pixelOffset: new Cartesian2(8, -4),
+              heightReference: HeightReference.CLAMP_TO_GROUND,
+            }
+          : undefined,
       })
     }
 
@@ -521,7 +543,11 @@ export function WorldViewer() {
     // converged to within ~1px, false if the Jacobian was degenerate or the
     // anchor projects behind the camera.
     const NEWTON_EPS = 1e-3
-    const NEWTON_MAX_STEP = 0.5
+    const NEWTON_MAX_STEP = 0.1
+    // Jacobian determinant magnitude below this means the anchor sits near
+    // the limb where small heading/pitch nudges barely move its projection.
+    // Solving there explodes — bail to the proportional fallback instead.
+    const NEWTON_MIN_DET = 1e-3
     const solveAnchor = (anchor: Cartesian3, target: Cartesian2): boolean => {
       for (let iter = 0; iter < 2; iter++) {
         applyCamera()
@@ -558,7 +584,7 @@ export function WorldViewer() {
         const dyP = (pp.y - cur.y) / NEWTON_EPS
 
         const det = dxH * dyP - dxP * dyH
-        if (Math.abs(det) < 1e-6) {
+        if (Math.abs(det) < NEWTON_MIN_DET) {
           applyCamera()
           return false
         }
@@ -577,8 +603,20 @@ export function WorldViewer() {
         heading = CesiumMath.zeroToTwoPi(hSave + dh)
         pitch = clamp(pSave + dp, PITCH_MIN, PITCH_MAX)
       }
+      // Convergence check after the iteration cap — if Newton bounced around
+      // without landing close to target (off-limb cursor, ill-conditioned
+      // Jacobian), report failure so the caller falls back to proportional
+      // drag instead of accepting the half-converged camera state.
       applyCamera()
-      return true
+      const finalProj = viewer.scene.cartesianToCanvasCoordinates(
+        anchor,
+        _projCur,
+      )
+      if (!finalProj) return false
+      return (
+        Math.abs(finalProj.x - target.x) < 4 &&
+        Math.abs(finalProj.y - target.y) < 4
+      )
     }
 
     // Shortest signed angular delta in (-π, π], for unwrapping heading
@@ -606,7 +644,7 @@ export function WorldViewer() {
       const state = useGameStore.getState()
       if (state.phase === 'playing' && name !== null && state.revealTarget === null) {
         const correct = state.target === name
-        dropMarker(lat, lon, correct ? correctPinImg : wrongPinImg)
+        dropMarker(lat, lon, correct ? correctPinImg : wrongPinImg, name)
       }
       useGameStore.getState().handleGlobeClick(name)
     }
@@ -675,7 +713,16 @@ export function WorldViewer() {
             e.clientX - rect.left,
             e.clientY - rect.top,
           )
-          anchored = solveAnchor(dragAnchor, target)
+          // If the cursor is off the globe (out past the limb, in space),
+          // there's no on-ellipsoid solution — Newton diverges and snaps the
+          // camera. Fall back to proportional drag in that region.
+          const targetOnGlobe = viewer.scene.camera.pickEllipsoid(
+            target,
+            ellipsoid,
+          )
+          if (targetOnGlobe) {
+            anchored = solveAnchor(dragAnchor, target)
+          }
         }
 
         if (!anchored) {
@@ -781,7 +828,7 @@ export function WorldViewer() {
         const name = state.revealTarget
         flyToCountry(name, (entry) => {
           if (entry.polygons.length > 0) {
-            dropMarker(entry.centroid.lat, entry.centroid.lon, revealXImg)
+            dropMarker(entry.centroid.lat, entry.centroid.lon, revealXImg, name)
           }
           // Hold the missed-target label on screen for 500 ms after the pan
           // finishes; the new target only takes over once this clears.
