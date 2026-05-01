@@ -1,0 +1,7 @@
+export { InputManager } from './input/input-manager'
+export { KeyboardInput } from './input/keyboard'
+export { MouseInput } from './input/mouse'
+export { TouchInput } from './input/touch'
+export { GamepadInput } from './input/gamepad'
+export type { GameActions, InputSource } from './input/actions'
+export { createDefaultActions } from './input/actions'

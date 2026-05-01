@@ -55,15 +55,27 @@ jobs:
           GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/mapoguesser/
         run: npm run build
 
+      - name: Install sky-strike
+        working-directory: apps/sky-strike
+        run: npm ci
+
+      - name: Build sky-strike
+        working-directory: apps/sky-strike
+        env:
+          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/sky-strike/
+        run: npm run build
+
       - name: Stage site
         run: |
-          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser
+          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser _site/sky-strike
           cp -r apps/auto-battles/client/dist/. _site/auto-battles/
           cp apps/auto-battles/client/dist/index.html _site/auto-battles/404.html
           cp -r apps/coin-flip/client/dist/. _site/coin-flip/
           cp apps/coin-flip/client/dist/index.html _site/coin-flip/404.html
           cp -r apps/mapoguesser/client/dist/. _site/mapoguesser/
           cp apps/mapoguesser/client/dist/index.html _site/mapoguesser/404.html
+          cp -r apps/sky-strike/client/dist/. _site/sky-strike/
+          cp apps/sky-strike/client/dist/index.html _site/sky-strike/404.html
           cat > _site/index.html <<'HTML'
           <!DOCTYPE html>
           <meta charset="utf-8">
@@ -83,6 +95,7 @@ jobs:
               <li><a href="./auto-battles/">auto-battles</a></li>
               <li><a href="./coin-flip/">coin-flip</a></li>
               <li><a href="./mapoguesser/">mapoguesser</a></li>
+              <li><a href="./sky-strike/">sky-strike</a></li>
             </ul>
           </div>
           HTML
