@@ -2,9 +2,62 @@ import { create } from 'zustand'
 
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
+// Sprite kind drawn at the marker location: green pin for a correct guess,
+// grey pin for the wrong country the player clicked, red X for the centroid
+// reveal of a missed target.
+export type MarkerKind = 'correct' | 'wrong' | 'reveal'
+export interface Marker {
+  lat: number
+  lon: number
+  kind: MarkerKind
+  label: string
+}
 
 export const ROUNDS = 9
 export const WRONG_GUESSES_BEFORE_REVEAL = 2
+
+// Single-slot save: a returning player can resume one in-progress match.
+// Starting a different seed overwrites it.
+const SAVE_KEY = 'mapoguesser:save'
+
+interface SavedMatch {
+  seed: string
+  attempts: AttemptResult[]
+  consecutiveWrong: number
+  markers: Marker[]
+}
+
+const isSavedMatch = (v: unknown): v is SavedMatch => {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.seed === 'string' &&
+    Array.isArray(o.attempts) &&
+    typeof o.consecutiveWrong === 'number' &&
+    Array.isArray(o.markers)
+  )
+}
+
+const loadSave = (): SavedMatch | null => {
+  if (typeof localStorage === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(SAVE_KEY)
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    return isSavedMatch(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+const writeSave = (data: SavedMatch): void => {
+  if (typeof localStorage === 'undefined') return
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data))
+  } catch {
+    // quota exceeded / private browsing — silent skip
+  }
+}
 
 interface GameState {
   heading: number
@@ -21,8 +74,16 @@ interface GameState {
 
   // Game flow.
   phase: GamePhase
+  // Match seed (base36, 6 chars). Drives the deterministic target draw and is
+  // mirrored to the URL so a link reproduces the same match.
+  seed: string | null
+  // The full draw of ROUNDS unique countries for this match, in order.
+  targets: string[]
   target: string | null
   attempts: AttemptResult[]
+  // Markers placed on the globe. Owned by the store (rather than the viewer's
+  // Cesium data source) so we can persist them and replay them on resume.
+  markers: Marker[]
   // Wrong guesses on the *current* target. Resets on correct guess or reveal.
   consecutiveWrong: number
   // When non-null, the WorldViewer is expected to fly the camera to this
@@ -33,23 +94,80 @@ interface GameState {
   // the 'finished' phase. Keeps the score-screen handoff cinematic.
   endingTarget: string | null
 
-  startGame: () => void
+  startGame: (seed?: string) => void
   resetGame: () => void
   clearReveal: () => void
   finishGame: () => void
   // Routes a globe click through the game logic when in 'playing' phase.
   handleGlobeClick: (clicked: string | null) => void
+  // Records a marker drop. The viewer also handles the Cesium-side render via
+  // a subscription to `markers`.
+  addMarker: (marker: Marker) => void
 }
 
-const pickTarget = (pool: string[], exclude: string | null): string | null => {
-  if (pool.length === 0) return null
-  const choices = exclude ? pool.filter((c) => c !== exclude) : pool
-  const list = choices.length > 0 ? choices : pool
-  return list[Math.floor(Math.random() * list.length)] ?? null
+// FNV-1a 32-bit hash; folds an arbitrary seed string down to a u32 to seed
+// mulberry32. Avalanches well enough that visually-similar seeds give very
+// different draws.
+const hashSeed = (s: string): number => {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
 }
+
+// Mulberry32 — small, fast, deterministic PRNG. Good enough for a 9-country
+// shuffle and reproducible across browsers.
+const mulberry32 = (a: number): (() => number) => {
+  let s = a >>> 0
+  return () => {
+    s = (s + 0x6d2b79f5) | 0
+    let t = s
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+// Partial Fisher-Yates: shuffles only the first n positions, costing O(n)
+// rather than O(pool.length). The pool is large (~200 countries) so the saving
+// matters.
+const drawUniqueTargets = (
+  pool: string[],
+  seed: string,
+  n: number,
+): string[] => {
+  const arr = pool.slice()
+  const limit = Math.min(n, arr.length)
+  const rng = mulberry32(hashSeed(seed))
+  for (let i = 0; i < limit; i++) {
+    const j = i + Math.floor(rng() * (arr.length - i))
+    const tmp = arr[i]
+    arr[i] = arr[j]
+    arr[j] = tmp
+  }
+  return arr.slice(0, limit)
+}
+
+// 6 char base36 → 36⁶ ≈ 2.2 billion possible seeds. Plenty for sharing.
+export const generateSeed = (): string =>
+  Math.floor(Math.random() * 36 ** 6)
+    .toString(36)
+    .padStart(6, '0')
 
 const emptyAttempts = (): AttemptResult[] =>
   Array.from({ length: ROUNDS }, () => 'pending')
+
+// Index into the precomputed targets list based on how many attempts have
+// resolved. Returns null past the end (final round has no follow-up).
+const targetAfter = (
+  targets: string[],
+  attempts: AttemptResult[],
+): string | null => {
+  const resolved = attempts.filter((a) => a !== 'pending').length
+  return targets[resolved] ?? null
+}
 
 export const useGameStore = create<GameState>((set, get) => ({
   heading: 0,
@@ -62,21 +180,44 @@ export const useGameStore = create<GameState>((set, get) => ({
   setCountry: (country) => set({ country }),
 
   phase: 'idle',
+  seed: null,
+  targets: [],
   target: null,
   attempts: [],
+  markers: [],
   consecutiveWrong: 0,
   revealTarget: null,
   endingTarget: null,
 
-  startGame: () => {
+  startGame: (seed) => {
     const pool = get().countries
     if (pool.length === 0) return
+    const matchSeed = seed ?? generateSeed()
+    const targets = drawUniqueTargets(pool, matchSeed, ROUNDS)
+    if (targets.length === 0) return
+
+    // Resume only if the requested seed matches the saved match. A different
+    // seed (Play Again, or a friend's URL) starts fresh — the persistence
+    // subscriber will overwrite the save below.
+    const saved = loadSave()
+    const restore =
+      saved && saved.seed === matchSeed && saved.attempts.length === ROUNDS
+        ? saved
+        : null
+    const attempts = restore?.attempts ?? emptyAttempts()
+    const markers = restore?.markers ?? []
+    const consecutiveWrong = restore?.consecutiveWrong ?? 0
+    const finished = attempts.every((a) => a !== 'pending')
+
     set({
-      phase: 'playing',
-      target: pickTarget(pool, null),
-      attempts: emptyAttempts(),
+      phase: finished ? 'finished' : 'playing',
+      seed: matchSeed,
+      targets,
+      target: finished ? null : targetAfter(targets, attempts),
+      attempts,
+      markers,
       country: null,
-      consecutiveWrong: 0,
+      consecutiveWrong,
       revealTarget: null,
       endingTarget: null,
     })
@@ -85,15 +226,24 @@ export const useGameStore = create<GameState>((set, get) => ({
   resetGame: () =>
     set({
       phase: 'idle',
+      seed: null,
+      targets: [],
       target: null,
       attempts: [],
+      markers: [],
       country: null,
       consecutiveWrong: 0,
       revealTarget: null,
       endingTarget: null,
     }),
 
-  clearReveal: () => set({ revealTarget: null }),
+  clearReveal: () =>
+    set((state) => ({
+      revealTarget: null,
+      phase: state.attempts.every((a) => a !== 'pending')
+        ? 'finished'
+        : state.phase,
+    })),
 
   finishGame: () => set({ phase: 'finished', endingTarget: null }),
 
@@ -125,21 +275,23 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({
         attempts: next,
         consecutiveWrong: 0,
-        target: finished ? null : pickTarget(s.countries, s.target),
+        target: finished ? null : targetAfter(s.targets, next),
         endingTarget: finished ? clicked : null,
       })
       return
     }
 
     const newWrong = s.consecutiveWrong + 1
-    if (newWrong >= WRONG_GUESSES_BEFORE_REVEAL) {
-      // Trigger camera reveal; viewer drops an X at the target's centroid.
+    // Always reveal on the final round so the player sees where they missed,
+    // not just the score screen. Phase stays 'playing' through the reveal hold;
+    // clearReveal flips to 'finished' once attempts are full.
+    if (newWrong >= WRONG_GUESSES_BEFORE_REVEAL || finished) {
       set({
         attempts: next,
         consecutiveWrong: 0,
         revealTarget: s.target,
-        target: finished ? null : pickTarget(s.countries, s.target),
-        phase: finished ? 'finished' : 'playing',
+        target: finished ? null : targetAfter(s.targets, next),
+        phase: 'playing',
       })
       return
     }
@@ -147,8 +299,30 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       attempts: next,
       consecutiveWrong: newWrong,
-      target: finished ? null : s.target,
-      phase: finished ? 'finished' : 'playing',
+      target: s.target,
     })
   },
+
+  addMarker: (marker) =>
+    set((state) => ({ markers: [...state.markers, marker] })),
 }))
+
+// Persist the in-progress match to localStorage on every relevant change.
+// Only a single match is stored — starting a different seed overwrites it,
+// satisfying the "clear data when a new seed is started" requirement.
+useGameStore.subscribe((state, prev) => {
+  if (!state.seed) return
+  if (
+    state.seed === prev.seed &&
+    state.attempts === prev.attempts &&
+    state.markers === prev.markers &&
+    state.consecutiveWrong === prev.consecutiveWrong
+  )
+    return
+  writeSave({
+    seed: state.seed,
+    attempts: state.attempts,
+    consecutiveWrong: state.consecutiveWrong,
+    markers: state.markers,
+  })
+})

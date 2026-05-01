@@ -22,7 +22,7 @@ import {
   Viewer,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
-import { useGameStore } from './store'
+import { useGameStore, type Marker } from './store'
 
 // Cesium would otherwise reach Cesium ion for default assets; blank the token
 // so the only network calls are to our chosen tile provider.
@@ -31,7 +31,7 @@ Ion.defaultAccessToken = ''
 // Camera distance from Earth's centre (metres). Earth's radius is ~6.4 Mm.
 const INITIAL_RANGE = 25_000_000
 const MIN_RANGE = 7_000_000
-const MAX_RANGE = 60_000_000
+const MAX_RANGE = 24_000_000
 
 // Streamed imagery LOD cap. z12 is ~9 km/pixel at the equator — plenty of
 // detail for a globe view without ballooning tile fetches.
@@ -437,24 +437,25 @@ export function WorldViewer() {
       return null
     }
 
-    // Drop a sprite at the given lat/lon. Pins live on gameMarkers and are
-    // wiped between games via `gameMarkers.entities.removeAll()`.
-    const dropMarker = (
-      lat: number,
-      lon: number,
-      image: string,
-      label?: string | null,
-    ) => {
+    // Render a marker entity for one store record. The store owns the marker
+    // list (so it persists); this function is the Cesium-side projection.
+    const imageFor = (kind: Marker['kind']): string =>
+      kind === 'correct'
+        ? correctPinImg
+        : kind === 'reveal'
+          ? revealXImg
+          : wrongPinImg
+    const renderMarker = (m: Marker) => {
       gameMarkers.entities.add({
-        position: Cartesian3.fromDegrees(lon, lat),
+        position: Cartesian3.fromDegrees(m.lon, m.lat),
         billboard: {
-          image,
+          image: imageFor(m.kind),
           verticalOrigin: VerticalOrigin.BOTTOM,
           heightReference: HeightReference.CLAMP_TO_GROUND,
         },
-        label: label
+        label: m.label
           ? {
-              text: label,
+              text: m.label,
               font: '16px sans-serif',
               fillColor: Color.WHITE,
               outlineColor: Color.BLACK,
@@ -644,7 +645,12 @@ export function WorldViewer() {
       const state = useGameStore.getState()
       if (state.phase === 'playing' && name !== null && state.revealTarget === null) {
         const correct = state.target === name
-        dropMarker(lat, lon, correct ? correctPinImg : wrongPinImg, name)
+        state.addMarker({
+          lat,
+          lon,
+          kind: correct ? 'correct' : 'wrong',
+          label: name,
+        })
       }
       useGameStore.getState().handleGlobeClick(name)
     }
@@ -812,31 +818,53 @@ export function WorldViewer() {
     }
 
     // Drive markers + reveal animation off store changes.
-    let prevPhase = useGameStore.getState().phase
     let prevReveal = useGameStore.getState().revealTarget
     let prevEnding = useGameStore.getState().endingTarget
+    let prevMarkers = useGameStore.getState().markers
     let endingHoldTimeout: number | null = null
+
+    // Replay any markers already in the store at mount time. This is the
+    // resume path: a returning player with a saved match already has markers
+    // before the viewer subscribes.
+    let renderedMarkerCount = 0
+    for (const m of prevMarkers) renderMarker(m)
+    renderedMarkerCount = prevMarkers.length
+
     const unsub = useGameStore.subscribe((state) => {
-      // Wipe pins/X markers whenever a new game begins. The 'finished' phase
-      // intentionally retains them so the final guess stays visible.
-      if (state.phase === 'playing' && prevPhase !== 'playing') {
-        gameMarkers.entities.removeAll()
+      // Reconcile the Cesium data source against `markers`. A shorter array
+      // (or replaced reference with fewer items) means a new match started —
+      // wipe and re-render. Otherwise render any newly appended markers.
+      if (state.markers !== prevMarkers) {
+        if (state.markers.length < renderedMarkerCount) {
+          gameMarkers.entities.removeAll()
+          renderedMarkerCount = 0
+        }
+        while (renderedMarkerCount < state.markers.length) {
+          renderMarker(state.markers[renderedMarkerCount])
+          renderedMarkerCount++
+        }
+        prevMarkers = state.markers
       }
-      prevPhase = state.phase
 
       if (state.revealTarget && state.revealTarget !== prevReveal) {
         const name = state.revealTarget
         flyToCountry(name, (entry) => {
           if (entry.polygons.length > 0) {
-            dropMarker(entry.centroid.lat, entry.centroid.lon, revealXImg, name)
+            useGameStore.getState().addMarker({
+              lat: entry.centroid.lat,
+              lon: entry.centroid.lon,
+              kind: 'reveal',
+              label: name,
+            })
           }
-          // Hold the missed-target label on screen for 500 ms after the pan
-          // finishes; the new target only takes over once this clears.
+          // Hold the missed-target label on screen for 2.5 s after the pan
+          // finishes so the player has time to register where it was; the
+          // new target (or finished phase) only takes over once this clears.
           if (revealHoldTimeout !== null) clearTimeout(revealHoldTimeout)
           revealHoldTimeout = window.setTimeout(() => {
             revealHoldTimeout = null
             useGameStore.getState().clearReveal()
-          }, 500)
+          }, 2500)
         })
       }
       prevReveal = state.revealTarget
