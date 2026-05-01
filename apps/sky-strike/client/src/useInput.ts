@@ -26,7 +26,10 @@ export function useInput() {
     const sideOf = (x: number) => (x < window.innerWidth / 2 ? 'left' : 'right')
 
     const onTouchStart = (e: TouchEvent) => {
-      e.preventDefault()
+      const target = e.target as HTMLElement | null
+      if (target && target.closest('button, a, input, [data-no-touch-capture]')) {
+        return
+      }
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i]
         touches.set(t.identifier, sideOf(t.clientX))
@@ -81,7 +84,7 @@ export function useInput() {
       if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') state.right = false
     }
 
-    window.addEventListener('touchstart', onTouchStart, { passive: false })
+    window.addEventListener('touchstart', onTouchStart, { passive: true })
     window.addEventListener('touchmove', onTouchMove, { passive: true })
     window.addEventListener('touchend', onTouchEnd, { passive: true })
     window.addEventListener('touchcancel', onTouchEnd, { passive: true })

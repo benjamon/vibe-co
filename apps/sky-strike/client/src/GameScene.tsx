@@ -40,6 +40,7 @@ interface Enemy {
   baseX: number
   swayAmplitude: number
   swayFrequency: number
+  rotation: number
 }
 
 let nextId = 1
@@ -80,6 +81,7 @@ function makeEnemy(elapsed: number): Enemy {
     baseX: x,
     swayAmplitude: 0,
     swayFrequency: 0,
+    rotation: 0,
   }
   if (type === 'basic') {
     base.vy = -3 - Math.random() * 1.2
@@ -89,7 +91,7 @@ function makeEnemy(elapsed: number): Enemy {
   } else {
     base.vy = -2.2
     base.swayAmplitude = 2 + Math.random() * 1.5
-    base.swayFrequency = 1 + Math.random() * 0.8
+    base.swayFrequency = (1 + Math.random() * 0.8) * 0.25
   }
   return base
 }
@@ -147,10 +149,16 @@ function EnemyMesh({ enemy }: { enemy: Enemy }) {
         </>
       )}
       {enemy.type === 'zigzag' && (
-        <mesh>
-          <octahedronGeometry args={[0.55, 0]} />
-          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.6} />
-        </mesh>
+        <group rotation={[0, 0, enemy.rotation]}>
+          <mesh>
+            <octahedronGeometry args={[0.55, 0]} />
+            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.6} />
+          </mesh>
+          <mesh position={[0, -0.7, 0.05]}>
+            <circleGeometry args={[0.18, 16]} />
+            <meshBasicMaterial color="#ffffff" />
+          </mesh>
+        </group>
       )}
     </group>
   )
@@ -264,7 +272,10 @@ export function GameScene() {
       e.age += dt
       e.y += e.vy * dt
       if (e.type === 'zigzag') {
-        e.x = e.baseX + Math.sin(e.age * e.swayFrequency * Math.PI) * e.swayAmplitude
+        const w = e.swayFrequency * Math.PI
+        e.x = e.baseX + Math.sin(e.age * w) * e.swayAmplitude
+        const vx = Math.cos(e.age * w) * e.swayAmplitude * w
+        e.rotation = Math.atan2(vx, -e.vy)
       }
       if (e.type === 'shooter') {
         e.fireTimer -= dt
