@@ -3,13 +3,18 @@ import { GameScene } from './GameScene'
 import { HUD } from './HUD'
 import { useGameStore } from './store'
 import { useEffect } from 'react'
+import { unlockAudio } from './audio'
 
 export function App() {
   const started = useGameStore((s) => s.started)
   const gameOver = useGameStore((s) => s.gameOver)
   const score = useGameStore((s) => s.score)
   const highScore = useGameStore((s) => s.highScore)
-  const start = useGameStore((s) => s.start)
+  const startRaw = useGameStore((s) => s.start)
+  const start = () => {
+    unlockAudio()
+    startRaw()
+  }
 
   useEffect(() => {
     ;(window as any).__gameState = useGameStore.getState()

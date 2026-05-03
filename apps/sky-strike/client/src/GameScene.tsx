@@ -1,8 +1,22 @@
-import { useFrame } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef, useState } from 'react'
 import { Group } from 'three'
 import { useGameStore } from './store'
 import { useInput, type InputState } from './useInput'
+import { playDamage, playHit, playKill, playShoot, playSpawn } from './audio'
+import {
+  addExplosion,
+  addHitSparks,
+  addMuzzleFlash,
+  addPlayerHit,
+  addShake,
+  addSpawnRing,
+  clearEffects,
+  getParticles,
+  getShake,
+  updateEffects,
+  type Particle,
+} from './effects'
 
 const FIELD_HALF_WIDTH = 7
 const FIELD_TOP = 10
@@ -165,6 +179,35 @@ function BulletMesh({ bullet }: { bullet: Bullet }) {
   )
 }
 
+function ParticleMesh({ p }: { p: Particle }) {
+  const t = Math.max(0, p.life / p.maxLife)
+  if (p.shape === 'ring') {
+    const r = (1 - t) * 1.6 + 0.2
+    return (
+      <mesh position={[p.x, p.y, 0.1]}>
+        <ringGeometry args={[r, r + 0.08, 24]} />
+        <meshBasicMaterial color={p.color} transparent opacity={t} />
+      </mesh>
+    )
+  }
+  if (p.shape === 'puff') {
+    const s = p.size * (1 + (1 - t) * 0.8)
+    return (
+      <mesh position={[p.x, p.y, 0.05]}>
+        <sphereGeometry args={[s, 8, 8]} />
+        <meshBasicMaterial color={p.color} transparent opacity={t * 0.7} />
+      </mesh>
+    )
+  }
+  const s = p.size * (0.4 + 0.6 * t)
+  return (
+    <mesh position={[p.x, p.y, 0.05]}>
+      <sphereGeometry args={[s, 6, 6]} />
+      <meshBasicMaterial color={p.color} transparent opacity={Math.min(1, t * 1.4)} />
+    </mesh>
+  )
+}
+
 function StarField() {
   const stars = useRef<{ x: number; y: number; size: number }[]>([])
   if (stars.current.length === 0) {
@@ -204,6 +247,7 @@ export function GameScene() {
   const addScore = useGameStore((s) => s.addScore)
   const loseLife = useGameStore((s) => s.loseLife)
 
+  const { camera } = useThree()
   const inputRef = useInput()
   const playerXRef = useRef(0)
   const fireTimerRef = useRef(0)
@@ -224,11 +268,18 @@ export function GameScene() {
       invulnRef.current = 1.2
       enemiesRef.current = []
       bulletsRef.current = []
+      clearEffects()
     }
   }, [started])
 
   useFrame((_, dtRaw) => {
-    if (!started) return
+    if (!started) {
+      updateEffects(Math.min(dtRaw, 0.05))
+      camera.position.x = 0
+      camera.position.y = 0
+      forceRender((n) => (n + 1) % 1024)
+      return
+    }
     const dt = Math.min(dtRaw, 0.05)
     elapsedRef.current += dt
     if (invulnRef.current > 0) invulnRef.current -= dt
@@ -242,19 +293,26 @@ export function GameScene() {
     fireTimerRef.current -= dt
     if (fireTimerRef.current <= 0) {
       fireTimerRef.current = PLAYER_FIRE_INTERVAL
+      const bx = playerXRef.current
+      const by = PLAYER_Y + 0.7
       bulletsRef.current.push({
         id: newId(),
-        x: playerXRef.current,
-        y: PLAYER_Y + 0.7,
+        x: bx,
+        y: by,
         vy: BULLET_SPEED_PLAYER,
         fromPlayer: true,
       })
+      addMuzzleFlash(bx, by)
+      playShoot()
     }
 
     spawnTimerRef.current -= dt
     if (spawnTimerRef.current <= 0) {
       spawnTimerRef.current = spawnInterval(elapsedRef.current)
-      enemiesRef.current.push(makeEnemy(elapsedRef.current))
+      const enemy = makeEnemy(elapsedRef.current)
+      enemiesRef.current.push(enemy)
+      addSpawnRing(enemy.x, enemy.y, colorForEnemy(enemy.type))
+      playSpawn()
     }
 
     const enemies = enemiesRef.current
@@ -297,10 +355,18 @@ export function GameScene() {
         if (dx * dx + dy * dy < r * r) {
           e.hp -= 1
           consumed = true
+          const color = colorForEnemy(e.type)
           if (e.hp <= 0) {
             const reward = e.type === 'basic' ? 50 : e.type === 'zigzag' ? 100 : 150
             addScore(reward)
+            addExplosion(e.x, e.y, color)
+            addShake(0.18, 0.22)
+            playKill()
             enemies.splice(j, 1)
+          } else {
+            addHitSparks(b.x, b.y, color)
+            addShake(0.05, 0.08)
+            playHit()
           }
           break
         }
@@ -331,6 +397,7 @@ export function GameScene() {
           const dy = e.y - py
           const r = ENEMY_RADIUS + PLAYER_RADIUS
           if (dx * dx + dy * dy < r * r) {
+            addExplosion(e.x, e.y, colorForEnemy(e.type))
             enemies.splice(j, 1)
             hit = true
             break
@@ -338,6 +405,9 @@ export function GameScene() {
         }
       }
       if (hit) {
+        addPlayerHit(px, py)
+        addShake(0.45, 0.4)
+        playDamage()
         loseLife()
         invulnRef.current = 1.5
       }
@@ -354,6 +424,11 @@ export function GameScene() {
       if (b.y > FIELD_TOP + 1 || b.y < FIELD_BOTTOM - 1) bullets.splice(i, 1)
     }
 
+    updateEffects(dt)
+    const [sx, sy] = getShake()
+    camera.position.x = sx
+    camera.position.y = sy
+
     forceRender((n) => (n + 1) % 1024)
   })
 
@@ -368,6 +443,9 @@ export function GameScene() {
       ))}
       {bulletsRef.current.map((b) => (
         <BulletMesh key={b.id} bullet={b} />
+      ))}
+      {getParticles().map((p) => (
+        <ParticleMesh key={p.id} p={p} />
       ))}
     </>
   )
