@@ -1,6 +1,7 @@
 import { Canvas } from '@react-three/fiber'
 import { GameScene } from './GameScene'
 import { HUD } from './HUD'
+import { LevelUpOverlay } from './LevelUpOverlay'
 import { useGameStore } from './store'
 import { useEffect } from 'react'
 import { unlockAudio } from './audio'
@@ -35,6 +36,7 @@ export function App() {
         <GameScene />
       </Canvas>
       <HUD />
+      <LevelUpOverlay />
       {!started && !gameOver && (
         <Overlay onClick={start}>
           <div style={{ textAlign: 'center' }}>

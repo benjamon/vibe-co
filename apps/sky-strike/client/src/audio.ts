@@ -28,26 +28,27 @@ interface ToneOpts {
   attack?: number
   volume?: number
   detune?: number
+  delay?: number
 }
 
-function tone({ type = 'square', freq, freqEnd, duration, attack = 0.005, volume = 0.5, detune = 0 }: ToneOpts) {
+function tone({ type = 'square', freq, freqEnd, duration, attack = 0.005, volume = 0.5, detune = 0, delay = 0 }: ToneOpts) {
   const c = getCtx()
   if (!c || !masterGain) return
-  const now = c.currentTime
+  const start = c.currentTime + delay
   const osc = c.createOscillator()
   osc.type = type
-  osc.frequency.setValueAtTime(freq, now)
+  osc.frequency.setValueAtTime(freq, start)
   if (freqEnd !== undefined) {
-    osc.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), now + duration)
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), start + duration)
   }
-  if (detune) osc.detune.setValueAtTime(detune, now)
+  if (detune) osc.detune.setValueAtTime(detune, start)
   const gain = c.createGain()
-  gain.gain.setValueAtTime(0, now)
-  gain.gain.linearRampToValueAtTime(volume, now + attack)
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + duration)
+  gain.gain.setValueAtTime(0, start)
+  gain.gain.linearRampToValueAtTime(volume, start + attack)
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration)
   osc.connect(gain).connect(masterGain)
-  osc.start(now)
-  osc.stop(now + duration + 0.02)
+  osc.start(start)
+  osc.stop(start + duration + 0.02)
 }
 
 interface NoiseOpts {
@@ -107,4 +108,12 @@ export function playDamage() {
 
 export function playSpawn() {
   tone({ type: 'triangle', freq: 200, freqEnd: 600, duration: 0.12, volume: 0.1 })
+}
+
+export function playLevelUp() {
+  tone({ type: 'triangle', freq: 523, duration: 0.14, volume: 0.18, delay: 0.0 })
+  tone({ type: 'triangle', freq: 659, duration: 0.14, volume: 0.18, delay: 0.1 })
+  tone({ type: 'triangle', freq: 784, duration: 0.2, volume: 0.22, delay: 0.2 })
+  tone({ type: 'square', freq: 1047, duration: 0.32, volume: 0.18, delay: 0.32 })
+  tone({ type: 'sawtooth', freq: 261, freqEnd: 130, duration: 0.4, volume: 0.12, delay: 0.0 })
 }

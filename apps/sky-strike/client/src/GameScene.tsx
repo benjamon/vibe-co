@@ -10,9 +10,9 @@ import {
   MeshStandardMaterial,
   Object3D,
 } from 'three'
-import { useGameStore } from './store'
+import { playerStats, useGameStore } from './store'
 import { useInput, type InputState } from './useInput'
-import { playDamage, playHit, playKill, playShoot, playSpawn } from './audio'
+import { playDamage, playHit, playKill, playLevelUp, playShoot, playSpawn } from './audio'
 import {
   addExplosion,
   addHitSparks,
@@ -32,28 +32,45 @@ const FIELD_BOTTOM = -10
 const PLAYER_Y = -7
 const PLAYER_SPEED = 9
 const PLAYER_RADIUS = 0.55
-const PLAYER_FIRE_INTERVAL = 0.12
 
 const BULLET_SPEED_PLAYER = 16
 const BULLET_SPEED_ENEMY = 7
 const BULLET_RADIUS = 0.18
+const BURST_DELAY = 0.06
 
 const ENEMY_RADIUS = 0.55
+const MISSILE_RADIUS = 0.3
+const MISSILE_DAMAGE = 5
+const MISSILE_MAX_SPEED = 14
+const MISSILE_ACCEL = 30
+const MISSILE_LIFETIME = 5
 
-const MAX_BULLETS = 64
+const CHAIN_RADIUS = 2.5
+const CHAIN_RADIUS_SQ = CHAIN_RADIUS * CHAIN_RADIUS
+const CHAIN_DAMAGE = 2
+
+const MAX_BULLETS = 128
+const MAX_MISSILES = 8
 const MAX_ENEMIES_PER_TYPE = 24
 const MAX_PARTICLES = 600
 const MAX_RINGS = 32
 const STAR_COUNT = 80
 
-type EnemyType = 0 | 1 | 2 // 0=basic, 1=shooter, 2=zigzag
+const LEVEL_UP_INPUT_LOCKOUT = 0.7
+
+type EnemyType = 0 | 1 | 2
 
 interface Bullet {
   active: boolean
   x: number
   y: number
+  vx: number
   vy: number
   fromPlayer: boolean
+  damage: number
+  pen: number
+  radius: number
+  hitCooldown: number
 }
 
 interface Enemy {
@@ -68,6 +85,15 @@ interface Enemy {
   baseX: number
   swayAmplitude: number
   swayFrequency: number
+}
+
+interface Missile {
+  active: boolean
+  x: number
+  y: number
+  vx: number
+  vy: number
+  age: number
 }
 
 const COLOR_BULLET_PLAYER = new Color('#33ffaa')
@@ -107,10 +133,41 @@ function colorHexFor(type: EnemyType): string {
   return COLOR_ENEMY_ZIGZAG_HEX
 }
 
+function scoreFor(type: EnemyType): number {
+  if (type === 0) return 50
+  if (type === 2) return 100
+  return 150
+}
+
+function xpFor(type: EnemyType): number {
+  if (type === 0) return 1
+  if (type === 2) return 2
+  return 3
+}
+
 function makeBulletPool(): Bullet[] {
   const arr: Bullet[] = []
   for (let i = 0; i < MAX_BULLETS; i++) {
-    arr.push({ active: false, x: 0, y: 0, vy: 0, fromPlayer: true })
+    arr.push({
+      active: false,
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      fromPlayer: true,
+      damage: 1,
+      pen: 0,
+      radius: BULLET_RADIUS,
+      hitCooldown: 0,
+    })
+  }
+  return arr
+}
+
+function makeMissilePool(): Missile[] {
+  const arr: Missile[] = []
+  for (let i = 0; i < MAX_MISSILES; i++) {
+    arr.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, age: 0 })
   }
   return arr
 }
@@ -142,6 +199,13 @@ function findInactiveBullet(pool: Bullet[]): Bullet | null {
   return null
 }
 
+function findInactiveMissile(pool: Missile[]): Missile | null {
+  for (let i = 0; i < pool.length; i++) {
+    if (!pool[i].active) return pool[i]
+  }
+  return null
+}
+
 function findInactiveEnemy(pool: Enemy[]): Enemy | null {
   for (let i = 0; i < pool.length; i++) {
     if (!pool[i].active) return pool[i]
@@ -151,8 +215,6 @@ function findInactiveEnemy(pool: Enemy[]): Enemy | null {
 
 function GameSceneInner() {
   const started = useGameStore((s) => s.started)
-  const addScore = useGameStore((s) => s.addScore)
-  const loseLife = useGameStore((s) => s.loseLife)
 
   const { camera } = useThree()
   const inputRef = useInput()
@@ -161,11 +223,19 @@ function GameSceneInner() {
   const playerBodyMatRef = useRef<MeshStandardMaterial>(null)
   const playerXRef = useRef(0)
   const fireTimerRef = useRef(0)
+  const burstShotsRef = useRef(0)
+  const burstTimerRef = useRef(0)
+  const homingTimerRef = useRef(0)
   const spawnTimerRef = useRef(0.6)
   const elapsedRef = useRef(0)
   const invulnRef = useRef(0)
+  const wasPausedRef = useRef(false)
+  const pauseLockoutRef = useRef(0)
+  const prevLeftRef = useRef(false)
+  const prevRightRef = useRef(false)
 
   const bulletsMeshRef = useRef<InstancedMesh>(null)
+  const missilesMeshRef = useRef<InstancedMesh>(null)
   const basicMeshRef = useRef<InstancedMesh>(null)
   const shooterMeshRef = useRef<InstancedMesh>(null)
   const cockpitMeshRef = useRef<InstancedMesh>(null)
@@ -176,9 +246,14 @@ function GameSceneInner() {
   const starMeshRef = useRef<InstancedMesh>(null)
 
   const bullets = useMemo(makeBulletPool, [])
+  const missiles = useMemo(makeMissilePool, [])
   const enemiesBasic = useMemo(() => makeEnemyPool(0), [])
   const enemiesShooter = useMemo(() => makeEnemyPool(1), [])
   const enemiesZigzag = useMemo(() => makeEnemyPool(2), [])
+  const allEnemyPools = useMemo(
+    () => [enemiesBasic, enemiesShooter, enemiesZigzag],
+    [enemiesBasic, enemiesShooter, enemiesZigzag],
+  )
 
   const stars = useMemo(() => {
     const arr: { x: number; y: number; size: number }[] = []
@@ -195,6 +270,7 @@ function GameSceneInner() {
   useLayoutEffect(() => {
     const meshes = [
       bulletsMeshRef.current,
+      missilesMeshRef.current,
       basicMeshRef.current,
       shooterMeshRef.current,
       cockpitMeshRef.current,
@@ -228,19 +304,55 @@ function GameSceneInner() {
     if (started) {
       playerXRef.current = 0
       fireTimerRef.current = 0
+      burstShotsRef.current = 0
+      burstTimerRef.current = 0
+      homingTimerRef.current = playerStats.homingInterval
       spawnTimerRef.current = 0.5
       elapsedRef.current = 0
       invulnRef.current = 1.2
       for (let i = 0; i < bullets.length; i++) bullets[i].active = false
+      for (let i = 0; i < missiles.length; i++) missiles[i].active = false
       for (let i = 0; i < enemiesBasic.length; i++) enemiesBasic[i].active = false
       for (let i = 0; i < enemiesShooter.length; i++) enemiesShooter[i].active = false
       for (let i = 0; i < enemiesZigzag.length; i++) enemiesZigzag[i].active = false
       clearEffects()
     }
-  }, [started, bullets, enemiesBasic, enemiesShooter, enemiesZigzag])
+  }, [started, bullets, missiles, enemiesBasic, enemiesShooter, enemiesZigzag])
 
   useFrame((_, dtRaw) => {
     const dt = Math.min(dtRaw, 0.05)
+    const state = useGameStore.getState()
+    const paused = state.pendingLevelUps > 0
+
+    if (paused) {
+      const input = inputRef.current
+      if (!wasPausedRef.current) {
+        prevLeftRef.current = true
+        prevRightRef.current = true
+        wasPausedRef.current = true
+        pauseLockoutRef.current = LEVEL_UP_INPUT_LOCKOUT
+        playLevelUp()
+      }
+      if (pauseLockoutRef.current > 0) {
+        pauseLockoutRef.current -= dt
+        prevLeftRef.current = input.left
+        prevRightRef.current = input.right
+      } else {
+        const leftEdge = !prevLeftRef.current && input.left
+        const rightEdge = !prevRightRef.current && input.right
+        prevLeftRef.current = input.left
+        prevRightRef.current = input.right
+        if (leftEdge) state.selectUpgrade(0)
+        else if (rightEdge) state.selectUpgrade(1)
+      }
+      camera.position.x = 0
+      camera.position.y = 0
+      return
+    }
+    wasPausedRef.current = false
+    pauseLockoutRef.current = 0
+    prevLeftRef.current = inputRef.current.left
+    prevRightRef.current = inputRef.current.right
 
     if (started) {
       elapsedRef.current += dt
@@ -253,20 +365,26 @@ function GameSceneInner() {
       if (playerXRef.current > FIELD_HALF_WIDTH - 0.5) playerXRef.current = FIELD_HALF_WIDTH - 0.5
 
       fireTimerRef.current -= dt
-      if (fireTimerRef.current <= 0) {
-        fireTimerRef.current = PLAYER_FIRE_INTERVAL
-        const bx = playerXRef.current
-        const by = PLAYER_Y + 0.7
-        const b = findInactiveBullet(bullets)
-        if (b) {
-          b.active = true
-          b.x = bx
-          b.y = by
-          b.vy = BULLET_SPEED_PLAYER
-          b.fromPlayer = true
+      if (fireTimerRef.current <= 0 && burstShotsRef.current === 0) {
+        fireTimerRef.current = playerStats.fireInterval
+        burstShotsRef.current = playerStats.burstCount
+        burstTimerRef.current = 0
+      }
+      if (burstShotsRef.current > 0) {
+        burstTimerRef.current -= dt
+        if (burstTimerRef.current <= 0) {
+          burstTimerRef.current = BURST_DELAY
+          burstShotsRef.current -= 1
+          fireSalvo(bullets, playerXRef.current)
         }
-        addMuzzleFlash(bx, by)
-        playShoot()
+      }
+
+      if (playerStats.homingInterval > 0) {
+        homingTimerRef.current -= dt
+        if (homingTimerRef.current <= 0) {
+          homingTimerRef.current = playerStats.homingInterval
+          spawnMissile(missiles, playerXRef.current)
+        }
       }
 
       spawnTimerRef.current -= dt
@@ -286,12 +404,13 @@ function GameSceneInner() {
           e.fireTimer = 1 + Math.random() * 1.5
           e.swayAmplitude = 0
           e.swayFrequency = 0
-          e.hp = 1
+          const hpScale = Math.pow(2, elapsedRef.current / 60)
+          e.hp = Math.ceil(2 * hpScale)
           if (type === 0) {
             e.vy = -3 - Math.random() * 1.2
           } else if (type === 1) {
             e.vy = -1.8
-            e.hp = 2
+            e.hp = Math.ceil(4 * hpScale)
           } else {
             e.vy = -2.2
             e.swayAmplitude = 2 + Math.random() * 1.5
@@ -309,21 +428,32 @@ function GameSceneInner() {
       for (let i = 0; i < bullets.length; i++) {
         const b = bullets[i]
         if (!b.active) continue
+        b.x += b.vx * dt
         b.y += b.vy * dt
-        if (b.y > FIELD_TOP + 1 || b.y < FIELD_BOTTOM - 1) b.active = false
-      }
-
-      for (let i = 0; i < bullets.length; i++) {
-        const b = bullets[i]
-        if (!b.active || !b.fromPlayer) continue
+        if (b.hitCooldown > 0) b.hitCooldown -= dt
         if (
-          tryHitEnemy(b, enemiesBasic, addScore) ||
-          tryHitEnemy(b, enemiesShooter, addScore) ||
-          tryHitEnemy(b, enemiesZigzag, addScore)
+          b.y > FIELD_TOP + 1 ||
+          b.y < FIELD_BOTTOM - 1 ||
+          b.x < -FIELD_HALF_WIDTH - 3 ||
+          b.x > FIELD_HALF_WIDTH + 3
         ) {
           b.active = false
         }
       }
+
+      for (let i = 0; i < bullets.length; i++) {
+        const b = bullets[i]
+        if (!b.active || !b.fromPlayer || b.hitCooldown > 0) continue
+        if (
+          tryHitEnemy(b, enemiesBasic, allEnemyPools) ||
+          tryHitEnemy(b, enemiesShooter, allEnemyPools) ||
+          tryHitEnemy(b, enemiesZigzag, allEnemyPools)
+        ) {
+          b.active = false
+        }
+      }
+
+      updateMissiles(missiles, dt, allEnemyPools)
 
       const px = playerXRef.current
       const py = PLAYER_Y
@@ -334,7 +464,7 @@ function GameSceneInner() {
           if (!b.active || b.fromPlayer) continue
           const dx = b.x - px
           const dy = b.y - py
-          const r = BULLET_RADIUS + PLAYER_RADIUS
+          const r = b.radius + PLAYER_RADIUS
           if (dx * dx + dy * dy < r * r) {
             b.active = false
             hit = true
@@ -354,7 +484,7 @@ function GameSceneInner() {
           addPlayerHit(px, py)
           addShake(0.45, 0.4)
           playDamage()
-          loseLife()
+          state.loseLife()
           invulnRef.current = 1.5
         }
       }
@@ -406,7 +536,7 @@ function GameSceneInner() {
         if (b.active) {
           tempObj.position.set(b.x, b.y, 0)
           tempObj.rotation.set(0, 0, 0)
-          tempObj.scale.setScalar(1)
+          tempObj.scale.setScalar(b.radius / BULLET_RADIUS)
           tempObj.updateMatrix()
           bulletsMesh.setMatrixAt(i, tempObj.matrix)
           bulletsMesh.setColorAt(i, b.fromPlayer ? COLOR_BULLET_PLAYER : COLOR_BULLET_ENEMY)
@@ -416,6 +546,24 @@ function GameSceneInner() {
       }
       bulletsMesh.instanceMatrix.needsUpdate = true
       if (bulletsMesh.instanceColor) bulletsMesh.instanceColor.needsUpdate = true
+    }
+
+    const missilesMesh = missilesMeshRef.current
+    if (missilesMesh) {
+      for (let i = 0; i < missiles.length; i++) {
+        const m = missiles[i]
+        if (m.active) {
+          const angle = Math.atan2(m.vy, m.vx) - Math.PI / 2
+          tempObj.position.set(m.x, m.y, 0)
+          tempObj.rotation.set(0, 0, angle)
+          tempObj.scale.setScalar(1)
+          tempObj.updateMatrix()
+          missilesMesh.setMatrixAt(i, tempObj.matrix)
+        } else {
+          missilesMesh.setMatrixAt(i, HIDDEN_MATRIX)
+        }
+      }
+      missilesMesh.instanceMatrix.needsUpdate = true
     }
 
     writeEnemyMatrices(basicMeshRef.current, enemiesBasic, Math.PI)
@@ -521,6 +669,11 @@ function GameSceneInner() {
         <meshBasicMaterial />
       </instancedMesh>
 
+      <instancedMesh ref={missilesMeshRef} args={[undefined, undefined, MAX_MISSILES]}>
+        <coneGeometry args={[0.18, 0.6, 6]} />
+        <meshBasicMaterial color="#aaff44" />
+      </instancedMesh>
+
       <instancedMesh ref={basicMeshRef} args={[undefined, undefined, MAX_ENEMIES_PER_TYPE]}>
         <coneGeometry args={[0.5, 0.9, 3]} />
         <meshBasicMaterial color={COLOR_ENEMY_BASIC_HEX} />
@@ -553,15 +706,49 @@ function GameSceneInner() {
 
       <instancedMesh ref={ringMeshRef} args={[undefined, undefined, MAX_RINGS]}>
         <ringGeometry args={[0.92, 1.0, 24]} />
-        <meshBasicMaterial
-          transparent
-          depthWrite={false}
-          blending={AdditiveBlending}
-          side={DoubleSide}
-        />
+        <meshBasicMaterial transparent depthWrite={false} blending={AdditiveBlending} side={DoubleSide} />
       </instancedMesh>
     </>
   )
+}
+
+function fireSalvo(bullets: Bullet[], playerX: number) {
+  const bx = playerX
+  const by = PLAYER_Y + 0.7
+  const count = playerStats.bulletCount
+  const baseAngle = Math.PI / 2
+  const spreadStep = 0.18
+  const totalSpread = (count - 1) * spreadStep
+  const startAngle = baseAngle - totalSpread / 2
+  const radius = BULLET_RADIUS * playerStats.bulletRadiusMul
+  for (let k = 0; k < count; k++) {
+    const a = count === 1 ? baseAngle : startAngle + spreadStep * k
+    const b = findInactiveBullet(bullets)
+    if (!b) break
+    b.active = true
+    b.x = bx
+    b.y = by
+    b.vx = Math.cos(a) * BULLET_SPEED_PLAYER
+    b.vy = Math.sin(a) * BULLET_SPEED_PLAYER
+    b.fromPlayer = true
+    b.damage = playerStats.bulletDamage
+    b.pen = playerStats.penetration
+    b.radius = radius
+    b.hitCooldown = 0
+  }
+  addMuzzleFlash(bx, by)
+  playShoot()
+}
+
+function spawnMissile(missiles: Missile[], playerX: number) {
+  const m = findInactiveMissile(missiles)
+  if (!m) return
+  m.active = true
+  m.x = playerX
+  m.y = PLAYER_Y + 0.8
+  m.vx = (Math.random() - 0.5) * 4
+  m.vy = 4
+  m.age = 0
 }
 
 function updateEnemyPool(pool: Enemy[], dt: number, bullets: Bullet[]) {
@@ -582,8 +769,13 @@ function updateEnemyPool(pool: Enemy[], dt: number, bullets: Bullet[]) {
           b.active = true
           b.x = e.x
           b.y = e.y - 0.6
+          b.vx = 0
           b.vy = -BULLET_SPEED_ENEMY
           b.fromPlayer = false
+          b.damage = 1
+          b.pen = 0
+          b.radius = BULLET_RADIUS
+          b.hitCooldown = 0
         }
       }
     }
@@ -593,27 +785,36 @@ function updateEnemyPool(pool: Enemy[], dt: number, bullets: Bullet[]) {
   }
 }
 
-function tryHitEnemy(b: Bullet, pool: Enemy[], addScore: (n: number) => void): boolean {
+function tryHitEnemy(b: Bullet, pool: Enemy[], allPools: Enemy[][]): boolean {
   for (let j = 0; j < pool.length; j++) {
     const e = pool[j]
     if (!e.active) continue
     const dx = b.x - e.x
     const dy = b.y - e.y
-    const r = BULLET_RADIUS + ENEMY_RADIUS
+    const r = b.radius + ENEMY_RADIUS
     if (dx * dx + dy * dy < r * r) {
-      e.hp -= 1
+      e.hp -= b.damage
       const color = colorHexFor(e.type)
+      const store = useGameStore.getState()
       if (e.hp <= 0) {
-        const reward = e.type === 0 ? 50 : e.type === 2 ? 100 : 150
-        addScore(reward)
+        store.addScore(scoreFor(e.type))
+        store.addXp(xpFor(e.type))
         addExplosion(e.x, e.y, color)
         addShake(0.18, 0.22)
         playKill()
         e.active = false
+        if (Math.random() < playerStats.chainExplodeChance) {
+          chainExplode(e.x, e.y, allPools)
+        }
       } else {
         addHitSparks(b.x, b.y, color)
         addShake(0.05, 0.08)
         playHit()
+      }
+      b.hitCooldown = 0.04
+      if (b.pen > 0) {
+        b.pen -= 1
+        return false
       }
       return true
     }
@@ -635,6 +836,121 @@ function tryRamPlayer(pool: Enemy[], px: number, py: number): boolean {
     }
   }
   return false
+}
+
+function chainExplode(x: number, y: number, allPools: Enemy[][]) {
+  const store = useGameStore.getState()
+  for (const pool of allPools) {
+    for (let i = 0; i < pool.length; i++) {
+      const e = pool[i]
+      if (!e.active) continue
+      const dx = e.x - x
+      const dy = e.y - y
+      if (dx * dx + dy * dy < CHAIN_RADIUS_SQ) {
+        e.hp -= CHAIN_DAMAGE
+        const color = colorHexFor(e.type)
+        if (e.hp <= 0) {
+          store.addScore(Math.floor(scoreFor(e.type) / 2))
+          store.addXp(xpFor(e.type))
+          addExplosion(e.x, e.y, color)
+          e.active = false
+        } else {
+          addHitSparks(e.x, e.y, color)
+        }
+      }
+    }
+  }
+  addExplosion(x, y, '#ffaa00')
+  addShake(0.2, 0.25)
+}
+
+function updateMissiles(missiles: Missile[], dt: number, allPools: Enemy[][]) {
+  const store = useGameStore.getState()
+  for (let i = 0; i < missiles.length; i++) {
+    const m = missiles[i]
+    if (!m.active) continue
+    m.age += dt
+
+    let bestX = 0
+    let bestY = 0
+    let bestDist = Infinity
+    let found = false
+    for (const pool of allPools) {
+      for (let j = 0; j < pool.length; j++) {
+        const e = pool[j]
+        if (!e.active) continue
+        const dx = e.x - m.x
+        const dy = e.y - m.y
+        const d = dx * dx + dy * dy
+        if (d < bestDist) {
+          bestDist = d
+          bestX = e.x
+          bestY = e.y
+          found = true
+        }
+      }
+    }
+
+    if (found) {
+      const dx = bestX - m.x
+      const dy = bestY - m.y
+      const d = Math.sqrt(dx * dx + dy * dy) || 1
+      m.vx += (dx / d) * MISSILE_ACCEL * dt
+      m.vy += (dy / d) * MISSILE_ACCEL * dt
+      const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
+      if (speed > MISSILE_MAX_SPEED) {
+        m.vx *= MISSILE_MAX_SPEED / speed
+        m.vy *= MISSILE_MAX_SPEED / speed
+      }
+    }
+
+    m.x += m.vx * dt
+    m.y += m.vy * dt
+
+    if (
+      m.age > MISSILE_LIFETIME ||
+      m.x < -FIELD_HALF_WIDTH - 3 ||
+      m.x > FIELD_HALF_WIDTH + 3 ||
+      m.y < FIELD_BOTTOM - 2 ||
+      m.y > FIELD_TOP + 5
+    ) {
+      m.active = false
+      continue
+    }
+
+    let hit = false
+    for (const pool of allPools) {
+      if (hit) break
+      for (let j = 0; j < pool.length; j++) {
+        const e = pool[j]
+        if (!e.active) continue
+        const dx = e.x - m.x
+        const dy = e.y - m.y
+        const r = MISSILE_RADIUS + ENEMY_RADIUS
+        if (dx * dx + dy * dy < r * r) {
+          e.hp -= MISSILE_DAMAGE
+          const color = colorHexFor(e.type)
+          if (e.hp <= 0) {
+            store.addScore(scoreFor(e.type))
+            store.addXp(xpFor(e.type))
+            addExplosion(e.x, e.y, color)
+            e.active = false
+            if (Math.random() < playerStats.chainExplodeChance) {
+              chainExplode(e.x, e.y, allPools)
+            }
+          } else {
+            addHitSparks(e.x, e.y, color)
+          }
+          addExplosion(m.x, m.y, '#ffcc44')
+          addShake(0.15, 0.18)
+          playKill()
+          m.active = false
+          hit = true
+          break
+        }
+      }
+    }
+  }
 }
 
 function writeEnemyMatrices(mesh: InstancedMesh | null, pool: Enemy[], rotZ: number) {
