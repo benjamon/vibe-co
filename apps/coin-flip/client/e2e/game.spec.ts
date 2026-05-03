@@ -10,20 +10,26 @@ test('coin flip game loads and flips on tap', async ({ page }) => {
 
   const initial = await page.evaluate(() => (window as any).__gameState)
   expect(initial).toBeDefined()
-  expect(initial.flipping).toBe(false)
   expect(initial.flips).toBe(0)
+  expect(initial.gold).toBe(0)
+  expect(initial.coinsPerTap).toBe(1)
+  expect(initial.coins).toHaveLength(1)
 
   await canvas.click()
 
   const duringFlip = await page.evaluate(() => (window as any).__gameState)
-  expect(duringFlip.flipping).toBe(true)
+  expect(duringFlip.coins[0].flipping).toBe(true)
 
-  // Wait for flip animation to finish (FLIP_DURATION = 1.6s + buffer)
-  await page.waitForFunction(() => !(window as any).__gameState.flipping, null, { timeout: 5000 })
+  await page.waitForFunction(
+    () => !(window as any).__gameState.coins.some((c: any) => c.flipping),
+    null,
+    { timeout: 5000 },
+  )
 
   const afterFlip = await page.evaluate(() => (window as any).__gameState)
   expect(afterFlip.flips).toBe(1)
-  expect(['heads', 'tails']).toContain(afterFlip.result)
+  expect(afterFlip.gold).toBe(1)
+  expect(['heads', 'tails']).toContain(afterFlip.coins[0].result)
 
   const errors: string[] = []
   page.on('pageerror', (err) => errors.push(err.message))
