@@ -76,29 +76,7 @@ jobs:
           cp apps/mapoguesser/client/dist/index.html _site/mapoguesser/404.html
           cp -r apps/sky-strike/client/dist/. _site/sky-strike/
           cp apps/sky-strike/client/dist/index.html _site/sky-strike/404.html
-          cat > _site/index.html <<'HTML'
-          <!DOCTYPE html>
-          <meta charset="utf-8">
-          <title>vibe-co</title>
-          <style>
-            body { font-family: system-ui, sans-serif; background: #0f1020; color: #eee; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-            .wrap { text-align: center; }
-            h1 { margin: 0 0 1rem; }
-            ul { list-style: none; padding: 0; }
-            li { margin: 0.5rem 0; }
-            a { color: #ffd700; font-size: 1.2rem; text-decoration: none; }
-            a:hover { text-decoration: underline; }
-          </style>
-          <div class="wrap">
-            <h1>vibe-co</h1>
-            <ul>
-              <li><a href="./auto-battles/">auto-battles</a></li>
-              <li><a href="./coin-flip/">coin-flip</a></li>
-              <li><a href="./mapoguesser/">mapoguesser</a></li>
-              <li><a href="./sky-strike/">sky-strike</a></li>
-            </ul>
-          </div>
-          HTML
+          cp site/index.html _site/index.html
           echo '--- artifact tree ---'
           find _site -maxdepth 3 -print
 

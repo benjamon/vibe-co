@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vibe-co</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: radial-gradient(ellipse at top, #1a1b3a 0%, #0f1020 60%);
+      color: #eee;
+      margin: 0;
+      min-height: 100vh;
+      padding: 3rem 1.5rem;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    header { text-align: center; margin-bottom: 2.5rem; }
+    h1 { margin: 0 0 0.5rem; font-size: 2.5rem; letter-spacing: -0.02em; }
+    .tagline { color: #9a9bb5; margin: 0; }
+    ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.75rem; }
+    a.card {
+      display: block;
+      padding: 1.25rem 1.5rem;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      color: inherit;
+      text-decoration: none;
+      transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    }
+    a.card:hover {
+      background: rgba(255, 215, 0, 0.06);
+      border-color: rgba(255, 215, 0, 0.4);
+      transform: translateY(-1px);
+    }
+    .name { font-size: 1.2rem; font-weight: 600; color: #ffd700; }
+    .desc { margin-top: 0.25rem; color: #b8b9d1; font-size: 0.95rem; }
+    footer { text-align: center; margin-top: 3rem; color: #6a6b85; font-size: 0.85rem; }
+    footer a { color: inherit; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>vibe-co</h1>
+      <p class="tagline">A directory of small games built from the vibe-co templates.</p>
+    </header>
+    <ul>
+      <li><a class="card" href="./auto-battles/">
+        <div class="name">auto-battles</div>
+        <div class="desc">Asynchronous auto-battler — build a team once, then watch it fight five opponents pulled from recent runs.</div>
+      </a></li>
+      <li><a class="card" href="./coin-flip/">
+        <div class="name">coin-flip</div>
+        <div class="desc">Coin flipping game.</div>
+      </a></li>
+      <li><a class="card" href="./mapoguesser/">
+        <div class="name">mapoguesser</div>
+        <div class="desc">Guess the location from a 3D world view.</div>
+      </a></li>
+      <li><a class="card" href="./sky-strike/">
+        <div class="name">sky-strike</div>
+        <div class="desc">Aerial action game.</div>
+      </a></li>
+    </ul>
+    <footer>
+      <a href="https://github.com/benjamon/vibe-co">github.com/benjamon/vibe-co</a>
+    </footer>
+  </div>
+</body>
+</html>
