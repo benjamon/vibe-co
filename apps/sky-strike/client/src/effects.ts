@@ -1,4 +1,4 @@
-export type ParticleShape = 0 | 1 | 2 // 0 = spark, 1 = puff, 2 = ring
+export type ParticleShape = 0 | 1 | 2 | 3 // 0 = spark, 1 = puff, 2 = expanding ring, 3 = static ring
 
 export interface Particle {
   active: boolean
@@ -215,7 +215,7 @@ export function addPlayerHit(x: number, y: number) {
 }
 
 export function addSpawnRing(x: number, y: number, color: string) {
-  emit(x, y, 0, 0, 0.35, 0.35, 0.3, color, 0, 2)
+  emit(x, y, 0, 0, 0.35, 0.35, 1.8, color, 0, 2)
   for (let i = 0; i < 6; i++) {
     const angle = Math.random() * Math.PI * 2
     const speed = 1 + Math.random() * 2
@@ -232,6 +232,10 @@ export function addSpawnRing(x: number, y: number, color: string) {
       0,
     )
   }
+}
+
+export function addChainRing(x: number, y: number, radius: number, color: string) {
+  emit(x, y, 0, 0, 0.55, 0.55, radius, color, 0, 3)
 }
 
 export function updateEffects(dt: number) {

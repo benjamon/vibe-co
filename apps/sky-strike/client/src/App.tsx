@@ -2,15 +2,16 @@ import { Canvas } from '@react-three/fiber'
 import { GameScene } from './GameScene'
 import { HUD } from './HUD'
 import { LevelUpOverlay } from './LevelUpOverlay'
+import { BossUI } from './BossUI'
 import { useGameStore } from './store'
 import { useEffect } from 'react'
 import { unlockAudio } from './audio'
 
+const CAMERA_CONFIG = { position: [0, 0, 10] as [number, number, number], zoom: 38, near: 0.1, far: 100 }
+
 export function App() {
   const started = useGameStore((s) => s.started)
   const gameOver = useGameStore((s) => s.gameOver)
-  const score = useGameStore((s) => s.score)
-  const highScore = useGameStore((s) => s.highScore)
   const startRaw = useGameStore((s) => s.start)
   const start = () => {
     unlockAudio()
@@ -26,38 +27,46 @@ export function App() {
 
   return (
     <>
-      <Canvas
-        orthographic
-        camera={{ position: [0, 0, 10], zoom: 38, near: 0.1, far: 100 }}
-      >
+      <Canvas orthographic camera={CAMERA_CONFIG}>
         <color attach="background" args={['#0a0820']} />
         <ambientLight intensity={0.6} />
         <directionalLight position={[5, 5, 8]} intensity={0.9} />
         <GameScene />
       </Canvas>
       <HUD />
+      <BossUI />
       <LevelUpOverlay />
-      {!started && !gameOver && (
-        <Overlay onClick={start}>
-          <div style={{ textAlign: 'center' }}>
-            <h1 style={titleStyle}>SKY STRIKE</h1>
-            <p style={subtitleStyle}>Tap / click left or right side to move</p>
-            <p style={subtitleStyle}>Auto-fire engaged. Survive the swarm.</p>
-            <button style={buttonStyle}>Start</button>
-          </div>
-        </Overlay>
-      )}
-      {gameOver && (
-        <Overlay onClick={start}>
-          <div style={{ textAlign: 'center' }}>
-            <h1 style={{ ...titleStyle, color: '#ff5577' }}>GAME OVER</h1>
-            <p style={subtitleStyle}>Score: {score}</p>
-            <p style={subtitleStyle}>Best: {highScore}</p>
-            <button style={buttonStyle}>Play Again</button>
-          </div>
-        </Overlay>
-      )}
+      {!started && !gameOver && <StartOverlay onStart={start} />}
+      {gameOver && <GameOverOverlay onRestart={start} />}
     </>
+  )
+}
+
+function StartOverlay({ onStart }: { onStart: () => void }) {
+  return (
+    <Overlay onClick={onStart}>
+      <div style={{ textAlign: 'center' }}>
+        <h1 style={titleStyle}>SKY STRIKE</h1>
+        <p style={subtitleStyle}>Tap / click left or right side to move</p>
+        <p style={subtitleStyle}>Auto-fire engaged. Survive the swarm.</p>
+        <button style={buttonStyle}>Start</button>
+      </div>
+    </Overlay>
+  )
+}
+
+function GameOverOverlay({ onRestart }: { onRestart: () => void }) {
+  const score = useGameStore((s) => s.score)
+  const highScore = useGameStore((s) => s.highScore)
+  return (
+    <Overlay onClick={onRestart}>
+      <div style={{ textAlign: 'center' }}>
+        <h1 style={{ ...titleStyle, color: '#ff5577' }}>GAME OVER</h1>
+        <p style={subtitleStyle}>Score: {score}</p>
+        <p style={subtitleStyle}>Best: {highScore}</p>
+        <button style={buttonStyle}>Play Again</button>
+      </div>
+    </Overlay>
   )
 }
 

@@ -49,6 +49,10 @@ function tone({ type = 'square', freq, freqEnd, duration, attack = 0.005, volume
   osc.connect(gain).connect(masterGain)
   osc.start(start)
   osc.stop(start + duration + 0.02)
+  osc.onended = () => {
+    osc.disconnect()
+    gain.disconnect()
+  }
 }
 
 interface NoiseOpts {
@@ -77,6 +81,11 @@ function noise({ duration, volume = 0.4, filterFreq = 1200, filterType = 'lowpas
   src.connect(filt).connect(gain).connect(masterGain)
   src.start(now)
   src.stop(now + duration + 0.02)
+  src.onended = () => {
+    src.disconnect()
+    filt.disconnect()
+    gain.disconnect()
+  }
 }
 
 let lastShoot = 0
@@ -108,6 +117,12 @@ export function playDamage() {
 
 export function playSpawn() {
   tone({ type: 'triangle', freq: 200, freqEnd: 600, duration: 0.12, volume: 0.1 })
+}
+
+export function playConfirm() {
+  tone({ type: 'sine', freq: 1320, duration: 0.1, volume: 0.2 })
+  tone({ type: 'sine', freq: 1760, duration: 0.16, volume: 0.18, delay: 0.06 })
+  tone({ type: 'triangle', freq: 660, duration: 0.18, volume: 0.1 })
 }
 
 export function playLevelUp() {
