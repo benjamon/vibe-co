@@ -26,6 +26,10 @@ export function useInput() {
     const sideOf = (x: number) => (x < window.innerWidth / 2 ? 'left' : 'right')
 
     const onTouchStart = (e: TouchEvent) => {
+      // Only intercept touches on the game canvas so taps on UI (Start button,
+      // overlays) still produce a synthetic click on mobile.
+      const target = e.target as Element | null
+      if (!target || (target as HTMLElement).tagName !== 'CANVAS') return
       e.preventDefault()
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i]
