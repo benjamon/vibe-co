@@ -26,12 +26,12 @@ export function LevelUpOverlay() {
     >
       <div
         style={{
-          margin: '40px auto 16px',
+          margin: '40px auto 18px',
           textAlign: 'center',
           color: '#33ddff',
-          fontFamily: 'monospace',
-          fontSize: 14,
-          letterSpacing: '0.3em',
+          fontFamily: "'Press Start 2P', monospace",
+          fontSize: 11,
+          letterSpacing: '0.25em',
           textShadow: '0 0 8px rgba(51, 221, 255, 0.6)',
         }}
       >
@@ -89,7 +89,7 @@ function Card({
         borderRadius: 10,
         padding: '16px 20px',
         color: flashing ? '#08203a' : '#cceeff',
-        fontFamily: 'system-ui, sans-serif',
+        fontFamily: "'Orbitron', system-ui, sans-serif",
         boxShadow: flashing
           ? '0 0 60px rgba(255, 255, 255, 0.95), 0 0 24px rgba(170, 240, 255, 0.8)'
           : '0 0 24px rgba(51, 221, 255, 0.4)',
@@ -100,20 +100,21 @@ function Card({
     >
       <div
         style={{
-          fontSize: 12,
+          fontSize: 9,
           color: flashing ? '#08203a' : '#33ddff',
-          letterSpacing: '0.2em',
-          marginBottom: 6,
-          fontFamily: 'monospace',
+          letterSpacing: '0.18em',
+          marginBottom: 8,
+          fontFamily: "'Press Start 2P', monospace",
         }}
       >
         {side === 'left' ? '◄ HOLD LEFT' : 'HOLD RIGHT ►'}
       </div>
       <div
         style={{
-          fontSize: 22,
-          fontWeight: 'bold',
-          marginBottom: 8,
+          fontSize: 18,
+          fontWeight: 800,
+          marginBottom: 10,
+          letterSpacing: '0.05em',
           color: flashing ? '#08203a' : '#ffffff',
         }}
       >

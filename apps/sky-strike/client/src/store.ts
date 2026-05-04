@@ -18,6 +18,11 @@ export type UpgradeId =
   | 'instaKill'
   | 'lifeOnKill'
   | 'biggerBullets'
+  | 'emp'
+  | 'empDuration'
+  | 'empDps'
+  | 'empRadius'
+  | 'magnetRadius'
 
 export interface PlayerStats {
   fireInterval: number
@@ -36,11 +41,17 @@ export interface PlayerStats {
   empoweredEvery: number
   instaKillChance: number
   healOnKillChance: number
+  empEnabled: boolean
+  empMaxCooldown: number
+  empDuration: number
+  empTickDamage: number
+  empRadius: number
+  magnetRadius: number
 }
 
 const INITIAL_LIVES = 3
 const BASE_FIRE_INTERVAL = 0.36
-export const CHAIN_RADIUS_BASE = 2.5 * 1.5
+export const CHAIN_RADIUS_BASE = 2.5 * 0.75 * 0.7
 
 const BASE_STATS: PlayerStats = {
   fireInterval: BASE_FIRE_INTERVAL,
@@ -59,6 +70,12 @@ const BASE_STATS: PlayerStats = {
   empoweredEvery: 0,
   instaKillChance: 0,
   healOnKillChance: 0,
+  empEnabled: false,
+  empMaxCooldown: 8,
+  empDuration: 4,
+  empTickDamage: 3,
+  empRadius: 2.5,
+  magnetRadius: 1.5,
 }
 
 export const playerStats: PlayerStats = { ...BASE_STATS }
@@ -123,8 +140,11 @@ export const UPGRADES: UpgradeDef[] = [
   {
     id: 'homing',
     name: 'Homing Missile',
-    describe: (s) =>
-      s.homingInterval <= 0 ? 'Launch homing missiles every 4s' : 'Fire missiles more often',
+    describe: (s) => {
+      if (s.homingInterval <= 0) return 'Launch homing missiles every 4.0s'
+      const next = Math.max(0.5, s.homingInterval - 0.7)
+      return `Fire every ${next.toFixed(1)}s (was ${s.homingInterval.toFixed(1)}s)`
+    },
     apply: (s) => {
       if (s.homingInterval <= 0) s.homingInterval = 4.0
       else s.homingInterval = Math.max(0.5, s.homingInterval - 0.7)
@@ -169,6 +189,56 @@ export const UPGRADES: UpgradeDef[] = [
       s.chainExplodeChance = Math.min(1, s.chainExplodeChance + 0.15)
       if (s.chainExplodeRadius <= 0) s.chainExplodeRadius = CHAIN_RADIUS_BASE
       else s.chainExplodeRadius *= 1.15
+    },
+  },
+  {
+    id: 'emp',
+    name: 'EMP Bomb',
+    describe: () => 'Drops an EMP every 8s — pulses 4s in area',
+    isAvailable: (s) => !s.empEnabled,
+    apply: (s) => {
+      s.empEnabled = true
+      s.empMaxCooldown = 8
+      s.empDuration = 4
+      s.empTickDamage = 3
+      s.empRadius = 2.5
+    },
+  },
+  {
+    id: 'empDuration',
+    name: 'EMP Sustain',
+    describe: (s) => `+1s EMP duration (now ${(s.empDuration + 1).toFixed(1)}s)`,
+    isAvailable: (s) => s.empEnabled && s.empDuration < 10,
+    apply: (s) => {
+      s.empDuration += 1
+    },
+  },
+  {
+    id: 'empDps',
+    name: 'EMP Power',
+    describe: () => '+50% EMP damage',
+    isAvailable: (s) => s.empEnabled,
+    apply: (s) => {
+      s.empTickDamage *= 1.5
+    },
+  },
+  {
+    id: 'empRadius',
+    name: 'EMP Reach',
+    describe: (s) => `+25% EMP radius (now r${(s.empRadius * 1.25).toFixed(1)})`,
+    isAvailable: (s) => s.empEnabled && s.empRadius < 8,
+    apply: (s) => {
+      s.empRadius *= 1.25
+    },
+  },
+  {
+    id: 'magnetRadius',
+    name: 'Magnet Reach',
+    describe: (s) =>
+      `+25% pickup radius (${s.magnetRadius.toFixed(1)} → ${(s.magnetRadius * 1.25).toFixed(1)})`,
+    isAvailable: (s) => s.magnetRadius < 6,
+    apply: (s) => {
+      s.magnetRadius *= 1.25
     },
   },
   {
@@ -296,7 +366,7 @@ function pickBossUpgradeChoices(stats: PlayerStats): UpgradeId[] {
 }
 
 function xpThresholdFor(level: number): number {
-  return 5 + level * 3
+  return 4 + (level - 1) * 3.3
 }
 
 interface LevelUpVisuals {
@@ -311,6 +381,7 @@ interface BossUiState {
   bossHp: number
   bossMaxHp: number
   bossProgress: number
+  dangerMessage: string
 }
 
 interface GameState extends LevelUpVisuals, BossUiState {
@@ -338,6 +409,7 @@ interface GameState extends LevelUpVisuals, BossUiState {
   setBossWarning: (v: boolean) => void
   setBossHp: (hp: number, maxHp: number) => void
   setBossProgress: (p: number) => void
+  setDangerMessage: (msg: string) => void
 }
 
 const RESET_VISUALS: LevelUpVisuals = {
@@ -352,6 +424,7 @@ const RESET_BOSS_UI: BossUiState = {
   bossHp: 0,
   bossMaxHp: 0,
   bossProgress: 0,
+  dangerMessage: '',
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -509,6 +582,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     ),
   setBossProgress: (p) =>
     set((s) => (s.bossProgress === p ? s : { bossProgress: p })),
+  setDangerMessage: (msg) =>
+    set((s) => (s.dangerMessage === msg ? s : { dangerMessage: msg })),
   setLevelUpVisuals: (v) =>
     set((s) => {
       if (

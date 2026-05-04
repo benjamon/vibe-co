@@ -43,8 +43,8 @@ const hudTop: React.CSSProperties = {
   left: '50%',
   transform: 'translateX(-50%)',
   color: '#cceeff',
-  fontFamily: 'monospace',
-  fontSize: 14,
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 11,
   textAlign: 'center',
   pointerEvents: 'none',
   userSelect: 'none',
@@ -52,14 +52,16 @@ const hudTop: React.CSSProperties = {
 }
 
 const scoreStyle: React.CSSProperties = {
-  fontSize: 24,
-  fontWeight: 'bold',
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 22,
+  marginTop: 6,
+  fontWeight: 'normal',
   color: '#33ddff',
   textShadow: '0 0 8px rgba(51, 221, 255, 0.6)',
 }
 
 const xpRow: React.CSSProperties = {
-  marginTop: 6,
+  marginTop: 8,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -67,7 +69,8 @@ const xpRow: React.CSSProperties = {
 }
 
 const levelStyle: React.CSSProperties = {
-  fontSize: 12,
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 10,
   color: '#aaffdd',
   letterSpacing: '0.15em',
 }

@@ -83,7 +83,7 @@ function Overlay({ children, onClick }: { children: React.ReactNode; onClick: ()
         background: 'rgba(5, 5, 20, 0.75)',
         color: 'white',
         cursor: 'pointer',
-        fontFamily: 'system-ui, sans-serif',
+        fontFamily: "'Orbitron', system-ui, sans-serif",
         userSelect: 'none',
       }}
     >
@@ -93,23 +93,28 @@ function Overlay({ children, onClick }: { children: React.ReactNode; onClick: ()
 }
 
 const titleStyle: React.CSSProperties = {
-  margin: '0 0 1rem',
-  fontSize: 'clamp(2rem, 8vw, 4rem)',
-  letterSpacing: '0.2em',
+  margin: '0 0 1.2rem',
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 'clamp(1.4rem, 6vw, 3rem)',
+  letterSpacing: '0.18em',
   color: '#33ddff',
   textShadow: '0 0 16px rgba(51, 221, 255, 0.6)',
+  lineHeight: 1.2,
 }
 
 const subtitleStyle: React.CSSProperties = {
   margin: '0.4rem 0',
-  fontSize: 'clamp(0.9rem, 3vw, 1.2rem)',
+  fontFamily: "'Orbitron', system-ui, sans-serif",
+  fontSize: 'clamp(0.85rem, 2.5vw, 1.1rem)',
+  letterSpacing: '0.05em',
   color: '#cccccc',
 }
 
 const buttonStyle: React.CSSProperties = {
   marginTop: '1.5rem',
-  padding: '0.8rem 2rem',
-  fontSize: '1.2rem',
+  padding: '0.85rem 2rem',
+  fontSize: '1rem',
+  fontFamily: "'Press Start 2P', monospace",
   background: '#33ddff',
   color: '#08203a',
   border: 'none',

@@ -6,6 +6,7 @@ export function BossUI() {
   const hp = useGameStore((s) => s.bossHp)
   const maxHp = useGameStore((s) => s.bossMaxHp)
   const progress = useGameStore((s) => s.bossProgress)
+  const dangerMessage = useGameStore((s) => s.dangerMessage)
 
   const pct = maxHp > 0 ? Math.max(0, Math.min(1, hp / maxHp)) * 100 : 0
   const showCountdown = started && maxHp <= 0 && !warning
@@ -14,6 +15,11 @@ export function BossUI() {
     <>
       <style>{KEYFRAMES}</style>
       {warning && <div style={warningStyle}>⚠ ANOMALY APPROACHING ⚠</div>}
+      {dangerMessage && (
+        <div key={dangerMessage} style={dangerStyle}>
+          {dangerMessage}
+        </div>
+      )}
       {maxHp > 0 && hp > 0 && (
         <div style={hpRowStyle}>
           <div style={hpLabelStyle}>BOSS</div>
@@ -39,7 +45,30 @@ const KEYFRAMES = `
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }
 }
+@keyframes dangerPulse {
+  0% { opacity: 0; letter-spacing: 0.7em; filter: blur(5px); transform: translateY(-10px); }
+  17% { opacity: 1; letter-spacing: 0.32em; filter: blur(0); transform: translateY(0); }
+  83% { opacity: 1; letter-spacing: 0.32em; filter: blur(0); transform: translateY(0); }
+  100% { opacity: 0; letter-spacing: 0.5em; filter: blur(3px); transform: translateY(0); }
+}
 `
+
+const dangerStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: '28%',
+  left: 0,
+  right: 0,
+  textAlign: 'center',
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 'clamp(10px, 1.8vw, 16px)',
+  color: '#cc3344',
+  letterSpacing: '0.25em',
+  textShadow: '0 0 12px rgba(180, 30, 50, 0.85), 0 0 2px rgba(0, 0, 0, 0.9)',
+  pointerEvents: 'none',
+  userSelect: 'none',
+  zIndex: 4,
+  animation: 'dangerPulse 3s ease-out forwards',
+}
 
 const warningStyle: React.CSSProperties = {
   position: 'absolute',
@@ -47,10 +76,10 @@ const warningStyle: React.CSSProperties = {
   left: 0,
   right: 0,
   textAlign: 'center',
-  fontFamily: 'monospace',
-  fontSize: 'clamp(20px, 4.5vw, 38px)',
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 'clamp(13px, 2.8vw, 24px)',
   color: '#ff3344',
-  letterSpacing: '0.3em',
+  letterSpacing: '0.25em',
   textShadow: '0 0 18px rgba(255, 50, 80, 0.9)',
   pointerEvents: 'none',
   userSelect: 'none',
@@ -71,7 +100,7 @@ const hpRowStyle: React.CSSProperties = {
 }
 
 const hpLabelStyle: React.CSSProperties = {
-  fontFamily: 'monospace',
+  fontFamily: "'Press Start 2P', monospace",
   fontSize: 12,
   letterSpacing: '0.25em',
   color: '#ff8899',
@@ -107,7 +136,7 @@ const countdownRowStyle: React.CSSProperties = {
 }
 
 const countdownLabelStyle: React.CSSProperties = {
-  fontFamily: 'monospace',
+  fontFamily: "'Press Start 2P', monospace",
   fontSize: 11,
   letterSpacing: '0.25em',
   color: 'rgba(255, 120, 140, 0.65)',

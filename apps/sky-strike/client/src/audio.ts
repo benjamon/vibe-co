@@ -119,6 +119,21 @@ export function playSpawn() {
   tone({ type: 'triangle', freq: 200, freqEnd: 600, duration: 0.12, volume: 0.1 })
 }
 
+const DORIAN_OFFSETS = [0, 2, 3, 5, 7, 9, 10, 12]
+const PICKUP_ROOT = 880
+
+let lastPickup = 0
+export function playPickup() {
+  const c = getCtx()
+  if (!c) return
+  if (c.currentTime - lastPickup < 0.04) return
+  lastPickup = c.currentTime
+  const semitone = DORIAN_OFFSETS[Math.floor(Math.random() * DORIAN_OFFSETS.length)]
+  const note = PICKUP_ROOT * Math.pow(2, semitone / 12)
+  tone({ type: 'sine', freq: note * 0.55, freqEnd: note, duration: 0.1, volume: 0.09, attack: 0.001 })
+  tone({ type: 'sine', freq: note * 1.0, freqEnd: note * 1.6, duration: 0.05, volume: 0.04, attack: 0.001 })
+}
+
 export function playConfirm() {
   tone({ type: 'sine', freq: 1320, duration: 0.1, volume: 0.2 })
   tone({ type: 'sine', freq: 1760, duration: 0.16, volume: 0.18, delay: 0.06 })
