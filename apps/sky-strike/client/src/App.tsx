@@ -4,9 +4,11 @@ import { HUD } from './HUD'
 import { LevelUpOverlay } from './LevelUpOverlay'
 import { BossUI } from './BossUI'
 import { PauseControls } from './PauseMenu'
+import { HighscorePanel } from './HighscorePanel'
 import { useGameStore } from './store'
-import { useEffect, useLayoutEffect } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { startMusic, unlockAudio } from './audio'
+import { connectToHighscoreServer, submitHighscore } from './highscore'
 
 const CAMERA_CONFIG = { position: [0, 0, 10] as [number, number, number], zoom: 38, near: 0.1, far: 100 }
 const FIT_WIDTH = 14.6
@@ -44,6 +46,22 @@ export function App() {
     })
   }, [])
 
+  useEffect(() => {
+    void connectToHighscoreServer()
+  }, [])
+
+  // Submit on each transition into gameOver (using the score/build snapshot in
+  // store at that moment).
+  const wasGameOverRef = useRef(false)
+  useEffect(() => {
+    return useGameStore.subscribe((state) => {
+      if (state.gameOver && !wasGameOverRef.current) {
+        submitHighscore(state.score, state.runBuild)
+      }
+      wasGameOverRef.current = state.gameOver
+    })
+  }, [])
+
   return (
     <>
       <Canvas orthographic camera={CAMERA_CONFIG}>
@@ -66,11 +84,12 @@ export function App() {
 function StartOverlay({ onStart }: { onStart: () => void }) {
   return (
     <Overlay onClick={onStart}>
-      <div style={{ textAlign: 'center' }}>
+      <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         <h1 style={titleStyle}>SKY STRIKE</h1>
         <p style={subtitleStyle}>Tap / click left or right side to move</p>
         <p style={subtitleStyle}>Auto-fire engaged. Survive the swarm.</p>
         <button style={buttonStyle}>Start</button>
+        <HighscorePanel />
       </div>
     </Overlay>
   )
@@ -81,11 +100,12 @@ function GameOverOverlay({ onRestart }: { onRestart: () => void }) {
   const highScore = useGameStore((s) => s.highScore)
   return (
     <Overlay onClick={onRestart}>
-      <div style={{ textAlign: 'center' }}>
+      <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         <h1 style={{ ...titleStyle, color: '#ff5577' }}>GAME OVER</h1>
         <p style={subtitleStyle}>Score: {score}</p>
         <p style={subtitleStyle}>Best: {highScore}</p>
         <button style={buttonStyle}>Play Again</button>
+        <HighscorePanel />
       </div>
     </Overlay>
   )

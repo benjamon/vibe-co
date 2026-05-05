@@ -237,6 +237,17 @@ export function playSpawn() {
   tone({ type: 'triangle', freq: 200, freqEnd: 600, duration: 0.12, volume: 0.1 })
 }
 
+let lastEmpTick = 0
+export function playEmpTick() {
+  const c = getCtx()
+  if (!c) return
+  if (c.currentTime - lastEmpTick < 0.08) return
+  lastEmpTick = c.currentTime
+  tone({ type: 'square', freq: 1400, freqEnd: 600, duration: 0.06, volume: 0.1 })
+  tone({ type: 'sine', freq: 220, freqEnd: 110, duration: 0.08, volume: 0.08 })
+  noise({ duration: 0.05, volume: 0.18, filterFreq: 3500, filterType: 'bandpass' })
+}
+
 const DORIAN_OFFSETS = [0, 2, 3, 5, 7, 9, 10, 12]
 const PICKUP_ROOT = 880
 

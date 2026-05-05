@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "dev": "echo 'Run: spacetime dev --project-path .' && exit 1"
+    "publish:maincloud": "spacetime publish ss-hs-70fxp -s maincloud -y --module-path .",
+    "publish:local": "spacetime publish ss-hs-70fxp -s local -y --module-path .",
+    "generate:client": "spacetime generate --lang typescript --out-dir ../client/src/module_bindings --module-path ."
   },
   "dependencies": {
-    "shared": "*"
+    "shared": "*",
+    "spacetimedb": "2.1.0"
   },
   "devDependencies": {
     "typescript": "5.8.3"

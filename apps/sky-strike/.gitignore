@@ -23,3 +23,6 @@ Thumbs.db
 # Env
 .env
 .env.local
+
+# Generated SpacetimeDB client bindings (re-created by `spacetime generate`)
+client/src/module_bindings/

@@ -23,6 +23,13 @@ export type UpgradeId =
   | 'empDps'
   | 'empRadius'
   | 'magnetRadius'
+  | 'moveSpeed'
+  | 'bulletSpeed'
+  | 'drone'
+  | 'markMissile'
+  | 'necromancy'
+  | 'knockback'
+  | 'slow'
 
 export interface PlayerStats {
   fireInterval: number
@@ -31,6 +38,8 @@ export interface PlayerStats {
   burstCount: number
   penetration: number
   bulletRadiusMul: number
+  bulletSpeedMul: number
+  moveSpeedMul: number
   homingInterval: number
   homingSalvoCount: number
   maxLives: number
@@ -47,11 +56,20 @@ export interface PlayerStats {
   empTickDamage: number
   empRadius: number
   magnetRadius: number
+  droneCount: number
+  markMissileEnabled: boolean
+  markMissileMaxCooldown: number
+  necromancyEnabled: boolean
+  bulletKnockback: number
+  bulletSlowEnabled: boolean
 }
 
 const INITIAL_LIVES = 3
-const BASE_FIRE_INTERVAL = 0.36
-export const CHAIN_RADIUS_BASE = 2.5 * 0.75 * 0.7
+export const BASE_FIRE_INTERVAL = 0.36
+export const BASE_EMP_RADIUS = 2.5
+export const BASE_MAGNET_RADIUS = 1.5
+export const CHAIN_DAMAGE = 2
+export const CHAIN_RADIUS_BASE = 2.5 * 0.75 * 0.7 * 2
 
 const BASE_STATS: PlayerStats = {
   fireInterval: BASE_FIRE_INTERVAL,
@@ -60,6 +78,8 @@ const BASE_STATS: PlayerStats = {
   burstCount: 1,
   penetration: 0,
   bulletRadiusMul: 1,
+  bulletSpeedMul: 1,
+  moveSpeedMul: 1,
   homingInterval: 0,
   homingSalvoCount: 1,
   maxLives: INITIAL_LIVES,
@@ -74,8 +94,14 @@ const BASE_STATS: PlayerStats = {
   empMaxCooldown: 8,
   empDuration: 4,
   empTickDamage: 3,
-  empRadius: 2.5,
-  magnetRadius: 1.5,
+  empRadius: BASE_EMP_RADIUS,
+  magnetRadius: BASE_MAGNET_RADIUS,
+  droneCount: 0,
+  markMissileEnabled: false,
+  markMissileMaxCooldown: 15,
+  necromancyEnabled: false,
+  bulletKnockback: 0,
+  bulletSlowEnabled: false,
 }
 
 export const playerStats: PlayerStats = { ...BASE_STATS }
@@ -96,8 +122,12 @@ export interface UpgradeDef {
 export const UPGRADES: UpgradeDef[] = [
   {
     id: 'fireRate',
-    name: 'Rapid Fire',
-    describe: () => '+15% fire rate',
+    name: 'Fire Rate Up',
+    describe: (s) => {
+      const oldPct = (BASE_FIRE_INTERVAL / s.fireInterval) * 100
+      const newPct = oldPct / 0.85
+      return `${Math.round(oldPct)}% → ${Math.round(newPct)}%`
+    },
     apply: (s) => {
       s.fireInterval *= 0.85
     },
@@ -105,16 +135,17 @@ export const UPGRADES: UpgradeDef[] = [
   {
     id: 'bulletCount',
     name: 'Multi-Shot',
-    describe: () => '+1 bullet per shot',
+    describe: (s) => `${s.bulletCount} → ${s.bulletCount + 1} bullets, −15% attack speed`,
     isAvailable: (s) => s.bulletCount < 5,
     apply: (s) => {
       s.bulletCount += 1
+      s.fireInterval *= 1.15
     },
   },
   {
     id: 'damage',
-    name: 'Heavy Rounds',
-    describe: (s) => `+1 damage (now ${s.bulletDamage + 1})`,
+    name: 'Damage Up',
+    describe: (s) => `${s.bulletDamage} → ${s.bulletDamage + 1}`,
     apply: (s) => {
       s.bulletDamage += 1
     },
@@ -122,16 +153,17 @@ export const UPGRADES: UpgradeDef[] = [
   {
     id: 'burst',
     name: 'Burst Fire',
-    describe: (s) => `+1 round per burst (now ${s.burstCount + 1})`,
+    describe: (s) => `${s.burstCount} → ${s.burstCount + 1} rounds, −15% attack speed`,
     isAvailable: (s) => s.burstCount < 4,
     apply: (s) => {
       s.burstCount += 1
+      s.fireInterval *= 1.15
     },
   },
   {
     id: 'penetration',
     name: 'Piercing Rounds',
-    describe: (s) => `+1 enemy penetration (now ${s.penetration + 1})`,
+    describe: (s) => `${s.penetration} → ${s.penetration + 1} pierces`,
     isAvailable: (s) => s.penetration < 5,
     apply: (s) => {
       s.penetration += 1
@@ -141,9 +173,9 @@ export const UPGRADES: UpgradeDef[] = [
     id: 'homing',
     name: 'Homing Missile',
     describe: (s) => {
-      if (s.homingInterval <= 0) return 'Launch homing missiles every 4.0s'
+      if (s.homingInterval <= 0) return 'Fire homing missiles every 4.0s'
       const next = Math.max(0.5, s.homingInterval - 0.7)
-      return `Fire every ${next.toFixed(1)}s (was ${s.homingInterval.toFixed(1)}s)`
+      return `${s.homingInterval.toFixed(1)}s → ${next.toFixed(1)}s between salvos`
     },
     apply: (s) => {
       if (s.homingInterval <= 0) s.homingInterval = 4.0
@@ -153,7 +185,7 @@ export const UPGRADES: UpgradeDef[] = [
   {
     id: 'homingSalvo',
     name: 'Missile Salvo',
-    describe: (s) => `+1 missile per salvo (now ${s.homingSalvoCount + 1})`,
+    describe: (s) => `${s.homingSalvoCount} → ${s.homingSalvoCount + 1} missiles per salvo`,
     isAvailable: (s) => s.homingInterval > 0 && s.homingSalvoCount < 4,
     apply: (s) => {
       s.homingSalvoCount += 1
@@ -161,28 +193,74 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'maxHp',
-    name: 'Hull Plating',
-    describe: () => '+1 max HP & heal',
+    name: 'Max HP Up',
+    describe: (s) => `${s.maxLives} → ${s.maxLives + 1}`,
     apply: (s) => {
       s.maxLives += 1
     },
   },
   {
     id: 'largeBullets',
-    name: 'Heavy Caliber',
-    describe: () => '+25% bullet size',
+    name: 'Bullet Size Up',
+    describe: (s) => {
+      const oldPct = Math.round(s.bulletRadiusMul * 100)
+      const newPct = Math.round(s.bulletRadiusMul * 1.25 * 100)
+      return `${oldPct}% → ${newPct}% bullet size`
+    },
     isAvailable: (s) => s.bulletRadiusMul < 3,
     apply: (s) => {
       s.bulletRadiusMul *= 1.25
     },
   },
   {
+    id: 'moveSpeed',
+    name: 'Move Speed Up',
+    describe: (s) => {
+      const oldPct = Math.round(s.moveSpeedMul * 100)
+      const newPct = Math.round(s.moveSpeedMul * 1.05 * 100)
+      return `${oldPct}% → ${newPct}% move speed`
+    },
+    apply: (s) => {
+      s.moveSpeedMul *= 1.05
+    },
+  },
+  {
+    id: 'bulletSpeed',
+    name: 'Bullet Speed Up',
+    describe: (s) => {
+      const oldPct = Math.round(s.bulletSpeedMul * 100)
+      const newPct = Math.round(s.bulletSpeedMul * 1.1 * 100)
+      return `${oldPct}% → ${newPct}% bullet speed`
+    },
+    apply: (s) => {
+      s.bulletSpeedMul *= 1.1
+    },
+  },
+  {
+    id: 'drone',
+    name: 'Trailing Drone',
+    describe: (s) =>
+      s.droneCount === 0
+        ? 'Adds a drone behind you that shoots when you do'
+        : `${s.droneCount} → ${s.droneCount + 1} drones`,
+    isAvailable: (s) => s.droneCount < 5,
+    apply: (s) => {
+      s.droneCount += 1
+    },
+  },
+  {
     id: 'chainExplode',
     name: 'Chain Reaction',
     describe: (s) => {
-      const newChance = Math.min(1, s.chainExplodeChance + 0.15)
-      const newRadius = s.chainExplodeRadius <= 0 ? CHAIN_RADIUS_BASE : s.chainExplodeRadius * 1.15
-      return `+15% chance, +15% radius (${Math.round(newChance * 100)}%, r${newRadius.toFixed(1)})`
+      const oldChance = Math.round(s.chainExplodeChance * 100)
+      const newChance = Math.round(Math.min(1, s.chainExplodeChance + 0.15) * 100)
+      const oldRadiusPct =
+        s.chainExplodeRadius <= 0 ? 0 : Math.round((s.chainExplodeRadius / CHAIN_RADIUS_BASE) * 100)
+      const newRadiusPct =
+        s.chainExplodeRadius <= 0
+          ? 100
+          : Math.round((s.chainExplodeRadius * 1.15 / CHAIN_RADIUS_BASE) * 100)
+      return `Chance ${oldChance}% → ${newChance}%, Radius ${oldRadiusPct}% → ${newRadiusPct}%, ${CHAIN_DAMAGE} dmg`
     },
     isAvailable: (s) => s.chainExplodeChance < 1,
     apply: (s) => {
@@ -192,22 +270,33 @@ export const UPGRADES: UpgradeDef[] = [
     },
   },
   {
+    id: 'markMissile',
+    name: 'Mark Missile',
+    describe: () =>
+      'Fires every 15s — marks an enemy so its damage spreads to all others',
+    isAvailable: (s) => !s.markMissileEnabled,
+    apply: (s) => {
+      s.markMissileEnabled = true
+      s.markMissileMaxCooldown = 15
+    },
+  },
+  {
     id: 'emp',
     name: 'EMP Bomb',
-    describe: () => 'Drops an EMP every 8s — pulses 4s in area',
+    describe: () => 'Drops an EMP every 8s — pulses 4s, 3 dmg/tick',
     isAvailable: (s) => !s.empEnabled,
     apply: (s) => {
       s.empEnabled = true
       s.empMaxCooldown = 8
       s.empDuration = 4
       s.empTickDamage = 3
-      s.empRadius = 2.5
+      s.empRadius = BASE_EMP_RADIUS
     },
   },
   {
     id: 'empDuration',
     name: 'EMP Sustain',
-    describe: (s) => `+1s EMP duration (now ${(s.empDuration + 1).toFixed(1)}s)`,
+    describe: (s) => `${s.empDuration.toFixed(1)}s → ${(s.empDuration + 1).toFixed(1)}s EMP`,
     isAvailable: (s) => s.empEnabled && s.empDuration < 10,
     apply: (s) => {
       s.empDuration += 1
@@ -216,7 +305,7 @@ export const UPGRADES: UpgradeDef[] = [
   {
     id: 'empDps',
     name: 'EMP Power',
-    describe: () => '+50% EMP damage',
+    describe: (s) => `${s.empTickDamage.toFixed(1)} → ${(s.empTickDamage * 1.5).toFixed(1)} dmg/tick`,
     isAvailable: (s) => s.empEnabled,
     apply: (s) => {
       s.empTickDamage *= 1.5
@@ -225,7 +314,11 @@ export const UPGRADES: UpgradeDef[] = [
   {
     id: 'empRadius',
     name: 'EMP Reach',
-    describe: (s) => `+25% EMP radius (now r${(s.empRadius * 1.25).toFixed(1)})`,
+    describe: (s) => {
+      const oldPct = Math.round((s.empRadius / BASE_EMP_RADIUS) * 100)
+      const newPct = Math.round((s.empRadius * 1.25 / BASE_EMP_RADIUS) * 100)
+      return `${oldPct}% → ${newPct}% EMP radius`
+    },
     isAvailable: (s) => s.empEnabled && s.empRadius < 8,
     apply: (s) => {
       s.empRadius *= 1.25
@@ -234,8 +327,11 @@ export const UPGRADES: UpgradeDef[] = [
   {
     id: 'magnetRadius',
     name: 'Magnet Reach',
-    describe: (s) =>
-      `+25% pickup radius (${s.magnetRadius.toFixed(1)} → ${(s.magnetRadius * 1.25).toFixed(1)})`,
+    describe: (s) => {
+      const oldPct = Math.round((s.magnetRadius / BASE_MAGNET_RADIUS) * 100)
+      const newPct = Math.round((s.magnetRadius * 1.25 / BASE_MAGNET_RADIUS) * 100)
+      return `${oldPct}% → ${newPct}% pickup radius`
+    },
     isAvailable: (s) => s.magnetRadius < 6,
     apply: (s) => {
       s.magnetRadius *= 1.25
@@ -328,6 +424,36 @@ export const UPGRADES: UpgradeDef[] = [
       s.bulletRadiusMul *= 1.5
     },
   },
+  {
+    id: 'necromancy',
+    name: 'Necromancy',
+    describe: () => 'Killed enemies spawn a ghost — haunts for 3s, deals your bullet damage',
+    bossOnly: true,
+    isAvailable: (s) => !s.necromancyEnabled,
+    apply: (s) => {
+      s.necromancyEnabled = true
+    },
+  },
+  {
+    id: 'knockback',
+    name: 'Knockback',
+    describe: () => 'Main bullets push enemies back a small amount',
+    bossOnly: true,
+    isAvailable: (s) => s.bulletKnockback <= 0,
+    apply: (s) => {
+      s.bulletKnockback = 5
+    },
+  },
+  {
+    id: 'slow',
+    name: 'Cryo Rounds',
+    describe: () => 'Main bullets slow enemies 60% for 1s',
+    bossOnly: true,
+    isAvailable: (s) => !s.bulletSlowEnabled,
+    apply: (s) => {
+      s.bulletSlowEnabled = true
+    },
+  },
 ]
 
 const UPGRADE_BY_ID: Record<UpgradeId, UpgradeDef> = UPGRADES.reduce(
@@ -384,6 +510,8 @@ interface BossUiState {
   dangerMessage: string
 }
 
+export type RunBuild = Partial<Record<UpgradeId, number>>
+
 interface GameState extends LevelUpVisuals, BossUiState {
   started: boolean
   gameOver: boolean
@@ -400,6 +528,7 @@ interface GameState extends LevelUpVisuals, BossUiState {
   masterVolume: number
   sfxVolume: number
   musicVolume: number
+  runBuild: RunBuild
   start: () => void
   end: () => void
   reset: () => void
@@ -452,6 +581,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   masterVolume: 1.0,
   sfxVolume: 0.8,
   musicVolume: 0.5,
+  runBuild: {},
   ...RESET_VISUALS,
   ...RESET_BOSS_UI,
   start: () => {
@@ -468,6 +598,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       pendingBossUpgrades: 0,
       upgradeChoices: [],
       userPaused: false,
+      runBuild: {},
       ...RESET_VISUALS,
   ...RESET_BOSS_UI,
     })
@@ -568,11 +699,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       } else if (remainingRegular > 0) {
         nextChoices = pickUpgradeChoices(playerStats)
       }
+      const nextRunBuild: RunBuild = { ...s.runBuild, [id]: (s.runBuild[id] ?? 0) + 1 }
       return {
         pendingBossUpgrades: Math.max(0, remainingBoss),
         pendingLevelUps: Math.max(0, remainingRegular),
         upgradeChoices: nextChoices,
         lives: livesNext,
+        runBuild: nextRunBuild,
       }
     })
   },

@@ -12,9 +12,9 @@ import {
   MeshStandardMaterial,
   Object3D,
 } from 'three'
-import { playerStats, useGameStore } from './store'
+import { CHAIN_DAMAGE, playerStats, useGameStore } from './store'
 import { useInput, type InputState } from './useInput'
-import { playConfirm, playDamage, playHit, playKill, playLevelUp, playMissileHit, playPickup, playShoot, playSpawn } from './audio'
+import { playConfirm, playDamage, playEmpTick, playHit, playKill, playLevelUp, playMissileHit, playPickup, playShoot, playSpawn } from './audio'
 import {
   addChainRing,
   addEmpTrail,
@@ -54,8 +54,6 @@ const MISSILE_TUMBLE_SPEED = 8
 const MISSILE_TUMBLE_SPIN = 16
 const MISSILE_TUMBLE_DRAG = 2.0
 
-const CHAIN_DAMAGE = 2
-
 const MAX_BULLETS = 128
 const MAX_MISSILES = 24
 const MAX_ENEMIES_PER_TYPE = 24
@@ -64,6 +62,21 @@ const MAX_RINGS = 32
 const STAR_COUNT = 80
 const MAX_EMPS = 4
 const MAX_DIAMONDS = 240
+const MAX_DRONES = 5
+const DRONE_SPACING = 1.0
+const DRONE_FOLLOW_RATE = 5
+
+const MAX_GHOSTS = 64
+const GHOST_LIFETIME = 3.0
+const GHOST_RADIUS = 0.45
+const GHOST_SPEED = 4
+const GHOST_DIR_CHANGE_MIN = 0.25
+const GHOST_DIR_CHANGE_MAX = 0.6
+const MAX_GHOST_HITS = 16
+
+const KNOCKBACK_DAMP = 8
+const SLOW_DURATION = 1.0
+const SLOW_FACTOR = 0.4
 
 const EMP_FLIGHT_SPEED = 9
 const EMP_TARGET_Y = 5
@@ -135,6 +148,9 @@ interface Enemy {
   swayFrequency: number
   gen: number
   elite: boolean
+  marked: boolean
+  slowTimer: number
+  knockbackVy: number
 }
 
 const ELITE_SCALE = 1.15
@@ -226,6 +242,7 @@ interface Missile {
   armTimer: number
   rotation: number
   angularVelocity: number
+  mark: boolean
 }
 
 type EmpPhase = 'flight' | 'active'
@@ -251,9 +268,30 @@ interface Diamond {
   phase: number
 }
 
+interface Drone {
+  active: boolean
+  x: number
+  y: number
+}
+
+interface Ghost {
+  active: boolean
+  x: number
+  y: number
+  vx: number
+  vy: number
+  age: number
+  damage: number
+  changeDirTimer: number
+  hitGens: Float64Array
+  hitCount: number
+}
+
 const COLOR_BULLET_PLAYER = new Color('#33ffaa')
 const COLOR_BULLET_ENEMY = new Color('#ff3344')
 const COLOR_BULLET_EMPOWERED = new Color('#ffdd33')
+const COLOR_MISSILE_NORMAL = new Color('#aaff44')
+const COLOR_MISSILE_MARK = new Color('#1a0033')
 const COLOR_ENEMY_BASIC_HEX = '#ff5577'
 const COLOR_ENEMY_SHOOTER_HEX = '#ffaa33'
 const COLOR_ENEMY_ZIGZAG_HEX = '#aa66ff'
@@ -379,6 +417,7 @@ function makeMissilePool(): Missile[] {
       armTimer: 0,
       rotation: 0,
       angularVelocity: 0,
+      mark: false,
     })
   }
   return arr
@@ -416,6 +455,69 @@ function makeDiamondPool(): Diamond[] {
   return arr
 }
 
+function makeDronePool(): Drone[] {
+  const arr: Drone[] = []
+  for (let i = 0; i < MAX_DRONES; i++) {
+    arr.push({ active: false, x: 0, y: 0 })
+  }
+  return arr
+}
+
+function makeGhostPool(): Ghost[] {
+  const arr: Ghost[] = []
+  for (let i = 0; i < MAX_GHOSTS; i++) {
+    arr.push({
+      active: false,
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      age: 0,
+      damage: 0,
+      changeDirTimer: 0,
+      hitGens: new Float64Array(MAX_GHOST_HITS),
+      hitCount: 0,
+    })
+  }
+  return arr
+}
+
+let ghostsPool: Ghost[] | null = null
+function spawnGhost(x: number, y: number, damage: number) {
+  const pool = ghostsPool
+  if (!pool) return
+  for (let i = 0; i < pool.length; i++) {
+    const g = pool[i]
+    if (!g.active) {
+      g.active = true
+      g.x = x
+      g.y = y
+      const angle = Math.random() * Math.PI * 2
+      g.vx = Math.cos(angle) * GHOST_SPEED
+      g.vy = Math.sin(angle) * GHOST_SPEED
+      g.age = 0
+      g.damage = damage
+      g.changeDirTimer =
+        GHOST_DIR_CHANGE_MIN + Math.random() * (GHOST_DIR_CHANGE_MAX - GHOST_DIR_CHANGE_MIN)
+      g.hitCount = 0
+      return
+    }
+  }
+}
+
+function ghostHasHit(g: Ghost, gen: number): boolean {
+  for (let i = 0; i < g.hitCount; i++) {
+    if (g.hitGens[i] === gen) return true
+  }
+  return false
+}
+
+function recordGhostHit(g: Ghost, gen: number) {
+  if (g.hitCount < g.hitGens.length) {
+    g.hitGens[g.hitCount++] = gen
+  }
+}
+
 function spawnDiamond(diamonds: Diamond[], x: number, y: number, value: number) {
   for (let i = 0; i < diamonds.length; i++) {
     const d = diamonds[i]
@@ -449,6 +551,9 @@ function makeEnemyPool(type: EnemyType): Enemy[] {
       swayFrequency: 0,
       gen: 0,
       elite: false,
+      marked: false,
+      slowTimer: 0,
+      knockbackVy: 0,
     })
   }
   return arr
@@ -522,14 +627,26 @@ function GameSceneInner() {
   const puffMeshRef = useRef<InstancedMesh>(null)
   const ringMeshRef = useRef<InstancedMesh>(null)
   const starMeshRef = useRef<InstancedMesh>(null)
+  const droneMeshRef = useRef<InstancedMesh>(null)
+  const ghostMeshRef = useRef<InstancedMesh>(null)
   const prevSparkUsedRef = useRef(0)
   const prevPuffUsedRef = useRef(0)
   const prevRingUsedRef = useRef(0)
+  const markMissileCooldownRef = useRef(0)
 
   const bullets = useMemo(makeBulletPool, [])
   const missiles = useMemo(makeMissilePool, [])
   const emps = useMemo(makeEmpPool, [])
   const diamonds = useMemo(makeDiamondPool, [])
+  const drones = useMemo(makeDronePool, [])
+  const ghosts = useMemo(makeGhostPool, [])
+
+  useEffect(() => {
+    ghostsPool = ghosts
+    return () => {
+      ghostsPool = null
+    }
+  }, [ghosts])
   const enemiesBasic = useMemo(() => makeEnemyPool(0), [])
   const enemiesShooter = useMemo(() => makeEnemyPool(1), [])
   const enemiesZigzag = useMemo(() => makeEnemyPool(2), [])
@@ -564,6 +681,8 @@ function GameSceneInner() {
       sparkMeshRef.current,
       puffMeshRef.current,
       ringMeshRef.current,
+      droneMeshRef.current,
+      ghostMeshRef.current,
     ]
     for (const mesh of meshes) {
       if (!mesh) continue
@@ -594,6 +713,7 @@ function GameSceneInner() {
       burstTimerRef.current = 0
       homingTimerRef.current = playerStats.homingInterval
       empCooldownRef.current = playerStats.empMaxCooldown
+      markMissileCooldownRef.current = playerStats.markMissileMaxCooldown
       shotCounterRef.current = 0
       shieldCooldownRef.current = 0
       lastDangerMinuteRef.current = 0
@@ -609,6 +729,15 @@ function GameSceneInner() {
       for (let i = 0; i < missiles.length; i++) missiles[i].active = false
       for (let i = 0; i < emps.length; i++) emps[i].active = false
       for (let i = 0; i < diamonds.length; i++) diamonds[i].active = false
+      for (let i = 0; i < drones.length; i++) {
+        drones[i].active = false
+        drones[i].x = 0
+        drones[i].y = PLAYER_Y
+      }
+      for (let i = 0; i < ghosts.length; i++) {
+        ghosts[i].active = false
+        ghosts[i].hitCount = 0
+      }
       for (let i = 0; i < enemiesBasic.length; i++) enemiesBasic[i].active = false
       for (let i = 0; i < enemiesShooter.length; i++) enemiesShooter[i].active = false
       for (let i = 0; i < enemiesZigzag.length; i++) enemiesZigzag[i].active = false
@@ -638,7 +767,7 @@ function GameSceneInner() {
       store.setDangerMessage('')
       clearEffects()
     }
-  }, [started, bullets, missiles, emps, diamonds, enemiesBasic, enemiesShooter, enemiesZigzag])
+  }, [started, bullets, missiles, emps, diamonds, drones, ghosts, enemiesBasic, enemiesShooter, enemiesZigzag])
 
   useFrame((_, dtRaw) => {
     const dt = Math.min(dtRaw, 0.05)
@@ -768,9 +897,11 @@ function GameSceneInner() {
 
       const input: InputState = inputRef.current
       const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0)
-      playerXRef.current += dir * PLAYER_SPEED * dt
+      playerXRef.current += dir * PLAYER_SPEED * playerStats.moveSpeedMul * dt
       if (playerXRef.current < -FIELD_HALF_WIDTH + 0.25) playerXRef.current = -FIELD_HALF_WIDTH + 0.25
       if (playerXRef.current > FIELD_HALF_WIDTH - 0.25) playerXRef.current = FIELD_HALF_WIDTH - 0.25
+
+      updateDrones(drones, dt, playerXRef.current)
 
       fireTimerRef.current -= dt
       if (fireTimerRef.current <= 0 && burstShotsRef.current === 0) {
@@ -785,6 +916,7 @@ function GameSceneInner() {
           burstShotsRef.current -= 1
           shotCounterRef.current += 1
           fireSalvo(bullets, playerXRef.current, shotCounterRef.current)
+          fireDroneShots(bullets, drones)
         }
       }
 
@@ -793,6 +925,14 @@ function GameSceneInner() {
         if (homingTimerRef.current <= 0) {
           homingTimerRef.current = playerStats.homingInterval
           spawnMissileSalvo(missiles, playerXRef.current)
+        }
+      }
+
+      if (playerStats.markMissileEnabled) {
+        markMissileCooldownRef.current -= dt
+        if (markMissileCooldownRef.current <= 0) {
+          markMissileCooldownRef.current = playerStats.markMissileMaxCooldown
+          spawnMarkMissile(missiles, playerXRef.current)
         }
       }
 
@@ -830,6 +970,9 @@ function GameSceneInner() {
           e.swayFrequency = 0
           e.gen = newGen()
           e.elite = isElite
+          e.marked = false
+          e.slowTimer = 0
+          e.knockbackVy = 0
           const hpScale = Math.pow(2, elapsedRef.current / 60)
           e.hp = Math.ceil(1 * hpScale)
           if (type === 0) {
@@ -890,6 +1033,7 @@ function GameSceneInner() {
       }
 
       updateMissiles(missiles, dt, allEnemyPools, boss, diamonds)
+      updateGhosts(ghosts, dt, allEnemyPools, boss, diamonds)
 
       const px = playerXRef.current
       const py = PLAYER_Y
@@ -1008,6 +1152,46 @@ function GameSceneInner() {
       star.instanceMatrix.needsUpdate = true
     }
 
+    const ghostMesh = ghostMeshRef.current
+    if (ghostMesh) {
+      for (let i = 0; i < ghosts.length; i++) {
+        const g = ghosts[i]
+        if (g.active) {
+          const fade = g.age < GHOST_LIFETIME - 0.6 ? 1 : Math.max(0, (GHOST_LIFETIME - g.age) / 0.6)
+          const pulse = 0.85 + 0.15 * Math.sin(g.age * 9)
+          tempObj.position.set(g.x, g.y, 0.05)
+          tempObj.rotation.set(0, 0, g.age * 2)
+          tempObj.scale.setScalar(pulse * (0.7 + 0.3 * fade))
+          tempObj.updateMatrix()
+          ghostMesh.setMatrixAt(i, tempObj.matrix)
+          const k = 0.55 + 0.45 * fade
+          tempColor.setRGB(0.85 * k, 0.95 * k, 1.0 * k)
+          ghostMesh.setColorAt(i, tempColor)
+        } else {
+          ghostMesh.setMatrixAt(i, HIDDEN_MATRIX)
+        }
+      }
+      ghostMesh.instanceMatrix.needsUpdate = true
+      if (ghostMesh.instanceColor) ghostMesh.instanceColor.needsUpdate = true
+    }
+
+    const droneMesh = droneMeshRef.current
+    if (droneMesh) {
+      for (let i = 0; i < drones.length; i++) {
+        const d = drones[i]
+        if (d.active) {
+          tempObj.position.set(d.x, d.y, 0)
+          tempObj.rotation.set(0, 0, 0)
+          tempObj.scale.setScalar(0.55)
+          tempObj.updateMatrix()
+          droneMesh.setMatrixAt(i, tempObj.matrix)
+        } else {
+          droneMesh.setMatrixAt(i, HIDDEN_MATRIX)
+        }
+      }
+      droneMesh.instanceMatrix.needsUpdate = true
+    }
+
     const bulletsMesh = bulletsMeshRef.current
     if (bulletsMesh) {
       for (let i = 0; i < bullets.length; i++) {
@@ -1044,11 +1228,13 @@ function GameSceneInner() {
           tempObj.scale.setScalar(1)
           tempObj.updateMatrix()
           missilesMesh.setMatrixAt(i, tempObj.matrix)
+          missilesMesh.setColorAt(i, m.mark ? COLOR_MISSILE_MARK : COLOR_MISSILE_NORMAL)
         } else {
           missilesMesh.setMatrixAt(i, HIDDEN_MATRIX)
         }
       }
       missilesMesh.instanceMatrix.needsUpdate = true
+      if (missilesMesh.instanceColor) missilesMesh.instanceColor.needsUpdate = true
     }
 
     const empMesh = empMeshRef.current
@@ -1243,6 +1429,16 @@ function GameSceneInner() {
         </mesh>
       </group>
 
+      <instancedMesh ref={droneMeshRef} args={[undefined, undefined, MAX_DRONES]}>
+        <coneGeometry args={[0.4, 0.9, 4]} />
+        <meshStandardMaterial color="#88ccff" emissive="#225588" emissiveIntensity={0.5} />
+      </instancedMesh>
+
+      <instancedMesh ref={ghostMeshRef} args={[undefined, undefined, MAX_GHOSTS]}>
+        <sphereGeometry args={[GHOST_RADIUS, 12, 8]} />
+        <meshBasicMaterial transparent depthWrite={false} blending={AdditiveBlending} />
+      </instancedMesh>
+
       <instancedMesh ref={bulletsMeshRef} args={[undefined, undefined, MAX_BULLETS]}>
         <sphereGeometry args={[BULLET_RADIUS, 8, 8]} />
         <meshBasicMaterial />
@@ -1250,7 +1446,7 @@ function GameSceneInner() {
 
       <instancedMesh ref={missilesMeshRef} args={[undefined, undefined, MAX_MISSILES]}>
         <coneGeometry args={[0.18, 0.6, 6]} />
-        <meshBasicMaterial color="#aaff44" />
+        <meshBasicMaterial />
       </instancedMesh>
 
       <instancedMesh ref={empMeshRef} args={[undefined, undefined, MAX_EMPS]}>
@@ -1332,8 +1528,9 @@ function fireSalvo(bullets: Bullet[], playerX: number, shotIndex: number) {
     b.active = true
     b.x = bx
     b.y = by
-    b.vx = Math.cos(a) * BULLET_SPEED_PLAYER
-    b.vy = Math.sin(a) * BULLET_SPEED_PLAYER
+    const bulletSpeed = BULLET_SPEED_PLAYER * playerStats.bulletSpeedMul
+    b.vx = Math.cos(a) * bulletSpeed
+    b.vy = Math.sin(a) * bulletSpeed
     b.fromPlayer = true
     b.empowered = empowered
     b.damage = damage
@@ -1343,6 +1540,54 @@ function fireSalvo(bullets: Bullet[], playerX: number, shotIndex: number) {
   }
   addMuzzleFlash(bx, by)
   playShoot()
+}
+
+function updateDrones(drones: Drone[], dt: number, playerX: number) {
+  const droneCount = playerStats.droneCount
+  const followK = Math.min(1, dt * DRONE_FOLLOW_RATE)
+  let leaderX = playerX
+  let leaderY = PLAYER_Y
+  for (let i = 0; i < drones.length; i++) {
+    const d = drones[i]
+    if (i < droneCount) {
+      const targetY = leaderY - DRONE_SPACING
+      if (!d.active) {
+        d.x = leaderX
+        d.y = targetY
+        d.active = true
+      } else {
+        d.x += (leaderX - d.x) * followK
+        d.y += (targetY - d.y) * followK
+      }
+      leaderX = d.x
+      leaderY = d.y
+    } else if (d.active) {
+      d.active = false
+    }
+  }
+}
+
+function fireDroneShots(bullets: Bullet[], drones: Drone[]) {
+  const speed = BULLET_SPEED_PLAYER * playerStats.bulletSpeedMul
+  const radius = BULLET_RADIUS * playerStats.bulletRadiusMul
+  const damage = playerStats.bulletDamage
+  for (let i = 0; i < drones.length; i++) {
+    const d = drones[i]
+    if (!d.active) continue
+    const b = findInactiveBullet(bullets)
+    if (!b) return
+    b.active = true
+    b.x = d.x
+    b.y = d.y + 0.3
+    b.vx = 0
+    b.vy = speed
+    b.fromPlayer = true
+    b.empowered = false
+    b.damage = damage
+    b.pen = playerStats.penetration
+    b.radius = radius
+    b.hitCount = 0
+  }
 }
 
 function spawnEmp(emps: EmpState[], playerX: number) {
@@ -1399,6 +1644,7 @@ function updateEmps(
     emp.tickTimer -= dt
     if (emp.tickTimer <= 0) {
       emp.tickTimer = EMP_TICK_INTERVAL
+      playEmpTick()
       for (const pool of allPools) {
         for (let j = 0; j < pool.length; j++) {
           const e = pool[j]
@@ -1406,6 +1652,7 @@ function updateEmps(
           const dx = e.x - emp.x
           const dy = e.y - emp.y
           if (dx * dx + dy * dy >= radiusSq) continue
+          const wasMarked = e.marked
           e.hp -= dmg
           if (
             playerStats.instaKillChance > 0 &&
@@ -1421,6 +1668,9 @@ function updateEmps(
             }
           } else {
             addHitSparks(e.x, e.y, '#88ccff')
+          }
+          if (wasMarked) {
+            spreadMarkDamage(e, dmg, allPools, boss, diamonds)
           }
         }
       }
@@ -1495,7 +1745,25 @@ function spawnMissileSalvo(missiles: Missile[], playerX: number) {
     m.armTimer = MISSILE_ARM_DELAY_MIN + Math.random() * (MISSILE_ARM_DELAY_MAX - MISSILE_ARM_DELAY_MIN)
     m.rotation = Math.random() * Math.PI * 2
     m.angularVelocity = (Math.random() < 0.5 ? -1 : 1) * MISSILE_TUMBLE_SPIN * (0.6 + Math.random() * 0.6)
+    m.mark = false
   }
+}
+
+function spawnMarkMissile(missiles: Missile[], playerX: number) {
+  const m = findInactiveMissile(missiles)
+  if (!m) return
+  const angle = Math.random() * Math.PI * 2
+  const speed = MISSILE_TUMBLE_SPEED * (0.7 + Math.random() * 0.6)
+  m.active = true
+  m.x = playerX
+  m.y = PLAYER_Y + 0.8
+  m.vx = Math.cos(angle) * speed
+  m.vy = Math.sin(angle) * speed
+  m.age = 0
+  m.armTimer = MISSILE_ARM_DELAY_MIN + Math.random() * (MISSILE_ARM_DELAY_MAX - MISSILE_ARM_DELAY_MIN)
+  m.rotation = Math.random() * Math.PI * 2
+  m.angularVelocity = (Math.random() < 0.5 ? -1 : 1) * MISSILE_TUMBLE_SPIN * (0.6 + Math.random() * 0.6)
+  m.mark = true
 }
 
 function updateEnemyPool(pool: Enemy[], dt: number, bullets: Bullet[]) {
@@ -1503,7 +1771,16 @@ function updateEnemyPool(pool: Enemy[], dt: number, bullets: Bullet[]) {
     const e = pool[i]
     if (!e.active) continue
     e.age += dt
-    e.y += e.vy * dt
+    if (e.slowTimer > 0) {
+      e.slowTimer -= dt
+      if (e.slowTimer < 0) e.slowTimer = 0
+    }
+    const slowMul = e.slowTimer > 0 ? SLOW_FACTOR : 1
+    e.y += (e.vy * slowMul + e.knockbackVy) * dt
+    if (e.knockbackVy > 0) {
+      e.knockbackVy *= Math.max(0, 1 - KNOCKBACK_DAMP * dt)
+      if (e.knockbackVy < 0.05) e.knockbackVy = 0
+    }
     if (e.type === 2) {
       e.x = e.baseX + Math.sin(e.age * e.swayFrequency * Math.PI) * e.swayAmplitude
     }
@@ -1553,9 +1830,19 @@ function damageEnemiesInRange(
     const r = b.radius + enemyR
     if (dx * dx + dy * dy >= r * r) continue
     recordHit(b, e.gen)
-    e.hp -= b.damage
+    const wasMarked = e.marked
+    const damage = b.damage
+    e.hp -= damage
     if (playerStats.instaKillChance > 0 && Math.random() < playerStats.instaKillChance) {
       e.hp = 0
+    }
+    if (b.fromPlayer) {
+      if (playerStats.bulletKnockback > 0 && e.knockbackVy < playerStats.bulletKnockback) {
+        e.knockbackVy = playerStats.bulletKnockback
+      }
+      if (playerStats.bulletSlowEnabled) {
+        e.slowTimer = SLOW_DURATION
+      }
     }
     const color = colorHexFor(e.type)
     if (e.hp <= 0) {
@@ -1567,6 +1854,9 @@ function damageEnemiesInRange(
       addHitSparks(b.x, b.y, color)
       addShake(0.05, 0.08)
       playHit()
+    }
+    if (wasMarked) {
+      spreadMarkDamage(e, damage, allPools, boss, diamonds)
     }
     remaining -= 1
   }
@@ -1585,6 +1875,9 @@ function onEnemyKilled(e: Enemy, color: string, diamonds: Diamond[]) {
     Math.random() < playerStats.healOnKillChance
   ) {
     pushHeal(1)
+  }
+  if (playerStats.necromancyEnabled) {
+    spawnGhost(e.x, e.y, playerStats.bulletDamage)
   }
 }
 
@@ -1765,6 +2058,7 @@ function chainExplode(
       const dx = e.x - x
       const dy = e.y - y
       if (dx * dx + dy * dy < radiusSq) {
+        const wasMarked = e.marked
         e.hp -= CHAIN_DAMAGE
         if (playerStats.instaKillChance > 0 && Math.random() < playerStats.instaKillChance) {
           e.hp = 0
@@ -1781,8 +2075,14 @@ function chainExplode(
           ) {
             pushHeal(1)
           }
+          if (playerStats.necromancyEnabled) {
+            spawnGhost(e.x, e.y, playerStats.bulletDamage)
+          }
         } else {
           addHitSparks(e.x, e.y, color)
+        }
+        if (wasMarked) {
+          spreadMarkDamage(e, CHAIN_DAMAGE, allPools, boss, diamonds)
         }
       }
     }
@@ -1889,6 +2189,17 @@ function updateMissiles(
         const enemyR = e.elite ? ENEMY_RADIUS * ELITE_SCALE : ENEMY_RADIUS
         const r = MISSILE_RADIUS + enemyR
         if (dx * dx + dy * dy < r * r) {
+          if (m.mark) {
+            e.marked = true
+            addExplosion(m.x, m.y, '#aa44ff')
+            addChainRing(e.x, e.y, ENEMY_RADIUS * 2, '#aa44ff')
+            addShake(0.12, 0.18)
+            playMissileHit()
+            m.active = false
+            hit = true
+            break
+          }
+          const wasMarked = e.marked
           e.hp -= MISSILE_DAMAGE
           if (playerStats.instaKillChance > 0 && Math.random() < playerStats.instaKillChance) {
             e.hp = 0
@@ -1901,6 +2212,9 @@ function updateMissiles(
             }
           } else {
             addHitSparks(e.x, e.y, color)
+          }
+          if (wasMarked) {
+            spreadMarkDamage(e, MISSILE_DAMAGE, allPools, boss, diamonds)
           }
           addExplosion(m.x, m.y, '#ffcc44')
           addShake(0.15, 0.18)
@@ -1917,13 +2231,111 @@ function updateMissiles(
       const rx = BOSS_HALF_WIDTH + MISSILE_RADIUS
       const ry = BOSS_HALF_HEIGHT + MISSILE_RADIUS
       if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) < 1) {
-        applyBossDamage(boss, MISSILE_DAMAGE, m.x, m.y)
-        addExplosion(m.x, m.y, '#ffcc44')
-        addShake(0.15, 0.18)
-        playMissileHit()
-        m.active = false
+        if (m.mark) {
+          // Mark missiles dud against the boss; no marking of bosses.
+          addExplosion(m.x, m.y, '#aa44ff')
+          addShake(0.1, 0.15)
+          m.active = false
+        } else {
+          applyBossDamage(boss, MISSILE_DAMAGE, m.x, m.y)
+          addExplosion(m.x, m.y, '#ffcc44')
+          addShake(0.15, 0.18)
+          playMissileHit()
+          m.active = false
+        }
       }
     }
+  }
+}
+
+function updateGhosts(
+  ghosts: Ghost[],
+  dt: number,
+  allPools: Enemy[][],
+  boss: BossState,
+  diamonds: Diamond[],
+) {
+  for (let i = 0; i < ghosts.length; i++) {
+    const g = ghosts[i]
+    if (!g.active) continue
+    g.age += dt
+    if (g.age >= GHOST_LIFETIME) {
+      g.active = false
+      continue
+    }
+    g.changeDirTimer -= dt
+    if (g.changeDirTimer <= 0) {
+      const angle = Math.random() * Math.PI * 2
+      g.vx = Math.cos(angle) * GHOST_SPEED
+      g.vy = Math.sin(angle) * GHOST_SPEED
+      g.changeDirTimer =
+        GHOST_DIR_CHANGE_MIN + Math.random() * (GHOST_DIR_CHANGE_MAX - GHOST_DIR_CHANGE_MIN)
+    }
+    g.x += g.vx * dt
+    g.y += g.vy * dt
+    if (g.x < -FIELD_HALF_WIDTH) {
+      g.x = -FIELD_HALF_WIDTH
+      g.vx = Math.abs(g.vx)
+    } else if (g.x > FIELD_HALF_WIDTH) {
+      g.x = FIELD_HALF_WIDTH
+      g.vx = -Math.abs(g.vx)
+    }
+    if (g.y < FIELD_BOTTOM + 1) {
+      g.y = FIELD_BOTTOM + 1
+      g.vy = Math.abs(g.vy)
+    } else if (g.y > FIELD_TOP - 1) {
+      g.y = FIELD_TOP - 1
+      g.vy = -Math.abs(g.vy)
+    }
+    for (const pool of allPools) {
+      for (let j = 0; j < pool.length; j++) {
+        const e = pool[j]
+        if (!e.active) continue
+        if (ghostHasHit(g, e.gen)) continue
+        const dx = e.x - g.x
+        const dy = e.y - g.y
+        const enemyR = e.elite ? ENEMY_RADIUS * ELITE_SCALE : ENEMY_RADIUS
+        const r = GHOST_RADIUS + enemyR
+        if (dx * dx + dy * dy >= r * r) continue
+        recordGhostHit(g, e.gen)
+        const wasMarked = e.marked
+        e.hp -= g.damage
+        const color = colorHexFor(e.type)
+        if (e.hp <= 0) {
+          onEnemyKilled(e, color, diamonds)
+        } else {
+          addHitSparks(e.x, e.y, '#cceeff')
+        }
+        if (wasMarked) {
+          spreadMarkDamage(e, g.damage, allPools, boss, diamonds)
+        }
+      }
+    }
+  }
+}
+
+function spreadMarkDamage(
+  src: Enemy,
+  dmg: number,
+  allPools: Enemy[][],
+  boss: BossState,
+  diamonds: Diamond[],
+) {
+  for (const pool of allPools) {
+    for (let i = 0; i < pool.length; i++) {
+      const other = pool[i]
+      if (!other.active || other === src) continue
+      other.hp -= dmg
+      const color = colorHexFor(other.type)
+      if (other.hp <= 0) {
+        onEnemyKilled(other, color, diamonds)
+      } else {
+        addHitSparks(other.x, other.y, '#aa44ff')
+      }
+    }
+  }
+  if (bossIsTargetable(boss)) {
+    applyBossDamage(boss, dmg, boss.x, boss.y)
   }
 }
 
