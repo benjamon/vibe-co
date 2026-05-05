@@ -1,13 +1,31 @@
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import { GameScene } from './GameScene'
 import { HUD } from './HUD'
 import { LevelUpOverlay } from './LevelUpOverlay'
 import { BossUI } from './BossUI'
+import { PauseControls } from './PauseMenu'
 import { useGameStore } from './store'
-import { useEffect } from 'react'
-import { unlockAudio } from './audio'
+import { useEffect, useLayoutEffect } from 'react'
+import { startMusic, unlockAudio } from './audio'
 
 const CAMERA_CONFIG = { position: [0, 0, 10] as [number, number, number], zoom: 38, near: 0.1, far: 100 }
+const FIT_WIDTH = 14.6
+const FIT_HEIGHT = 20.6
+const MAX_ZOOM = 38
+
+function CameraFit() {
+  const size = useThree((s) => s.size)
+  const camera = useThree((s) => s.camera)
+  useLayoutEffect(() => {
+    if (!('isOrthographicCamera' in camera) || !camera.isOrthographicCamera) return
+    const z = Math.min(MAX_ZOOM, size.width / FIT_WIDTH, size.height / FIT_HEIGHT)
+    if (camera.zoom !== z) {
+      camera.zoom = z
+      camera.updateProjectionMatrix()
+    }
+  }, [size, camera])
+  return null
+}
 
 export function App() {
   const started = useGameStore((s) => s.started)
@@ -15,6 +33,7 @@ export function App() {
   const startRaw = useGameStore((s) => s.start)
   const start = () => {
     unlockAudio()
+    startMusic()
     startRaw()
   }
 
@@ -31,11 +50,13 @@ export function App() {
         <color attach="background" args={['#0a0820']} />
         <ambientLight intensity={0.6} />
         <directionalLight position={[5, 5, 8]} intensity={0.9} />
+        <CameraFit />
         <GameScene />
       </Canvas>
       <HUD />
       <BossUI />
       <LevelUpOverlay />
+      <PauseControls />
       {!started && !gameOver && <StartOverlay onStart={start} />}
       {gameOver && <GameOverOverlay onRestart={start} />}
     </>

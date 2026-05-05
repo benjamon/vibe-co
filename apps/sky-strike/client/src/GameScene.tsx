@@ -14,9 +14,10 @@ import {
 } from 'three'
 import { playerStats, useGameStore } from './store'
 import { useInput, type InputState } from './useInput'
-import { playConfirm, playDamage, playHit, playKill, playLevelUp, playPickup, playShoot, playSpawn } from './audio'
+import { playConfirm, playDamage, playHit, playKill, playLevelUp, playMissileHit, playPickup, playShoot, playSpawn } from './audio'
 import {
   addChainRing,
+  addEmpTrail,
   addExplosion,
   addHitSparks,
   addMuzzleFlash,
@@ -47,6 +48,11 @@ const MISSILE_DAMAGE = 5
 const MISSILE_MAX_SPEED = 14
 const MISSILE_ACCEL = 30
 const MISSILE_LIFETIME = 5
+const MISSILE_ARM_DELAY_MIN = 0.5
+const MISSILE_ARM_DELAY_MAX = 1.0
+const MISSILE_TUMBLE_SPEED = 8
+const MISSILE_TUMBLE_SPIN = 16
+const MISSILE_TUMBLE_DRAG = 2.0
 
 const CHAIN_DAMAGE = 2
 
@@ -68,16 +74,7 @@ const DIAMOND_MAGNET_SPEED = 16
 const DIAMOND_COLLECT_THRESHOLD = 0.55
 const DIAMOND_RADIUS = 0.27
 
-const DANGER_MESSAGES = [
-  'THEY GROW STRONGER',
-  'AN ANCIENT POWER STIRS',
-  'DARKNESS DEEPENS',
-  'THEIR HUNGER GROWS',
-  'THE VOID THICKENS',
-  'SOMETHING WATCHES',
-  'DEEPER THE ABYSS',
-  'THEIR FORM HARDENS',
-]
+const DANGER_MESSAGE = 'ENEMY POWER UP'
 const DANGER_MESSAGE_DURATION = 3.0
 
 const MAX_BULLET_HITS = 8
@@ -137,7 +134,13 @@ interface Enemy {
   swayAmplitude: number
   swayFrequency: number
   gen: number
+  elite: boolean
 }
+
+const ELITE_SCALE = 1.15
+const ELITE_HP_MUL = 2
+const ELITE_XP_MUL = 2
+const ELITE_SPAWN_INTERVAL = 24
 
 type BossPhase = 'idle' | 'warning' | 'enter' | 'fight' | 'dying'
 
@@ -153,6 +156,8 @@ interface BossState {
   fireTimer: number
   deathExplosionTimer: number
   deathExplosionCount: number
+  killCount: number
+  upgradeGranted: boolean
 }
 
 let nextGen = 1
@@ -168,6 +173,49 @@ function publishBossProgress(p: number) {
   useGameStore.getState().setBossProgress(rounded)
 }
 
+// Per-frame accumulators — coalesce many small store updates into one flush
+// per frame so React subscribers re-render at most once and the store
+// allocates a single state object per channel instead of one per kill / hit.
+let frameScore = 0
+let frameXp = 0
+let frameHeal = 0
+let bossHpDirty = false
+let pendingBossHp = 0
+let pendingBossMaxHp = 0
+
+function pushScore(n: number) {
+  frameScore += n
+}
+function pushXp(n: number) {
+  frameXp += n
+}
+function pushHeal(n: number) {
+  frameHeal += n
+}
+function pushBossHp(hp: number, maxHp: number) {
+  pendingBossHp = hp
+  pendingBossMaxHp = maxHp
+  bossHpDirty = true
+}
+function flushFrameUpdates(store: ReturnType<typeof useGameStore.getState>) {
+  if (frameScore !== 0) {
+    store.addScore(frameScore)
+    frameScore = 0
+  }
+  if (frameXp !== 0) {
+    store.addXp(frameXp)
+    frameXp = 0
+  }
+  if (frameHeal !== 0) {
+    store.heal(frameHeal)
+    frameHeal = 0
+  }
+  if (bossHpDirty) {
+    store.setBossHp(pendingBossHp, pendingBossMaxHp)
+    bossHpDirty = false
+  }
+}
+
 interface Missile {
   active: boolean
   x: number
@@ -175,6 +223,9 @@ interface Missile {
   vx: number
   vy: number
   age: number
+  armTimer: number
+  rotation: number
+  angularVelocity: number
 }
 
 type EmpPhase = 'flight' | 'active'
@@ -256,7 +307,7 @@ function gemCountFor(type: EnemyType): number {
 }
 
 function dropGems(diamonds: Diamond[], e: Enemy) {
-  const value = xpFor(e.type)
+  const value = xpFor(e.type) * (e.elite ? ELITE_XP_MUL : 1)
   const count = gemCountFor(e.type)
   for (let k = 0; k < count; k++) {
     spawnDiamond(diamonds, e.x, e.y, value)
@@ -310,13 +361,25 @@ function makeBoss(): BossState {
     fireTimer: 0,
     deathExplosionTimer: 0,
     deathExplosionCount: 0,
+    killCount: 0,
+    upgradeGranted: false,
   }
 }
 
 function makeMissilePool(): Missile[] {
   const arr: Missile[] = []
   for (let i = 0; i < MAX_MISSILES; i++) {
-    arr.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, age: 0 })
+    arr.push({
+      active: false,
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      age: 0,
+      armTimer: 0,
+      rotation: 0,
+      angularVelocity: 0,
+    })
   }
   return arr
 }
@@ -385,6 +448,7 @@ function makeEnemyPool(type: EnemyType): Enemy[] {
       swayAmplitude: 0,
       swayFrequency: 0,
       gen: 0,
+      elite: false,
     })
   }
   return arr
@@ -435,6 +499,7 @@ function GameSceneInner() {
   const dangerClearTimerRef = useRef(0)
   const spawnTimerRef = useRef(0.6)
   const elapsedRef = useRef(0)
+  const eliteSpawnCounterRef = useRef(0)
   const invulnRef = useRef(0)
   const wasPausedRef = useRef(false)
   const pauseLockoutRef = useRef(0)
@@ -457,6 +522,9 @@ function GameSceneInner() {
   const puffMeshRef = useRef<InstancedMesh>(null)
   const ringMeshRef = useRef<InstancedMesh>(null)
   const starMeshRef = useRef<InstancedMesh>(null)
+  const prevSparkUsedRef = useRef(0)
+  const prevPuffUsedRef = useRef(0)
+  const prevRingUsedRef = useRef(0)
 
   const bullets = useMemo(makeBulletPool, [])
   const missiles = useMemo(makeMissilePool, [])
@@ -532,6 +600,7 @@ function GameSceneInner() {
       dangerClearTimerRef.current = 0
       spawnTimerRef.current = 0.5
       elapsedRef.current = 0
+      eliteSpawnCounterRef.current = 0
       invulnRef.current = 1.2
       for (let i = 0; i < bullets.length; i++) {
         bullets[i].active = false
@@ -555,6 +624,12 @@ function GameSceneInner() {
       boss.fireTimer = 0
       boss.deathExplosionCount = 0
       boss.deathExplosionTimer = 0
+      boss.killCount = 0
+      boss.upgradeGranted = false
+      frameScore = 0
+      frameXp = 0
+      frameHeal = 0
+      bossHpDirty = false
       const store = useGameStore.getState()
       store.setBossWarning(false)
       store.setBossHp(0, 0)
@@ -568,6 +643,9 @@ function GameSceneInner() {
   useFrame((_, dtRaw) => {
     const dt = Math.min(dtRaw, 0.05)
     const state = useGameStore.getState()
+    if (state.userPaused) {
+      return
+    }
     const paused = state.pendingLevelUps + state.pendingBossUpgrades > 0
 
     if (paused) {
@@ -671,15 +749,14 @@ function GameSceneInner() {
     selectedIdxRef.current = -1
 
     if (started) {
-      elapsedRef.current += dt
+      if (bossRef.current.phase === 'idle') elapsedRef.current += dt
       if (invulnRef.current > 0) invulnRef.current -= dt
       if (shieldCooldownRef.current > 0) shieldCooldownRef.current -= dt
 
       const minute = Math.floor(elapsedRef.current / 60)
       if (minute > lastDangerMinuteRef.current) {
         lastDangerMinuteRef.current = minute
-        const msg = DANGER_MESSAGES[Math.floor(Math.random() * DANGER_MESSAGES.length)]
-        useGameStore.getState().setDangerMessage(msg)
+        useGameStore.getState().setDangerMessage(DANGER_MESSAGE)
         dangerClearTimerRef.current = DANGER_MESSAGE_DURATION
       }
       if (dangerClearTimerRef.current > 0) {
@@ -737,6 +814,11 @@ function GameSceneInner() {
         const e = findInactiveEnemy(pool)
         if (e) {
           const x = (Math.random() * 2 - 1) * (FIELD_HALF_WIDTH - 0.8)
+          let isElite = false
+          if (bossRef.current.killCount > 0) {
+            eliteSpawnCounterRef.current += 1
+            isElite = eliteSpawnCounterRef.current % ELITE_SPAWN_INTERVAL === 0
+          }
           e.active = true
           e.type = type
           e.x = x
@@ -747,6 +829,7 @@ function GameSceneInner() {
           e.swayAmplitude = 0
           e.swayFrequency = 0
           e.gen = newGen()
+          e.elite = isElite
           const hpScale = Math.pow(2, elapsedRef.current / 60)
           e.hp = Math.ceil(1 * hpScale)
           if (type === 0) {
@@ -759,6 +842,7 @@ function GameSceneInner() {
             e.swayAmplitude = 2
             e.swayFrequency = 1.4
           }
+          if (isElite) e.hp *= ELITE_HP_MUL
           addSpawnRing(e.x, e.y, colorHexFor(type))
           playSpawn()
         }
@@ -859,6 +943,8 @@ function GameSceneInner() {
       }
 
       updateBoss(boss, dt, elapsedRef.current, bullets)
+
+      flushFrameUpdates(state)
     }
 
     updateEffects(dt)
@@ -927,7 +1013,7 @@ function GameSceneInner() {
       for (let i = 0; i < bullets.length; i++) {
         const b = bullets[i]
         if (b.active) {
-          tempObj.position.set(b.x, b.y, 0)
+          tempObj.position.set(b.x, b.y, b.fromPlayer ? 0 : 0.6)
           tempObj.rotation.set(0, 0, 0)
           tempObj.scale.setScalar(b.radius / BULLET_RADIUS)
           tempObj.updateMatrix()
@@ -953,9 +1039,8 @@ function GameSceneInner() {
       for (let i = 0; i < missiles.length; i++) {
         const m = missiles[i]
         if (m.active) {
-          const angle = Math.atan2(m.vy, m.vx) - Math.PI / 2
           tempObj.position.set(m.x, m.y, 0)
-          tempObj.rotation.set(0, 0, angle)
+          tempObj.rotation.set(0, 0, m.rotation)
           tempObj.scale.setScalar(1)
           tempObj.updateMatrix()
           missilesMesh.setMatrixAt(i, tempObj.matrix)
@@ -972,15 +1057,17 @@ function GameSceneInner() {
       for (let i = 0; i < emps.length; i++) {
         const emp = emps[i]
         if (emp.active && emp.phase === 'active') {
+          const pulseScale = 1 + 0.07 * Math.sin(emp.age * 7)
           tempObj.position.set(emp.x, emp.y, 0.05)
-          tempObj.rotation.set(0, 0, 0)
-          tempObj.scale.setScalar(radius)
+          tempObj.rotation.set(0, 0, emp.age * 0.6)
+          tempObj.scale.setScalar(radius * pulseScale)
           tempObj.updateMatrix()
           empMesh.setMatrixAt(i, tempObj.matrix)
           const tickPhase = 1 - emp.tickTimer / EMP_TICK_INTERVAL
-          const pulse = 0.55 + 0.45 * Math.max(0, 1 - tickPhase)
+          const tickPulse = 0.55 + 0.45 * Math.max(0, 1 - tickPhase)
+          const breath = 0.75 + 0.35 * Math.sin(emp.age * 7)
           const fade = Math.min(1, emp.ageRemaining / 0.6)
-          const k = pulse * fade
+          const k = tickPulse * breath * fade
           tempColor.setRGB(0.55 * k, 0.85 * k, 1.0 * k)
           empMesh.setColorAt(i, tempColor)
         } else {
@@ -995,11 +1082,21 @@ function GameSceneInner() {
     if (empBallMesh) {
       for (let i = 0; i < emps.length; i++) {
         const emp = emps[i]
-        if (emp.active && emp.phase === 'flight') {
+        if (emp.active) {
           const flicker = 0.7 + 0.3 * Math.sin(emp.age * 40)
+          let scale: number
+          let spin: number
+          if (emp.phase === 'flight') {
+            scale = 0.32 + 0.06 * Math.sin(emp.age * 30)
+            spin = emp.age * 8
+          } else {
+            const fade = Math.min(1, emp.ageRemaining / 0.6)
+            scale = (0.42 + 0.08 * Math.sin(emp.age * 8)) * fade
+            spin = emp.age * 4
+          }
           tempObj.position.set(emp.x, emp.y, 0.05)
-          tempObj.rotation.set(0, 0, emp.age * 8)
-          tempObj.scale.setScalar(0.32 + 0.06 * Math.sin(emp.age * 30))
+          tempObj.rotation.set(0, 0, spin)
+          tempObj.scale.setScalar(scale)
           tempObj.updateMatrix()
           empBallMesh.setMatrixAt(i, tempObj.matrix)
           tempColor.setRGB(0.6 * flicker, 0.95 * flicker, 1.0 * flicker)
@@ -1092,9 +1189,12 @@ function GameSceneInner() {
         }
       }
     }
-    hideRest(sparkMesh, sparkIdx, MAX_PARTICLES)
-    hideRest(puffMesh, puffIdx, MAX_PARTICLES)
-    hideRest(ringMesh, ringIdx, MAX_RINGS)
+    hideRest(sparkMesh, sparkIdx, prevSparkUsedRef.current)
+    hideRest(puffMesh, puffIdx, prevPuffUsedRef.current)
+    hideRest(ringMesh, ringIdx, prevRingUsedRef.current)
+    prevSparkUsedRef.current = sparkIdx
+    prevPuffUsedRef.current = puffIdx
+    prevRingUsedRef.current = ringIdx
 
     if (started) {
       const [sx, sy] = getShake()
@@ -1269,7 +1369,6 @@ function updateEmps(
   const radius = playerStats.empRadius
   const radiusSq = radius * radius
   const dmg = playerStats.empTickDamage
-  const store = useGameStore.getState()
   for (let i = 0; i < emps.length; i++) {
     const emp = emps[i]
     if (!emp.active) continue
@@ -1277,6 +1376,7 @@ function updateEmps(
 
     if (emp.phase === 'flight') {
       emp.y += emp.vy * dt
+      addEmpTrail(emp.x, emp.y)
       if (emp.y >= EMP_TARGET_Y) {
         emp.y = EMP_TARGET_Y
         emp.vy = 0
@@ -1315,7 +1415,7 @@ function updateEmps(
           }
           const color = colorHexFor(e.type)
           if (e.hp <= 0) {
-            onEnemyKilled(e, color, store, diamonds)
+            onEnemyKilled(e, color, diamonds)
             if (Math.random() < playerStats.chainExplodeChance) {
               chainExplode(e.x, e.y, allPools, boss, diamonds)
             }
@@ -1339,7 +1439,6 @@ function updateDiamonds(diamonds: Diamond[], dt: number, playerX: number, player
   const magnetRadius = playerStats.magnetRadius
   const magnetRadiusSq = magnetRadius * magnetRadius
   const collectThresholdSq = DIAMOND_COLLECT_THRESHOLD * DIAMOND_COLLECT_THRESHOLD
-  const store = useGameStore.getState()
   for (let i = 0; i < diamonds.length; i++) {
     const d = diamonds[i]
     if (!d.active) continue
@@ -1350,7 +1449,7 @@ function updateDiamonds(diamonds: Diamond[], dt: number, playerX: number, player
 
     if (distSq < collectThresholdSq) {
       d.active = false
-      store.addXp(d.value)
+      pushXp(d.value)
       addHitSparks(d.x, d.y, '#88ccff')
       playPickup()
       continue
@@ -1385,12 +1484,17 @@ function spawnMissileSalvo(missiles: Missile[], playerX: number) {
     const m = findInactiveMissile(missiles)
     if (!m) return
     const t = count > 1 ? k / (count - 1) - 0.5 : 0
+    const angle = Math.random() * Math.PI * 2
+    const speed = MISSILE_TUMBLE_SPEED * (0.7 + Math.random() * 0.6)
     m.active = true
-    m.x = playerX + t * 0.8
+    m.x = playerX + t * 0.6
     m.y = PLAYER_Y + 0.8
-    m.vx = t * 6 + (Math.random() - 0.5) * 1.5
-    m.vy = 4
+    m.vx = Math.cos(angle) * speed
+    m.vy = Math.sin(angle) * speed
     m.age = 0
+    m.armTimer = MISSILE_ARM_DELAY_MIN + Math.random() * (MISSILE_ARM_DELAY_MAX - MISSILE_ARM_DELAY_MIN)
+    m.rotation = Math.random() * Math.PI * 2
+    m.angularVelocity = (Math.random() < 0.5 ? -1 : 1) * MISSILE_TUMBLE_SPIN * (0.6 + Math.random() * 0.6)
   }
 }
 
@@ -1437,7 +1541,6 @@ function damageEnemiesInRange(
   boss: BossState,
   diamonds: Diamond[],
 ): number {
-  const store = useGameStore.getState()
   let remaining = budget
   for (let j = 0; j < pool.length; j++) {
     if (remaining <= 0) break
@@ -1446,7 +1549,8 @@ function damageEnemiesInRange(
     if (bulletHasHit(b, e.gen)) continue
     const dx = b.x - e.x
     const dy = b.y - e.y
-    const r = b.radius + ENEMY_RADIUS
+    const enemyR = e.elite ? ENEMY_RADIUS * ELITE_SCALE : ENEMY_RADIUS
+    const r = b.radius + enemyR
     if (dx * dx + dy * dy >= r * r) continue
     recordHit(b, e.gen)
     e.hp -= b.damage
@@ -1455,7 +1559,7 @@ function damageEnemiesInRange(
     }
     const color = colorHexFor(e.type)
     if (e.hp <= 0) {
-      onEnemyKilled(e, color, store, diamonds)
+      onEnemyKilled(e, color, diamonds)
       if (Math.random() < playerStats.chainExplodeChance) {
         chainExplode(e.x, e.y, allPools, boss, diamonds)
       }
@@ -1469,13 +1573,8 @@ function damageEnemiesInRange(
   return remaining
 }
 
-function onEnemyKilled(
-  e: Enemy,
-  color: string,
-  store: ReturnType<typeof useGameStore.getState>,
-  diamonds: Diamond[],
-) {
-  store.addScore(scoreFor(e.type))
+function onEnemyKilled(e: Enemy, color: string, diamonds: Diamond[]) {
+  pushScore(scoreFor(e.type))
   dropGems(diamonds, e)
   addExplosion(e.x, e.y, color)
   addShake(0.18, 0.22)
@@ -1485,7 +1584,7 @@ function onEnemyKilled(
     playerStats.healOnKillChance > 0 &&
     Math.random() < playerStats.healOnKillChance
   ) {
-    store.heal(1)
+    pushHeal(1)
   }
 }
 
@@ -1516,7 +1615,7 @@ function applyBossDamage(boss: BossState, dmg: number, sx: number, sy: number) {
     addHitSparks(sx, sy, '#ff5544')
     addShake(0.06, 0.08)
     playHit()
-    useGameStore.getState().setBossHp(Math.max(0, boss.hp), boss.maxHp)
+    pushBossHp(Math.max(0, boss.hp), boss.maxHp)
   }
 }
 
@@ -1527,10 +1626,11 @@ function onBossKilled(boss: BossState) {
   boss.deathExplosionTimer = 0
   boss.deathExplosionCount = 0
   boss.fireTimer = 0
+  boss.killCount += 1
+  boss.upgradeGranted = false
+  pushScore(BOSS_SCORE)
+  pushXp(BOSS_XP)
   const store = useGameStore.getState()
-  store.addScore(BOSS_SCORE)
-  store.addXp(BOSS_XP)
-  store.grantUpgrade()
   store.setBossWarning(false)
   store.setBossHp(0, 0)
   addShake(0.6, 0.5)
@@ -1616,6 +1716,10 @@ function updateBoss(boss: BossState, dt: number, elapsed: number, bullets: Bulle
       playKill()
       boss.deathExplosionCount += 1
     }
+    if (!boss.upgradeGranted && boss.timer <= BOSS_DYING_DURATION / 2) {
+      boss.upgradeGranted = true
+      useGameStore.getState().grantUpgrade()
+    }
     if (boss.timer <= 0) {
       boss.phase = 'idle'
       boss.timer = BOSS_INTERVAL
@@ -1633,7 +1737,8 @@ function tryRamPlayer(pool: Enemy[], px: number, py: number): boolean {
     if (!e.active) continue
     const dx = e.x - px
     const dy = e.y - py
-    const r = ENEMY_RADIUS + PLAYER_RADIUS
+    const enemyR = e.elite ? ENEMY_RADIUS * ELITE_SCALE : ENEMY_RADIUS
+    const r = enemyR + PLAYER_RADIUS
     if (dx * dx + dy * dy < r * r) {
       addExplosion(e.x, e.y, colorHexFor(e.type))
       e.active = false
@@ -1653,7 +1758,6 @@ function chainExplode(
   const radius = playerStats.chainExplodeRadius
   if (radius <= 0) return
   const radiusSq = radius * radius
-  const store = useGameStore.getState()
   for (const pool of allPools) {
     for (let i = 0; i < pool.length; i++) {
       const e = pool[i]
@@ -1667,7 +1771,7 @@ function chainExplode(
         }
         const color = colorHexFor(e.type)
         if (e.hp <= 0) {
-          store.addScore(Math.floor(scoreFor(e.type) / 2))
+          pushScore(Math.floor(scoreFor(e.type) / 2))
           dropGems(diamonds, e)
           addExplosion(e.x, e.y, color)
           e.active = false
@@ -1675,7 +1779,7 @@ function chainExplode(
             playerStats.healOnKillChance > 0 &&
             Math.random() < playerStats.healOnKillChance
           ) {
-            store.heal(1)
+            pushHeal(1)
           }
         } else {
           addHitSparks(e.x, e.y, color)
@@ -1701,54 +1805,63 @@ function updateMissiles(
   boss: BossState,
   diamonds: Diamond[],
 ) {
-  const store = useGameStore.getState()
   for (let i = 0; i < missiles.length; i++) {
     const m = missiles[i]
     if (!m.active) continue
     m.age += dt
 
-    let bestX = 0
-    let bestY = 0
-    let bestDist = Infinity
-    let found = false
-    for (const pool of allPools) {
-      for (let j = 0; j < pool.length; j++) {
-        const e = pool[j]
-        if (!e.active) continue
-        const dx = e.x - m.x
-        const dy = e.y - m.y
+    if (m.armTimer > 0) {
+      m.armTimer -= dt
+      const k = Math.max(0, 1 - MISSILE_TUMBLE_DRAG * dt)
+      m.vx *= k
+      m.vy *= k
+      m.angularVelocity *= k
+      m.rotation += m.angularVelocity * dt
+    } else {
+      let bestX = 0
+      let bestY = 0
+      let bestDist = Infinity
+      let found = false
+      for (const pool of allPools) {
+        for (let j = 0; j < pool.length; j++) {
+          const e = pool[j]
+          if (!e.active) continue
+          const dx = e.x - m.x
+          const dy = e.y - m.y
+          const d = dx * dx + dy * dy
+          if (d < bestDist) {
+            bestDist = d
+            bestX = e.x
+            bestY = e.y
+            found = true
+          }
+        }
+      }
+      if (bossIsTargetable(boss)) {
+        const dx = boss.x - m.x
+        const dy = boss.y - m.y
         const d = dx * dx + dy * dy
         if (d < bestDist) {
           bestDist = d
-          bestX = e.x
-          bestY = e.y
+          bestX = boss.x
+          bestY = boss.y
           found = true
         }
       }
-    }
-    if (bossIsTargetable(boss)) {
-      const dx = boss.x - m.x
-      const dy = boss.y - m.y
-      const d = dx * dx + dy * dy
-      if (d < bestDist) {
-        bestDist = d
-        bestX = boss.x
-        bestY = boss.y
-        found = true
-      }
-    }
 
-    if (found) {
-      const dx = bestX - m.x
-      const dy = bestY - m.y
-      const d = Math.sqrt(dx * dx + dy * dy) || 1
-      m.vx += (dx / d) * MISSILE_ACCEL * dt
-      m.vy += (dy / d) * MISSILE_ACCEL * dt
-      const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
-      if (speed > MISSILE_MAX_SPEED) {
-        m.vx *= MISSILE_MAX_SPEED / speed
-        m.vy *= MISSILE_MAX_SPEED / speed
+      if (found) {
+        const dx = bestX - m.x
+        const dy = bestY - m.y
+        const d = Math.sqrt(dx * dx + dy * dy) || 1
+        m.vx += (dx / d) * MISSILE_ACCEL * dt
+        m.vy += (dy / d) * MISSILE_ACCEL * dt
+        const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
+        if (speed > MISSILE_MAX_SPEED) {
+          m.vx *= MISSILE_MAX_SPEED / speed
+          m.vy *= MISSILE_MAX_SPEED / speed
+        }
       }
+      m.rotation = Math.atan2(m.vy, m.vx) - Math.PI / 2
     }
 
     m.x += m.vx * dt
@@ -1773,7 +1886,8 @@ function updateMissiles(
         if (!e.active) continue
         const dx = e.x - m.x
         const dy = e.y - m.y
-        const r = MISSILE_RADIUS + ENEMY_RADIUS
+        const enemyR = e.elite ? ENEMY_RADIUS * ELITE_SCALE : ENEMY_RADIUS
+        const r = MISSILE_RADIUS + enemyR
         if (dx * dx + dy * dy < r * r) {
           e.hp -= MISSILE_DAMAGE
           if (playerStats.instaKillChance > 0 && Math.random() < playerStats.instaKillChance) {
@@ -1781,7 +1895,7 @@ function updateMissiles(
           }
           const color = colorHexFor(e.type)
           if (e.hp <= 0) {
-            onEnemyKilled(e, color, store, diamonds)
+            onEnemyKilled(e, color, diamonds)
             if (Math.random() < playerStats.chainExplodeChance) {
               chainExplode(e.x, e.y, allPools, boss, diamonds)
             }
@@ -1790,6 +1904,7 @@ function updateMissiles(
           }
           addExplosion(m.x, m.y, '#ffcc44')
           addShake(0.15, 0.18)
+          playMissileHit()
           m.active = false
           hit = true
           break
@@ -1805,6 +1920,7 @@ function updateMissiles(
         applyBossDamage(boss, MISSILE_DAMAGE, m.x, m.y)
         addExplosion(m.x, m.y, '#ffcc44')
         addShake(0.15, 0.18)
+        playMissileHit()
         m.active = false
       }
     }
@@ -1816,9 +1932,10 @@ function writeEnemyMatrices(mesh: InstancedMesh | null, pool: Enemy[], rotZ: num
   for (let i = 0; i < pool.length; i++) {
     const e = pool[i]
     if (e.active) {
+      const s = e.elite ? ELITE_SCALE : 1
       tempObj.position.set(e.x, e.y, 0)
       tempObj.rotation.set(0, 0, rotZ)
-      tempObj.scale.setScalar(1)
+      tempObj.scale.setScalar(s)
       tempObj.updateMatrix()
       mesh.setMatrixAt(i, tempObj.matrix)
     } else {
@@ -1833,9 +1950,10 @@ function writeCockpitMatrices(mesh: InstancedMesh | null, pool: Enemy[]) {
   for (let i = 0; i < pool.length; i++) {
     const e = pool[i]
     if (e.active) {
-      tempObj.position.set(e.x, e.y - 0.5, 0)
+      const s = e.elite ? ELITE_SCALE : 1
+      tempObj.position.set(e.x, e.y - 0.5 * s, 0)
       tempObj.rotation.set(0, 0, 0)
-      tempObj.scale.setScalar(1)
+      tempObj.scale.setScalar(s)
       tempObj.updateMatrix()
       mesh.setMatrixAt(i, tempObj.matrix)
     } else {
@@ -1845,9 +1963,14 @@ function writeCockpitMatrices(mesh: InstancedMesh | null, pool: Enemy[]) {
   mesh.instanceMatrix.needsUpdate = true
 }
 
-function hideRest(mesh: InstancedMesh | null, used: number, max: number) {
+function hideRest(mesh: InstancedMesh | null, used: number, prevUsed: number) {
   if (!mesh) return
-  for (let i = used; i < max; i++) {
+  if (used >= prevUsed) {
+    mesh.instanceMatrix.needsUpdate = true
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    return
+  }
+  for (let i = used; i < prevUsed; i++) {
     mesh.setMatrixAt(i, HIDDEN_MATRIX)
   }
   mesh.instanceMatrix.needsUpdate = true

@@ -14,6 +14,8 @@ export interface Particle {
   b: number
   drag: number
   shape: ParticleShape
+  wanderSpeed: number
+  wanderTimer: number
 }
 
 const POOL_SIZE = 600
@@ -34,6 +36,8 @@ for (let i = 0; i < POOL_SIZE; i++) {
     b: 0,
     drag: 0,
     shape: 0,
+    wanderSpeed: 0,
+    wanderTimer: 0,
   })
 }
 
@@ -68,29 +72,26 @@ function emit(
   hex: string,
   drag: number,
   shape: ParticleShape,
+  wanderSpeed = 0,
 ) {
-  for (let i = 0; i < POOL_SIZE; i++) {
-    const idx = (nextSlot + i) % POOL_SIZE
-    const p = particles[idx]
-    if (!p.active) {
-      p.active = true
-      p.x = x
-      p.y = y
-      p.vx = vx
-      p.vy = vy
-      p.life = life
-      p.maxLife = maxLife
-      p.size = size
-      const rgb = colorRGB(hex)
-      p.r = rgb[0]
-      p.g = rgb[1]
-      p.b = rgb[2]
-      p.drag = drag
-      p.shape = shape
-      nextSlot = (idx + 1) % POOL_SIZE
-      return
-    }
-  }
+  const p = particles[nextSlot]
+  p.active = true
+  p.x = x
+  p.y = y
+  p.vx = vx
+  p.vy = vy
+  p.life = life
+  p.maxLife = maxLife
+  p.size = size
+  const rgb = colorRGB(hex)
+  p.r = rgb[0]
+  p.g = rgb[1]
+  p.b = rgb[2]
+  p.drag = drag
+  p.shape = shape
+  p.wanderSpeed = wanderSpeed
+  p.wanderTimer = wanderSpeed > 0 ? 0.1 + Math.random() * 0.2 : 0
+  nextSlot = (nextSlot + 1) % POOL_SIZE
 }
 
 export function getParticles(): Particle[] {
@@ -238,6 +239,41 @@ export function addChainRing(x: number, y: number, radius: number, color: string
   emit(x, y, 0, 0, 0.55, 0.55, radius, color, 0, 3)
 }
 
+export function addEmpTrail(x: number, y: number) {
+  const angle = Math.random() * Math.PI * 2
+  const speed = 1.5 + Math.random() * 1.5
+  emit(
+    x + (Math.random() - 0.5) * 0.18,
+    y - 0.2,
+    Math.cos(angle) * speed,
+    Math.sin(angle) * speed,
+    0.35 + Math.random() * 0.15,
+    0.5,
+    0.18 + Math.random() * 0.12,
+    Math.random() < 0.5 ? '#88ccff' : '#aaffff',
+    0,
+    1,
+    speed,
+  )
+  if (Math.random() < 0.6) {
+    const sparkAngle = Math.random() * Math.PI * 2
+    const sparkSpeed = 2 + Math.random() * 1.5
+    emit(
+      x + (Math.random() - 0.5) * 0.1,
+      y - 0.1,
+      Math.cos(sparkAngle) * sparkSpeed,
+      Math.sin(sparkAngle) * sparkSpeed,
+      0.18,
+      0.18,
+      0.08 + Math.random() * 0.05,
+      '#ffffff',
+      0,
+      0,
+      sparkSpeed,
+    )
+  }
+}
+
 export function updateEffects(dt: number) {
   for (let i = 0; i < POOL_SIZE; i++) {
     const p = particles[i]
@@ -246,6 +282,15 @@ export function updateEffects(dt: number) {
     if (p.life <= 0) {
       p.active = false
       continue
+    }
+    if (p.wanderSpeed > 0) {
+      p.wanderTimer -= dt
+      if (p.wanderTimer <= 0) {
+        const angle = Math.random() * Math.PI * 2
+        p.vx = Math.cos(angle) * p.wanderSpeed
+        p.vy = Math.sin(angle) * p.wanderSpeed
+        p.wanderTimer = 0.1 + Math.random() * 0.2
+      }
     }
     p.x += p.vx * dt
     p.y += p.vy * dt

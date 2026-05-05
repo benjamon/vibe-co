@@ -3,7 +3,6 @@ import { getUpgrade, playerStats, useGameStore, type UpgradeDef } from './store'
 export function LevelUpOverlay() {
   const pending = useGameStore((s) => s.pendingLevelUps + s.pendingBossUpgrades > 0)
   const choices = useGameStore((s) => s.upgradeChoices)
-  const level = useGameStore((s) => s.level)
   const holdLeft = useGameStore((s) => s.holdLeftProgress)
   const holdRight = useGameStore((s) => s.holdRightProgress)
   const flashingIdx = useGameStore((s) => s.flashingIdx)
@@ -15,27 +14,29 @@ export function LevelUpOverlay() {
     <div
       style={{
         position: 'absolute',
-        top: 0,
+        top: '50%',
         left: 0,
         width: '100%',
         pointerEvents: 'none',
-        transform: visible ? 'translateY(0)' : 'translateY(-110%)',
+        transform: visible
+          ? 'translateY(-50%)'
+          : 'translateY(calc(-50vh - 100%))',
         transition: 'transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1)',
         zIndex: 10,
       }}
     >
       <div
         style={{
-          margin: '40px auto 18px',
+          margin: '0 auto 18px',
           textAlign: 'center',
           color: '#33ddff',
           fontFamily: "'Press Start 2P', monospace",
-          fontSize: 11,
-          letterSpacing: '0.25em',
-          textShadow: '0 0 8px rgba(51, 221, 255, 0.6)',
+          fontSize: 14,
+          letterSpacing: '0.3em',
+          textShadow: '0 0 10px rgba(51, 221, 255, 0.7)',
         }}
       >
-        LEVEL {level} — HOLD A SIDE TO CHOOSE
+        LEVEL UP
       </div>
       <div
         style={{
@@ -98,17 +99,6 @@ function Card({
         overflow: 'hidden',
       }}
     >
-      <div
-        style={{
-          fontSize: 9,
-          color: flashing ? '#08203a' : '#33ddff',
-          letterSpacing: '0.18em',
-          marginBottom: 8,
-          fontFamily: "'Press Start 2P', monospace",
-        }}
-      >
-        {side === 'left' ? '◄ HOLD LEFT' : 'HOLD RIGHT ►'}
-      </div>
       <div
         style={{
           fontSize: 18,

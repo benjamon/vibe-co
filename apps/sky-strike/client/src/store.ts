@@ -396,6 +396,10 @@ interface GameState extends LevelUpVisuals, BossUiState {
   pendingLevelUps: number
   pendingBossUpgrades: number
   upgradeChoices: UpgradeId[]
+  userPaused: boolean
+  masterVolume: number
+  sfxVolume: number
+  musicVolume: number
   start: () => void
   end: () => void
   reset: () => void
@@ -410,6 +414,11 @@ interface GameState extends LevelUpVisuals, BossUiState {
   setBossHp: (hp: number, maxHp: number) => void
   setBossProgress: (p: number) => void
   setDangerMessage: (msg: string) => void
+  setUserPaused: (v: boolean) => void
+  toggleUserPaused: () => void
+  setMasterVolume: (v: number) => void
+  setSfxVolume: (v: number) => void
+  setMusicVolume: (v: number) => void
 }
 
 const RESET_VISUALS: LevelUpVisuals = {
@@ -439,6 +448,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   pendingLevelUps: 0,
   pendingBossUpgrades: 0,
   upgradeChoices: [],
+  userPaused: false,
+  masterVolume: 1.0,
+  sfxVolume: 0.8,
+  musicVolume: 0.5,
   ...RESET_VISUALS,
   ...RESET_BOSS_UI,
   start: () => {
@@ -454,6 +467,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       pendingLevelUps: 0,
       pendingBossUpgrades: 0,
       upgradeChoices: [],
+      userPaused: false,
       ...RESET_VISUALS,
   ...RESET_BOSS_UI,
     })
@@ -596,4 +610,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
       return v
     }),
+  setUserPaused: (v) => set((s) => (s.userPaused === v ? s : { userPaused: v })),
+  toggleUserPaused: () => set((s) => ({ userPaused: !s.userPaused })),
+  setMasterVolume: (v) => set({ masterVolume: Math.max(0, Math.min(1, v)) }),
+  setSfxVolume: (v) => set({ sfxVolume: Math.max(0, Math.min(1, v)) }),
+  setMusicVolume: (v) => set({ musicVolume: Math.max(0, Math.min(1, v)) }),
 }))
