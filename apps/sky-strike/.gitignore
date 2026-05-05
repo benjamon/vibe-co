@@ -24,5 +24,6 @@ Thumbs.db
 .env
 .env.local
 
-# Generated SpacetimeDB client bindings (re-created by `spacetime generate`)
-client/src/module_bindings/
+# Generated SpacetimeDB client bindings — committed so production builds and
+# fresh clones can connect without re-running `spacetime generate`. Regenerate
+# (and commit) whenever the server schema in `server/src/index.ts` changes.

@@ -242,14 +242,15 @@ function refreshRemoteScores(): void {
 export async function connectToHighscoreServer(): Promise<void> {
   if (connectAttempted) return
   connectAttempted = true
-  // Loaded at runtime so the build doesn't break before `spacetime generate` has run.
-  // Path is constructed at runtime to keep the bundler from trying to resolve it
-  // statically.
-  const bindingsPath = './module' + '_bindings/index.js'
+  // Static path so Vite resolves and bundles the generated bindings into the
+  // production build (with @vite-ignore + a runtime string concat the chunk
+  // would be omitted from the bundle and the GitHub Pages build would 404 on
+  // the fetch).
   let bindings: any = null
   try {
-    bindings = await import(/* @vite-ignore */ bindingsPath)
-  } catch {
+    bindings = await import('./module_bindings')
+  } catch (e) {
+    console.warn('[highscore] module_bindings not available:', e)
     return
   }
   if (!bindings?.DbConnection?.builder) return
