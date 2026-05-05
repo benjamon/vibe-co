@@ -233,9 +233,10 @@ function refreshRemoteScores(): void {
     remoteScores = rows
       .map(rowToEntry)
       .filter((e): e is HighScoreEntry => e !== null)
+    console.log(`[highscore] cache holds ${remoteScores.length} remote row(s)`)
     notifyListeners()
-  } catch {
-    /* iteration failed — likely not subscribed yet */
+  } catch (e) {
+    console.warn('[highscore] iter failed:', e)
   }
 }
 
@@ -268,19 +269,19 @@ export async function connectToHighscoreServer(): Promise<void> {
       })
       .onConnect((conn: RemoteConnection) => {
         connection = conn
+        console.log('[highscore] connected to', uri, '-', dbName)
+        const onChange = () => refreshRemoteScores()
+        try {
+          conn.db.highscore.onInsert?.(onChange)
+          conn.db.highscore.onUpdate?.(onChange)
+        } catch (e) {
+          console.warn('[highscore] failed to register row callbacks:', e)
+        }
         try {
           conn.subscriptionBuilder?.().subscribe(['SELECT * FROM highscore'])
         } catch (e) {
           console.warn('[highscore] subscribe failed:', e)
         }
-        const onChange = () => refreshRemoteScores()
-        try {
-          conn.db.highscore.onInsert?.(onChange)
-          conn.db.highscore.onUpdate?.(onChange)
-        } catch {
-          /* ignore */
-        }
-        refreshRemoteScores()
       })
     builder.build()
   } catch (e) {

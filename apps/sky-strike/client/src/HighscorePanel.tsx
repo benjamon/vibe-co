@@ -8,7 +8,7 @@ import {
 } from './highscore'
 import { getUpgrade, type RunBuild, type UpgradeId } from './store'
 
-const TOP_N = 5
+const TOP_N = 10
 
 export function HighscorePanel() {
   const [scores, setScores] = useState<HighScoreEntry[]>([])
