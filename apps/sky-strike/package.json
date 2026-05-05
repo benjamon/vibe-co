@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "npm run dev --workspace=client",
     "build": "npm run build --workspace=client",
+    "build:itch": "rm -rf client/dist dist-itch && npm run build --workspace=client -- --base=./ && mkdir -p dist-itch && python3 -c \"import os, zipfile; root='client/dist'; zf=zipfile.ZipFile('dist-itch/sky-strike-itch.zip','w',zipfile.ZIP_DEFLATED); [zf.write(os.path.join(d,f), os.path.relpath(os.path.join(d,f), root)) for d,_,fs in os.walk(root) for f in fs]; zf.close()\" && echo 'Built dist-itch/sky-strike-itch.zip'",
     "preview": "npm run preview --workspace=client",
     "dev:server": "echo 'SpacetimeDB server not configured yet. Run: spacetime dev --project-path server'",
     "test": "npm run test --workspace=client",
