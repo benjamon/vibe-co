@@ -10,6 +10,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { startMusic, unlockAudio } from './audio'
 import {
   connectToHighscoreServer,
+  getUserId,
   subscribeHighscores,
   submitHighscore,
   type HighScoreEntry,
@@ -107,7 +108,8 @@ function GameOverOverlay({ onRestart }: { onRestart: () => void }) {
   const [scores, setScores] = useState<HighScoreEntry[]>([])
   useEffect(() => subscribeHighscores(setScores), [])
 
-  const better = scores.filter((s) => s.score > score).length
+  const myId = getUserId()
+  const better = scores.filter((s) => s.score > score && s.userId !== myId).length
   const rank = 1 + better
   const total = Math.max(scores.length, rank)
 

@@ -1885,12 +1885,12 @@ function updateEnemyPool(pool: Enemy[], dt: number, bullets: Bullet[]) {
   for (let i = 0; i < pool.length; i++) {
     const e = pool[i]
     if (!e.active) continue
-    e.age += dt
     if (e.slowTimer > 0) {
       e.slowTimer -= dt
       if (e.slowTimer < 0) e.slowTimer = 0
     }
     const slowMul = e.slowTimer > 0 ? SLOW_FACTOR : 1
+    e.age += dt * slowMul
     e.y += (e.vy * slowMul + e.knockbackVy) * dt
     if (e.knockbackVy > 0) {
       e.knockbackVy *= Math.max(0, 1 - KNOCKBACK_DAMP * dt)
