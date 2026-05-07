@@ -2,10 +2,13 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import {
   AdditiveBlending,
+  BufferAttribute,
+  BufferGeometry,
   Color,
   DoubleSide,
   Group,
   InstancedMesh,
+  LineSegments,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -20,11 +23,13 @@ import {
   addEmpTrail,
   addExplosion,
   addHitSparks,
+  addMarkLine,
   addMuzzleFlash,
   addPlayerHit,
   addShake,
   addSpawnRing,
   clearEffects,
+  getMarkLines,
   getParticles,
   getShake,
   updateEffects,
@@ -45,14 +50,16 @@ const BURST_DELAY = 0.06
 const ENEMY_RADIUS = 0.55
 const MISSILE_RADIUS = 0.3
 const MISSILE_DAMAGE = 5
-const MISSILE_MAX_SPEED = 14
-const MISSILE_ACCEL = 30
-const MISSILE_LIFETIME = 5
-const MISSILE_ARM_DELAY_MIN = 0.5
-const MISSILE_ARM_DELAY_MAX = 1.0
+const MISSILE_MAX_SPEED = 13
+const MISSILE_ACCEL = 60
+const MISSILE_TURN_RATE = 9
+const MISSILE_LIFETIME = 4
+const MISSILE_ARM_DELAY_MIN = 0.35
+const MISSILE_ARM_DELAY_MAX = 0.7
 const MISSILE_TUMBLE_SPEED = 8
 const MISSILE_TUMBLE_SPIN = 16
 const MISSILE_TUMBLE_DRAG = 2.0
+const MAX_MARK_LINE_VERTS = 64 * 2
 
 const MAX_BULLETS = 128
 const MAX_MISSILES = 24
@@ -60,11 +67,12 @@ const MAX_ENEMIES_PER_TYPE = 24
 const MAX_PARTICLES = 600
 const MAX_RINGS = 32
 const STAR_COUNT = 80
-const MAX_EMPS = 4
+const MAX_EMPS = 8
 const MAX_DIAMONDS = 240
 const MAX_DRONES = 5
 const DRONE_SPACING = 1.0
 const DRONE_FOLLOW_RATE = 5
+const DRONE_X_DEAD_ZONE = 1.2
 
 const MAX_GHOSTS = 64
 const GHOST_LIFETIME = 3.0
@@ -242,7 +250,6 @@ interface Missile {
   armTimer: number
   rotation: number
   angularVelocity: number
-  mark: boolean
 }
 
 type EmpPhase = 'flight' | 'active'
@@ -291,7 +298,7 @@ const COLOR_BULLET_PLAYER = new Color('#33ffaa')
 const COLOR_BULLET_ENEMY = new Color('#ff3344')
 const COLOR_BULLET_EMPOWERED = new Color('#ffdd33')
 const COLOR_MISSILE_NORMAL = new Color('#aaff44')
-const COLOR_MISSILE_MARK = new Color('#1a0033')
+const COLOR_MARK = '#cc44ff'
 const COLOR_ENEMY_BASIC_HEX = '#ff5577'
 const COLOR_ENEMY_SHOOTER_HEX = '#ffaa33'
 const COLOR_ENEMY_ZIGZAG_HEX = '#aa66ff'
@@ -417,7 +424,6 @@ function makeMissilePool(): Missile[] {
       armTimer: 0,
       rotation: 0,
       angularVelocity: 0,
-      mark: false,
     })
   }
   return arr
@@ -633,6 +639,11 @@ function GameSceneInner() {
   const prevPuffUsedRef = useRef(0)
   const prevRingUsedRef = useRef(0)
   const markMissileCooldownRef = useRef(0)
+  const markPendingRef = useRef(false)
+  const markCrosshairRef = useRef<Group>(null)
+  const markLinesRef = useRef<LineSegments>(null)
+  const markLinePositions = useMemo(() => new Float32Array(MAX_MARK_LINE_VERTS * 3), [])
+  const markLineColors = useMemo(() => new Float32Array(MAX_MARK_LINE_VERTS * 3), [])
 
   const bullets = useMemo(makeBulletPool, [])
   const missiles = useMemo(makeMissilePool, [])
@@ -714,6 +725,7 @@ function GameSceneInner() {
       homingTimerRef.current = playerStats.homingInterval
       empCooldownRef.current = playerStats.empMaxCooldown
       markMissileCooldownRef.current = playerStats.markMissileMaxCooldown
+      markPendingRef.current = false
       shotCounterRef.current = 0
       shieldCooldownRef.current = 0
       lastDangerMinuteRef.current = 0
@@ -932,7 +944,7 @@ function GameSceneInner() {
         markMissileCooldownRef.current -= dt
         if (markMissileCooldownRef.current <= 0) {
           markMissileCooldownRef.current = playerStats.markMissileMaxCooldown
-          spawnMarkMissile(missiles, playerXRef.current)
+          markPendingRef.current = true
         }
       }
 
@@ -970,7 +982,13 @@ function GameSceneInner() {
           e.swayFrequency = 0
           e.gen = newGen()
           e.elite = isElite
-          e.marked = false
+          if (markPendingRef.current) {
+            e.marked = true
+            markPendingRef.current = false
+            addChainRing(e.x, e.y, ENEMY_RADIUS * 2.4, COLOR_MARK)
+          } else {
+            e.marked = false
+          }
           e.slowTimer = 0
           e.knockbackVy = 0
           const hpScale = Math.pow(2, elapsedRef.current / 60)
@@ -1228,7 +1246,7 @@ function GameSceneInner() {
           tempObj.scale.setScalar(1)
           tempObj.updateMatrix()
           missilesMesh.setMatrixAt(i, tempObj.matrix)
-          missilesMesh.setColorAt(i, m.mark ? COLOR_MISSILE_MARK : COLOR_MISSILE_NORMAL)
+          missilesMesh.setColorAt(i, COLOR_MISSILE_NORMAL)
         } else {
           missilesMesh.setMatrixAt(i, HIDDEN_MATRIX)
         }
@@ -1382,6 +1400,66 @@ function GameSceneInner() {
     prevPuffUsedRef.current = puffIdx
     prevRingUsedRef.current = ringIdx
 
+    const crosshair = markCrosshairRef.current
+    if (crosshair) {
+      let foundMark: Enemy | null = null
+      for (const pool of allEnemyPools) {
+        for (let i = 0; i < pool.length; i++) {
+          const e = pool[i]
+          if (e.active && e.marked) {
+            foundMark = e
+            break
+          }
+        }
+        if (foundMark) break
+      }
+      if (foundMark) {
+        crosshair.visible = true
+        crosshair.position.x = foundMark.x
+        crosshair.position.y = foundMark.y
+        crosshair.rotation.z = elapsedRef.current * 2.0
+        const pulse = 1 + 0.08 * Math.sin(elapsedRef.current * 8)
+        crosshair.scale.setScalar(pulse)
+      } else {
+        crosshair.visible = false
+      }
+    }
+
+    const linesMesh = markLinesRef.current
+    if (linesMesh) {
+      const lines = getMarkLines()
+      let count = 0
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        if (!line.active) continue
+        if (count >= MAX_MARK_LINE_VERTS / 2) break
+        const t = Math.max(0, line.life / line.maxLife)
+        const r = 0.8 * t
+        const g = 0.27 * t
+        const b = 1.0 * t
+        const base = count * 6
+        markLinePositions[base + 0] = line.x1
+        markLinePositions[base + 1] = line.y1
+        markLinePositions[base + 2] = 0.15
+        markLinePositions[base + 3] = line.x2
+        markLinePositions[base + 4] = line.y2
+        markLinePositions[base + 5] = 0.15
+        markLineColors[base + 0] = r
+        markLineColors[base + 1] = g
+        markLineColors[base + 2] = b
+        markLineColors[base + 3] = r
+        markLineColors[base + 4] = g
+        markLineColors[base + 5] = b
+        count++
+      }
+      const geom = linesMesh.geometry
+      const posAttr = geom.attributes.position as BufferAttribute
+      const colAttr = geom.attributes.color as BufferAttribute
+      posAttr.needsUpdate = true
+      colAttr.needsUpdate = true
+      geom.setDrawRange(0, count * 2)
+    }
+
     if (started) {
       const [sx, sy] = getShake()
       camera.position.x = sx
@@ -1504,6 +1582,27 @@ function GameSceneInner() {
         <ringGeometry args={[0.92, 1.0, 24]} />
         <meshBasicMaterial transparent depthWrite={false} blending={AdditiveBlending} side={DoubleSide} />
       </instancedMesh>
+
+      <group ref={markCrosshairRef} visible={false} renderOrder={3}>
+        <mesh>
+          <ringGeometry args={[0.85, 0.92, 32]} />
+          <meshBasicMaterial color={COLOR_MARK} transparent depthWrite={false} blending={AdditiveBlending} side={DoubleSide} />
+        </mesh>
+        {[0, Math.PI / 2, Math.PI, Math.PI * 1.5].map((angle) => (
+          <mesh key={angle} position={[Math.cos(angle) * 1.05, Math.sin(angle) * 1.05, 0]} rotation={[0, 0, angle]}>
+            <planeGeometry args={[0.3, 0.07]} />
+            <meshBasicMaterial color={COLOR_MARK} transparent depthWrite={false} blending={AdditiveBlending} side={DoubleSide} />
+          </mesh>
+        ))}
+      </group>
+
+      <lineSegments ref={markLinesRef} renderOrder={2} frustumCulled={false}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args={[markLinePositions, 3]} />
+          <bufferAttribute attach="attributes-color" args={[markLineColors, 3]} />
+        </bufferGeometry>
+        <lineBasicMaterial vertexColors transparent depthWrite={false} blending={AdditiveBlending} linewidth={2} />
+      </lineSegments>
     </>
   )
 }
@@ -1552,11 +1651,16 @@ function updateDrones(drones: Drone[], dt: number, playerX: number) {
     if (i < droneCount) {
       const targetY = leaderY - DRONE_SPACING
       if (!d.active) {
-        d.x = leaderX
+        d.x = leaderX + (i % 2 === 0 ? DRONE_X_DEAD_ZONE : -DRONE_X_DEAD_ZONE)
         d.y = targetY
         d.active = true
       } else {
-        d.x += (leaderX - d.x) * followK
+        const dx = leaderX - d.x
+        if (dx > DRONE_X_DEAD_ZONE) {
+          d.x += (dx - DRONE_X_DEAD_ZONE) * followK
+        } else if (dx < -DRONE_X_DEAD_ZONE) {
+          d.x += (dx + DRONE_X_DEAD_ZONE) * followK
+        }
         d.y += (targetY - d.y) * followK
       }
       leaderX = d.x
@@ -1745,25 +1849,7 @@ function spawnMissileSalvo(missiles: Missile[], playerX: number) {
     m.armTimer = MISSILE_ARM_DELAY_MIN + Math.random() * (MISSILE_ARM_DELAY_MAX - MISSILE_ARM_DELAY_MIN)
     m.rotation = Math.random() * Math.PI * 2
     m.angularVelocity = (Math.random() < 0.5 ? -1 : 1) * MISSILE_TUMBLE_SPIN * (0.6 + Math.random() * 0.6)
-    m.mark = false
   }
-}
-
-function spawnMarkMissile(missiles: Missile[], playerX: number) {
-  const m = findInactiveMissile(missiles)
-  if (!m) return
-  const angle = Math.random() * Math.PI * 2
-  const speed = MISSILE_TUMBLE_SPEED * (0.7 + Math.random() * 0.6)
-  m.active = true
-  m.x = playerX
-  m.y = PLAYER_Y + 0.8
-  m.vx = Math.cos(angle) * speed
-  m.vy = Math.sin(angle) * speed
-  m.age = 0
-  m.armTimer = MISSILE_ARM_DELAY_MIN + Math.random() * (MISSILE_ARM_DELAY_MAX - MISSILE_ARM_DELAY_MIN)
-  m.rotation = Math.random() * Math.PI * 2
-  m.angularVelocity = (Math.random() < 0.5 ? -1 : 1) * MISSILE_TUMBLE_SPIN * (0.6 + Math.random() * 0.6)
-  m.mark = true
 }
 
 function updateEnemyPool(pool: Enemy[], dt: number, bullets: Bullet[]) {
@@ -2152,9 +2238,20 @@ function updateMissiles(
       if (found) {
         const dx = bestX - m.x
         const dy = bestY - m.y
-        const d = Math.sqrt(dx * dx + dy * dy) || 1
-        m.vx += (dx / d) * MISSILE_ACCEL * dt
-        m.vy += (dy / d) * MISSILE_ACCEL * dt
+        const desired = Math.atan2(dy, dx)
+        const current = Math.atan2(m.vy, m.vx)
+        let delta = desired - current
+        if (delta > Math.PI) delta -= Math.PI * 2
+        else if (delta < -Math.PI) delta += Math.PI * 2
+        const maxTurn = MISSILE_TURN_RATE * dt
+        if (delta > maxTurn) delta = maxTurn
+        else if (delta < -maxTurn) delta = -maxTurn
+        const newAngle = current + delta
+        const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
+        const newSpeed = Math.min(MISSILE_MAX_SPEED, speed + MISSILE_ACCEL * dt)
+        m.vx = Math.cos(newAngle) * newSpeed
+        m.vy = Math.sin(newAngle) * newSpeed
+      } else {
         const speed = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
         if (speed > MISSILE_MAX_SPEED) {
           m.vx *= MISSILE_MAX_SPEED / speed
@@ -2189,16 +2286,6 @@ function updateMissiles(
         const enemyR = e.elite ? ENEMY_RADIUS * ELITE_SCALE : ENEMY_RADIUS
         const r = MISSILE_RADIUS + enemyR
         if (dx * dx + dy * dy < r * r) {
-          if (m.mark) {
-            e.marked = true
-            addExplosion(m.x, m.y, '#aa44ff')
-            addChainRing(e.x, e.y, ENEMY_RADIUS * 2, '#aa44ff')
-            addShake(0.12, 0.18)
-            playMissileHit()
-            m.active = false
-            hit = true
-            break
-          }
           const wasMarked = e.marked
           e.hp -= MISSILE_DAMAGE
           if (playerStats.instaKillChance > 0 && Math.random() < playerStats.instaKillChance) {
@@ -2231,18 +2318,11 @@ function updateMissiles(
       const rx = BOSS_HALF_WIDTH + MISSILE_RADIUS
       const ry = BOSS_HALF_HEIGHT + MISSILE_RADIUS
       if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) < 1) {
-        if (m.mark) {
-          // Mark missiles dud against the boss; no marking of bosses.
-          addExplosion(m.x, m.y, '#aa44ff')
-          addShake(0.1, 0.15)
-          m.active = false
-        } else {
-          applyBossDamage(boss, MISSILE_DAMAGE, m.x, m.y)
-          addExplosion(m.x, m.y, '#ffcc44')
-          addShake(0.15, 0.18)
-          playMissileHit()
-          m.active = false
-        }
+        applyBossDamage(boss, MISSILE_DAMAGE, m.x, m.y)
+        addExplosion(m.x, m.y, '#ffcc44')
+        addShake(0.15, 0.18)
+        playMissileHit()
+        m.active = false
       }
     }
   }
@@ -2325,6 +2405,7 @@ function spreadMarkDamage(
     for (let i = 0; i < pool.length; i++) {
       const other = pool[i]
       if (!other.active || other === src) continue
+      addMarkLine(src.x, src.y, other.x, other.y)
       other.hp -= dmg
       const color = colorHexFor(other.type)
       if (other.hp <= 0) {
@@ -2335,6 +2416,7 @@ function spreadMarkDamage(
     }
   }
   if (bossIsTargetable(boss)) {
+    addMarkLine(src.x, src.y, boss.x, boss.y)
     applyBossDamage(boss, dmg, boss.x, boss.y)
   }
 }

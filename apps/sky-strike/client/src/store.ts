@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { submitPreferenceVote } from './highscore'
 
 export type UpgradeId =
   | 'fireRate'
@@ -30,6 +31,7 @@ export type UpgradeId =
   | 'necromancy'
   | 'knockback'
   | 'slow'
+  | 'overclock'
 
 export interface PlayerStats {
   fireInterval: number
@@ -41,6 +43,7 @@ export interface PlayerStats {
   bulletSpeedMul: number
   moveSpeedMul: number
   homingInterval: number
+  homingLevel: number
   homingSalvoCount: number
   maxLives: number
   chainExplodeChance: number
@@ -62,6 +65,7 @@ export interface PlayerStats {
   necromancyEnabled: boolean
   bulletKnockback: number
   bulletSlowEnabled: boolean
+  overclockMul: number
 }
 
 const INITIAL_LIVES = 3
@@ -81,6 +85,7 @@ const BASE_STATS: PlayerStats = {
   bulletSpeedMul: 1,
   moveSpeedMul: 1,
   homingInterval: 0,
+  homingLevel: 0,
   homingSalvoCount: 1,
   maxLives: INITIAL_LIVES,
   chainExplodeChance: 0,
@@ -91,17 +96,18 @@ const BASE_STATS: PlayerStats = {
   instaKillChance: 0,
   healOnKillChance: 0,
   empEnabled: false,
-  empMaxCooldown: 8,
-  empDuration: 4,
+  empMaxCooldown: 3,
+  empDuration: 2,
   empTickDamage: 3,
   empRadius: BASE_EMP_RADIUS,
   magnetRadius: BASE_MAGNET_RADIUS,
   droneCount: 0,
   markMissileEnabled: false,
-  markMissileMaxCooldown: 15,
+  markMissileMaxCooldown: 10,
   necromancyEnabled: false,
   bulletKnockback: 0,
   bulletSlowEnabled: false,
+  overclockMul: 1,
 }
 
 export const playerStats: PlayerStats = { ...BASE_STATS }
@@ -112,6 +118,7 @@ export function resetStats() {
 
 export interface UpgradeDef {
   id: UpgradeId
+  code: string
   name: string
   describe: (s: PlayerStats) => string
   isAvailable?: (s: PlayerStats) => boolean
@@ -119,9 +126,13 @@ export interface UpgradeDef {
   bossOnly?: boolean
 }
 
+const HOMING_BASE_INTERVAL = 4
+const HOMING_MAX_LEVEL = 8
+
 export const UPGRADES: UpgradeDef[] = [
   {
     id: 'fireRate',
+    code: 'fr',
     name: 'Fire Rate Up',
     describe: (s) => {
       const oldPct = (BASE_FIRE_INTERVAL / s.fireInterval) * 100
@@ -134,6 +145,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'bulletCount',
+    code: 'mc',
     name: 'Multi-Shot',
     describe: (s) => `${s.bulletCount} → ${s.bulletCount + 1} bullets, −15% attack speed`,
     isAvailable: (s) => s.bulletCount < 5,
@@ -144,6 +156,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'damage',
+    code: 'dmg',
     name: 'Damage Up',
     describe: (s) => `${s.bulletDamage} → ${s.bulletDamage + 1}`,
     apply: (s) => {
@@ -152,6 +165,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'burst',
+    code: 'brt',
     name: 'Burst Fire',
     describe: (s) => `${s.burstCount} → ${s.burstCount + 1} rounds, −15% attack speed`,
     isAvailable: (s) => s.burstCount < 4,
@@ -162,6 +176,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'penetration',
+    code: 'pen',
     name: 'Piercing Rounds',
     describe: (s) => `${s.penetration} → ${s.penetration + 1} pierces`,
     isAvailable: (s) => s.penetration < 5,
@@ -171,28 +186,35 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'homing',
+    code: 'hm',
     name: 'Homing Missile',
     describe: (s) => {
-      if (s.homingInterval <= 0) return 'Fire homing missiles every 4.0s'
-      const next = Math.max(0.5, s.homingInterval - 0.7)
-      return `${s.homingInterval.toFixed(1)}s → ${next.toFixed(1)}s between salvos`
+      if (s.homingLevel <= 0) {
+        const first = HOMING_BASE_INTERVAL * s.overclockMul
+        return `Fire homing missiles every ${first.toFixed(2)}s`
+      }
+      const next = (HOMING_BASE_INTERVAL / (s.homingLevel + 1)) * s.overclockMul
+      return `${s.homingInterval.toFixed(2)}s → ${next.toFixed(2)}s between salvos`
     },
+    isAvailable: (s) => s.homingLevel < HOMING_MAX_LEVEL,
     apply: (s) => {
-      if (s.homingInterval <= 0) s.homingInterval = 4.0
-      else s.homingInterval = Math.max(0.5, s.homingInterval - 0.7)
+      s.homingLevel += 1
+      s.homingInterval = (HOMING_BASE_INTERVAL / s.homingLevel) * s.overclockMul
     },
   },
   {
     id: 'homingSalvo',
+    code: 'hms',
     name: 'Missile Salvo',
     describe: (s) => `${s.homingSalvoCount} → ${s.homingSalvoCount + 1} missiles per salvo`,
-    isAvailable: (s) => s.homingInterval > 0 && s.homingSalvoCount < 4,
+    isAvailable: (s) => s.homingLevel > 0 && s.homingSalvoCount < 4,
     apply: (s) => {
       s.homingSalvoCount += 1
     },
   },
   {
     id: 'maxHp',
+    code: 'hp',
     name: 'Max HP Up',
     describe: (s) => `${s.maxLives} → ${s.maxLives + 1}`,
     apply: (s) => {
@@ -201,6 +223,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'largeBullets',
+    code: 'sz',
     name: 'Bullet Size Up',
     describe: (s) => {
       const oldPct = Math.round(s.bulletRadiusMul * 100)
@@ -214,6 +237,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'moveSpeed',
+    code: 'mov',
     name: 'Move Speed Up',
     describe: (s) => {
       const oldPct = Math.round(s.moveSpeedMul * 100)
@@ -226,6 +250,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'bulletSpeed',
+    code: 'bsp',
     name: 'Bullet Speed Up',
     describe: (s) => {
       const oldPct = Math.round(s.bulletSpeedMul * 100)
@@ -238,10 +263,11 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'drone',
-    name: 'Trailing Drone',
+    code: 'drn',
+    name: 'Follow Drone',
     describe: (s) =>
       s.droneCount === 0
-        ? 'Adds a drone behind you that shoots when you do'
+        ? 'Adds a wingman drone that fires with you'
         : `${s.droneCount} → ${s.droneCount + 1} drones`,
     isAvailable: (s) => s.droneCount < 5,
     apply: (s) => {
@@ -250,6 +276,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'chainExplode',
+    code: 'cn',
     name: 'Chain Reaction',
     describe: (s) => {
       const oldChance = Math.round(s.chainExplodeChance * 100)
@@ -271,30 +298,33 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'markMissile',
-    name: 'Mark Missile',
+    code: 'mrk',
+    name: 'Mark Target',
     describe: () =>
-      'Fires every 15s — marks an enemy so its damage spreads to all others',
+      'Every 10s, marks the next enemy spawned — its damage spreads to all others',
     isAvailable: (s) => !s.markMissileEnabled,
     apply: (s) => {
       s.markMissileEnabled = true
-      s.markMissileMaxCooldown = 15
+      s.markMissileMaxCooldown = 10 * s.overclockMul
     },
   },
   {
     id: 'emp',
+    code: 'emp',
     name: 'EMP Bomb',
-    describe: () => 'Drops an EMP every 8s — pulses 4s, 3 dmg/tick',
+    describe: () => 'Drops an EMP every 3s — pulses 2s, 3 dmg/tick',
     isAvailable: (s) => !s.empEnabled,
     apply: (s) => {
       s.empEnabled = true
-      s.empMaxCooldown = 8
-      s.empDuration = 4
+      s.empMaxCooldown = 3 * s.overclockMul
+      s.empDuration = 2
       s.empTickDamage = 3
       s.empRadius = BASE_EMP_RADIUS
     },
   },
   {
     id: 'empDuration',
+    code: 'emd',
     name: 'EMP Sustain',
     describe: (s) => `${s.empDuration.toFixed(1)}s → ${(s.empDuration + 1).toFixed(1)}s EMP`,
     isAvailable: (s) => s.empEnabled && s.empDuration < 10,
@@ -304,6 +334,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'empDps',
+    code: 'epd',
     name: 'EMP Power',
     describe: (s) => `${s.empTickDamage.toFixed(1)} → ${(s.empTickDamage * 1.5).toFixed(1)} dmg/tick`,
     isAvailable: (s) => s.empEnabled,
@@ -313,6 +344,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'empRadius',
+    code: 'emr',
     name: 'EMP Reach',
     describe: (s) => {
       const oldPct = Math.round((s.empRadius / BASE_EMP_RADIUS) * 100)
@@ -325,7 +357,27 @@ export const UPGRADES: UpgradeDef[] = [
     },
   },
   {
+    id: 'overclock',
+    code: 'oc',
+    name: 'Overclock',
+    describe: (s) => {
+      const oldRate = Math.round((1 / s.overclockMul) * 100)
+      const newRate = Math.round((1 / (s.overclockMul * 0.9)) * 100)
+      return `−10% all weapon & shield cooldowns (rate ${oldRate}% → ${newRate}%)`
+    },
+    bossOnly: true,
+    apply: (s) => {
+      s.overclockMul *= 0.9
+      s.fireInterval *= 0.9
+      s.homingInterval *= 0.9
+      s.empMaxCooldown *= 0.9
+      s.markMissileMaxCooldown *= 0.9
+      s.shieldMaxCooldown *= 0.9
+    },
+  },
+  {
     id: 'magnetRadius',
+    code: 'mag',
     name: 'Magnet Reach',
     describe: (s) => {
       const oldPct = Math.round((s.magnetRadius / BASE_MAGNET_RADIUS) * 100)
@@ -339,28 +391,31 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'shield',
+    code: 'shd',
     name: 'Projectile Shield',
     describe: () => 'Nullify one hit every 10 seconds',
     bossOnly: true,
     isAvailable: (s) => !s.shieldEnabled,
     apply: (s) => {
       s.shieldEnabled = true
-      s.shieldMaxCooldown = 10
+      s.shieldMaxCooldown = 10 * s.overclockMul
     },
   },
   {
     id: 'multiProjectile',
+    code: 'mp',
     name: '+1 Projectile',
     describe: (s) =>
-      s.homingInterval > 0 ? '+1 main bullet, +1 missile per salvo' : '+1 main bullet',
+      s.homingLevel > 0 ? '+1 main bullet, +1 missile per salvo' : '+1 main bullet',
     bossOnly: true,
     apply: (s) => {
       s.bulletCount += 1
-      if (s.homingInterval > 0) s.homingSalvoCount += 1
+      if (s.homingLevel > 0) s.homingSalvoCount += 1
     },
   },
   {
     id: 'empower',
+    code: 'epw',
     name: 'Empowered Rounds',
     describe: (s) => {
       const next =
@@ -382,6 +437,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'fullHeal',
+    code: 'heal',
     name: 'Full Repair',
     describe: () => 'Heal to max HP',
     bossOnly: true,
@@ -391,6 +447,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'instaKill',
+    code: 'crit',
     name: 'Critical Strike',
     describe: (s) => {
       const newChance = Math.min(1, s.instaKillChance + 0.05)
@@ -404,6 +461,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'lifeOnKill',
+    code: 'vamp',
     name: 'Vampiric Strike',
     describe: (s) => {
       const newChance = Math.min(1, s.healOnKillChance + 0.04)
@@ -417,6 +475,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'biggerBullets',
+    code: 'big',
     name: 'Massive Rounds',
     describe: () => '+50% bullet size',
     bossOnly: true,
@@ -426,6 +485,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'necromancy',
+    code: 'nec',
     name: 'Necromancy',
     describe: () => 'Killed enemies spawn a ghost — haunts for 3s, deals your bullet damage',
     bossOnly: true,
@@ -436,6 +496,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'knockback',
+    code: 'kb',
     name: 'Knockback',
     describe: () => 'Main bullets push enemies back a small amount',
     bossOnly: true,
@@ -446,6 +507,7 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'slow',
+    code: 'cryo',
     name: 'Cryo Rounds',
     describe: () => 'Main bullets slow enemies 60% for 1s',
     bossOnly: true,
@@ -464,8 +526,20 @@ const UPGRADE_BY_ID: Record<UpgradeId, UpgradeDef> = UPGRADES.reduce(
   {} as Record<UpgradeId, UpgradeDef>,
 )
 
+const UPGRADE_BY_CODE: Record<string, UpgradeDef> = UPGRADES.reduce(
+  (acc, u) => {
+    acc[u.code] = u
+    return acc
+  },
+  {} as Record<string, UpgradeDef>,
+)
+
 export function getUpgrade(id: UpgradeId): UpgradeDef {
   return UPGRADE_BY_ID[id]
+}
+
+export function getUpgradeByCode(code: string): UpgradeDef | undefined {
+  return UPGRADE_BY_CODE[code]
 }
 
 function pickFromList(list: UpgradeDef[]): UpgradeId[] {
@@ -510,7 +584,7 @@ interface BossUiState {
   dangerMessage: string
 }
 
-export type RunBuild = Partial<Record<UpgradeId, number>>
+export type RunBuild = Record<string, number>
 
 interface GameState extends LevelUpVisuals, BossUiState {
   started: boolean
@@ -602,6 +676,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       ...RESET_VISUALS,
   ...RESET_BOSS_UI,
     })
+    get().grantUpgrade()
   },
   end: () =>
     set((s) => ({
@@ -682,9 +757,20 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
   },
   selectUpgrade: (idx) => {
-    const id = get().upgradeChoices[idx]
+    const choices = get().upgradeChoices
+    const id = choices[idx]
     if (!id) return
     const def = UPGRADE_BY_ID[id]
+    if (choices.length === 2) {
+      const otherId = choices[idx === 0 ? 1 : 0]
+      const otherDef = UPGRADE_BY_ID[otherId]
+      if (otherDef) {
+        const codes = [def.code, otherDef.code].sort()
+        const pairId = `${codes[0]}-${codes[1]}`
+        const delta = def.code === codes[0] ? 1 : -1
+        submitPreferenceVote(pairId, delta)
+      }
+    }
     def.apply(playerStats)
     const wasBoss = def.bossOnly === true
     set((s) => {
@@ -699,7 +785,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       } else if (remainingRegular > 0) {
         nextChoices = pickUpgradeChoices(playerStats)
       }
-      const nextRunBuild: RunBuild = { ...s.runBuild, [id]: (s.runBuild[id] ?? 0) + 1 }
+      const nextRunBuild: RunBuild = { ...s.runBuild, [def.code]: (s.runBuild[def.code] ?? 0) + 1 }
       return {
         pendingBossUpgrades: Math.max(0, remainingBoss),
         pendingLevelUps: Math.max(0, remainingRegular),

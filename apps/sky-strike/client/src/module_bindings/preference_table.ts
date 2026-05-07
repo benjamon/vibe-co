@@ -10,18 +10,7 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export const Highscore = __t.object("Highscore", {
-  userId: __t.string(),
-  name: __t.string(),
-  score: __t.u32(),
-  build: __t.string(),
-  timestamp: __t.u64(),
-});
-export type Highscore = __Infer<typeof Highscore>;
-
-export const Preference = __t.object("Preference", {
-  pairId: __t.string(),
+export default __t.row({
+  pairId: __t.string().primaryKey().name("pair_id"),
   score: __t.i32(),
 });
-export type Preference = __Infer<typeof Preference>;
-

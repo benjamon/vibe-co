@@ -6,22 +6,63 @@ import {
   subscribeUserName,
   type HighScoreEntry,
 } from './highscore'
-import { getUpgrade, type RunBuild, type UpgradeId } from './store'
+import { getUpgrade, getUpgradeByCode, type RunBuild, type UpgradeId } from './store'
 
 const TOP_N = 10
+
+type WindowKind = 'all' | 'week' | 'day'
+const WINDOW_ORDER: WindowKind[] = ['all', 'week', 'day']
+const WINDOW_LABEL: Record<WindowKind, string> = {
+  all: 'ALL TIME',
+  week: 'THIS WEEK',
+  day: 'TODAY',
+}
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function windowCutoff(kind: WindowKind): number {
+  if (kind === 'all') return 0
+  if (kind === 'week') return Date.now() - 7 * DAY_MS
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return today.getTime()
+}
+
+function cycleWindow(current: WindowKind, dir: 1 | -1): WindowKind {
+  const i = WINDOW_ORDER.indexOf(current)
+  const next = (i + dir + WINDOW_ORDER.length) % WINDOW_ORDER.length
+  return WINDOW_ORDER[next]
+}
 
 export function HighscorePanel() {
   const [scores, setScores] = useState<HighScoreEntry[]>([])
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null)
+  const [windowKind, setWindowKind] = useState<WindowKind>('all')
 
   useEffect(() => subscribeHighscores(setScores), [])
 
-  const top = scores.slice(0, TOP_N)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return
+      }
+      e.preventDefault()
+      setWindowKind((w) => cycleWindow(w, e.key === 'ArrowRight' ? 1 : -1))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const cutoff = windowCutoff(windowKind)
+  const filtered = cutoff === 0 ? scores : scores.filter((s) => s.timestamp >= cutoff)
+  const top = filtered.slice(0, TOP_N)
   const myId = getUserId()
 
   return (
     <div style={panelStyle}>
       <div style={titleStyle}>HIGH SCORES</div>
+      <WindowSelector kind={windowKind} onChange={setWindowKind} />
       <NameEditor />
       {top.length === 0 ? (
         <div style={emptyStyle}>NO RUNS YET — BE THE FIRST</div>
@@ -52,6 +93,36 @@ export function HighscorePanel() {
           })}
         </div>
       )}
+    </div>
+  )
+}
+
+function WindowSelector({ kind, onChange }: { kind: WindowKind; onChange: (k: WindowKind) => void }) {
+  return (
+    <div style={windowRowStyle} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onChange(cycleWindow(kind, -1))
+        }}
+        style={windowArrowStyle}
+        aria-label="Previous window"
+      >
+        ◂
+      </button>
+      <span style={windowLabelStyle}>{WINDOW_LABEL[kind]}</span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onChange(cycleWindow(kind, 1))
+        }}
+        style={windowArrowStyle}
+        aria-label="Next window"
+      >
+        ▸
+      </button>
     </div>
   )
 }
@@ -125,18 +196,18 @@ function NameEditor() {
 }
 
 function BuildBreakdown({ build }: { build: RunBuild }) {
-  const items = Object.entries(build) as [UpgradeId, number][]
+  const items = Object.entries(build)
   if (items.length === 0) {
     return <div style={buildEmptyStyle}>(no upgrades taken)</div>
   }
   items.sort((a, b) => b[1] - a[1])
   return (
     <div style={buildListStyle}>
-      {items.map(([id, count]) => {
-        const def = safeGetUpgrade(id)
-        const label = def?.name ?? id
+      {items.map(([key, count]) => {
+        const def = safeGetUpgrade(key)
+        const label = def?.name ?? key
         return (
-          <div key={id} style={buildRowStyle}>
+          <div key={key} style={buildRowStyle}>
             <span style={buildNameStyle}>{label}</span>
             <span style={buildCountStyle}>×{count}</span>
           </div>
@@ -146,9 +217,11 @@ function BuildBreakdown({ build }: { build: RunBuild }) {
   )
 }
 
-function safeGetUpgrade(id: UpgradeId) {
+function safeGetUpgrade(key: string) {
+  const byCode = getUpgradeByCode(key)
+  if (byCode) return byCode
   try {
-    return getUpgrade(id)
+    return getUpgrade(key as UpgradeId) ?? null
   } catch {
     return null
   }
@@ -340,4 +413,36 @@ const nameSaveButtonStyle: React.CSSProperties = {
   ...editButtonStyle,
   background: '#33ddff',
   color: '#08203a',
+}
+
+const windowRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 12,
+  marginBottom: 10,
+}
+
+const windowArrowStyle: React.CSSProperties = {
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 14,
+  color: '#33ddff',
+  background: 'transparent',
+  border: '1px solid rgba(51, 221, 255, 0.4)',
+  borderRadius: 4,
+  width: 28,
+  height: 28,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
+}
+
+const windowLabelStyle: React.CSSProperties = {
+  fontFamily: "'Press Start 2P', monospace",
+  fontSize: 10,
+  color: '#aaffdd',
+  letterSpacing: '0.18em',
+  minWidth: 110,
+  textAlign: 'center',
 }

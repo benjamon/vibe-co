@@ -41,6 +41,39 @@ for (let i = 0; i < POOL_SIZE; i++) {
   })
 }
 
+export interface MarkLine {
+  active: boolean
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  life: number
+  maxLife: number
+}
+
+const MARK_LINE_POOL_SIZE = 64
+const markLines: MarkLine[] = []
+for (let i = 0; i < MARK_LINE_POOL_SIZE; i++) {
+  markLines.push({ active: false, x1: 0, y1: 0, x2: 0, y2: 0, life: 0, maxLife: 0 })
+}
+let nextMarkLineSlot = 0
+
+export function addMarkLine(x1: number, y1: number, x2: number, y2: number) {
+  const line = markLines[nextMarkLineSlot]
+  line.active = true
+  line.x1 = x1
+  line.y1 = y1
+  line.x2 = x2
+  line.y2 = y2
+  line.life = 0.3
+  line.maxLife = 0.3
+  nextMarkLineSlot = (nextMarkLineSlot + 1) % MARK_LINE_POOL_SIZE
+}
+
+export function getMarkLines(): MarkLine[] {
+  return markLines
+}
+
 let nextSlot = 0
 let shakeIntensity = 0
 let shakeTime = 0
@@ -100,6 +133,7 @@ export function getParticles(): Particle[] {
 
 export function clearEffects() {
   for (let i = 0; i < POOL_SIZE; i++) particles[i].active = false
+  for (let i = 0; i < MARK_LINE_POOL_SIZE; i++) markLines[i].active = false
   shakeIntensity = 0
   shakeTime = 0
   shakeDuration = 0
@@ -275,6 +309,12 @@ export function addEmpTrail(x: number, y: number) {
 }
 
 export function updateEffects(dt: number) {
+  for (let i = 0; i < MARK_LINE_POOL_SIZE; i++) {
+    const line = markLines[i]
+    if (!line.active) continue
+    line.life -= dt
+    if (line.life <= 0) line.active = false
+  }
   for (let i = 0; i < POOL_SIZE; i++) {
     const p = particles[i]
     if (!p.active) continue

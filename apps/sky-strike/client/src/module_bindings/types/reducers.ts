@@ -7,6 +7,8 @@ import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
 import SubmitScoreReducer from "../submit_score_reducer";
+import VotePairReducer from "../vote_pair_reducer";
 
 export type SubmitScoreParams = __Infer<typeof SubmitScoreReducer>;
+export type VotePairParams = __Infer<typeof VotePairReducer>;
 

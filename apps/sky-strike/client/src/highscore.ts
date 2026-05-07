@@ -177,7 +177,12 @@ function upsertLocal(entry: HighScoreEntry): boolean {
 // ---------- SpacetimeDB connection ----------
 
 type RemoteConnection = {
-  reducers: { submitScore?: (args: SubmitArgs) => void; submit_score?: (args: SubmitArgs) => void }
+  reducers: {
+    submitScore?: (args: SubmitArgs) => void
+    submit_score?: (args: SubmitArgs) => void
+    votePair?: (args: VoteArgs) => void
+    vote_pair?: (args: VoteArgs) => void
+  }
   db: { highscore: { iter: () => Iterable<RemoteRow>; onInsert?: Function; onUpdate?: Function } }
   subscriptionBuilder?: () => { subscribe: (queries: string[]) => void }
 }
@@ -197,6 +202,12 @@ type SubmitArgs = {
   name: string
   score: number
   build: string
+}
+
+type VoteArgs = {
+  pair_id?: string
+  pairId?: string
+  delta: number
 }
 
 let connection: RemoteConnection | null = null
@@ -286,6 +297,17 @@ export async function connectToHighscoreServer(): Promise<void> {
     builder.build()
   } catch (e) {
     console.warn('[highscore] build failed:', e)
+  }
+}
+
+export function submitPreferenceVote(pairId: string, delta: number): void {
+  if (!connection || !pairId || delta === 0) return
+  const args: VoteArgs = { pair_id: pairId, pairId, delta }
+  try {
+    connection.reducers.votePair?.(args)
+    connection.reducers.vote_pair?.(args)
+  } catch (e) {
+    console.warn('[highscore] vote_pair failed:', e)
   }
 }
 
