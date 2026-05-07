@@ -273,6 +273,25 @@ export function addChainRing(x: number, y: number, radius: number, color: string
   emit(x, y, 0, 0, 0.55, 0.55, radius, color, 0, 3)
 }
 
+export function addBulletPop(x: number, y: number, color: string) {
+  for (let i = 0; i < 4; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const speed = 2 + Math.random() * 2.5
+    emit(
+      x,
+      y,
+      Math.cos(angle) * speed,
+      Math.sin(angle) * speed,
+      0.18 + Math.random() * 0.06,
+      0.24,
+      0.08 + Math.random() * 0.05,
+      color,
+      5,
+      0,
+    )
+  }
+}
+
 export function addEmpTrail(x: number, y: number) {
   const angle = Math.random() * Math.PI * 2
   const speed = 1.5 + Math.random() * 1.5

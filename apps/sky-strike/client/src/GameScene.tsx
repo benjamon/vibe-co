@@ -19,6 +19,7 @@ import { CHAIN_DAMAGE, playerStats, useGameStore } from './store'
 import { useInput, type InputState } from './useInput'
 import { playConfirm, playDamage, playEmpTick, playHit, playKill, playLevelUp, playMissileHit, playPickup, playShoot, playSpawn } from './audio'
 import {
+  addBulletPop,
   addChainRing,
   addEmpTrail,
   addExplosion,
@@ -70,9 +71,13 @@ const STAR_COUNT = 80
 const MAX_EMPS = 8
 const MAX_DIAMONDS = 240
 const MAX_DRONES = 5
-const DRONE_SPACING = 1.0
+const DRONE_SPACING = 0.5
 const DRONE_FOLLOW_RATE = 5
-const DRONE_X_DEAD_ZONE = 1.2
+const DRONE_X_DEAD_ZONE = 0.96
+const DRONE_SWAY_FREQ_X = 1.6
+const DRONE_SWAY_FREQ_Y = 2.3
+const DRONE_SWAY_AMP_X = 0.22
+const DRONE_SWAY_AMP_Y = 0.14
 
 const MAX_GHOSTS = 64
 const GHOST_LIFETIME = 3.0
@@ -206,6 +211,7 @@ let frameHeal = 0
 let bossHpDirty = false
 let pendingBossHp = 0
 let pendingBossMaxHp = 0
+let bossDeathClearBullets = false
 
 function pushScore(n: number) {
   frameScore += n
@@ -279,6 +285,9 @@ interface Drone {
   active: boolean
   x: number
   y: number
+  phase: number
+  rx: number
+  ry: number
 }
 
 interface Ghost {
@@ -464,7 +473,7 @@ function makeDiamondPool(): Diamond[] {
 function makeDronePool(): Drone[] {
   const arr: Drone[] = []
   for (let i = 0; i < MAX_DRONES; i++) {
-    arr.push({ active: false, x: 0, y: 0 })
+    arr.push({ active: false, x: 0, y: 0, phase: 0, rx: 0, ry: 0 })
   }
   return arr
 }
@@ -771,6 +780,7 @@ function GameSceneInner() {
       frameXp = 0
       frameHeal = 0
       bossHpDirty = false
+      bossDeathClearBullets = false
       const store = useGameStore.getState()
       store.setBossWarning(false)
       store.setBossHp(0, 0)
@@ -913,7 +923,7 @@ function GameSceneInner() {
       if (playerXRef.current < -FIELD_HALF_WIDTH + 0.25) playerXRef.current = -FIELD_HALF_WIDTH + 0.25
       if (playerXRef.current > FIELD_HALF_WIDTH - 0.25) playerXRef.current = FIELD_HALF_WIDTH - 0.25
 
-      updateDrones(drones, dt, playerXRef.current)
+      updateDrones(drones, dt, playerXRef.current, Date.now() * 0.001)
 
       fireTimerRef.current -= dt
       if (fireTimerRef.current <= 0 && burstShotsRef.current === 0) {
@@ -925,10 +935,11 @@ function GameSceneInner() {
         burstTimerRef.current -= dt
         if (burstTimerRef.current <= 0) {
           burstTimerRef.current = BURST_DELAY
+          const isFirstShotOfBurst = burstShotsRef.current === playerStats.burstCount
           burstShotsRef.current -= 1
           shotCounterRef.current += 1
           fireSalvo(bullets, playerXRef.current, shotCounterRef.current)
-          fireDroneShots(bullets, drones)
+          if (isFirstShotOfBurst) fireDroneShots(bullets, drones)
         }
       }
 
@@ -1052,6 +1063,21 @@ function GameSceneInner() {
 
       updateMissiles(missiles, dt, allEnemyPools, boss, diamonds)
       updateGhosts(ghosts, dt, allEnemyPools, boss, diamonds)
+
+      if (bossDeathClearBullets) {
+        bossDeathClearBullets = false
+        for (let i = 0; i < bullets.length; i++) {
+          const b = bullets[i]
+          if (!b.active) continue
+          const color = b.fromPlayer
+            ? b.empowered
+              ? '#ffdd33'
+              : '#33ffaa'
+            : '#ff3344'
+          addBulletPop(b.x, b.y, color)
+          b.active = false
+        }
+      }
 
       const px = playerXRef.current
       const py = PLAYER_Y
@@ -1198,7 +1224,7 @@ function GameSceneInner() {
       for (let i = 0; i < drones.length; i++) {
         const d = drones[i]
         if (d.active) {
-          tempObj.position.set(d.x, d.y, 0)
+          tempObj.position.set(d.rx, d.ry, 0)
           tempObj.rotation.set(0, 0, 0)
           tempObj.scale.setScalar(0.55)
           tempObj.updateMatrix()
@@ -1641,7 +1667,7 @@ function fireSalvo(bullets: Bullet[], playerX: number, shotIndex: number) {
   playShoot()
 }
 
-function updateDrones(drones: Drone[], dt: number, playerX: number) {
+function updateDrones(drones: Drone[], dt: number, playerX: number, elapsed: number) {
   const droneCount = playerStats.droneCount
   const followK = Math.min(1, dt * DRONE_FOLLOW_RATE)
   let leaderX = playerX
@@ -1653,6 +1679,7 @@ function updateDrones(drones: Drone[], dt: number, playerX: number) {
       if (!d.active) {
         d.x = leaderX + (i % 2 === 0 ? DRONE_X_DEAD_ZONE : -DRONE_X_DEAD_ZONE)
         d.y = targetY
+        d.phase = Math.random() * Math.PI * 2
         d.active = true
       } else {
         const dx = leaderX - d.x
@@ -1663,6 +1690,8 @@ function updateDrones(drones: Drone[], dt: number, playerX: number) {
         }
         d.y += (targetY - d.y) * followK
       }
+      d.rx = d.x + Math.sin(elapsed * DRONE_SWAY_FREQ_X + d.phase) * DRONE_SWAY_AMP_X
+      d.ry = d.y + Math.sin(elapsed * DRONE_SWAY_FREQ_Y + d.phase * 1.3) * DRONE_SWAY_AMP_Y
       leaderX = d.x
       leaderY = d.y
     } else if (d.active) {
@@ -1681,8 +1710,8 @@ function fireDroneShots(bullets: Bullet[], drones: Drone[]) {
     const b = findInactiveBullet(bullets)
     if (!b) return
     b.active = true
-    b.x = d.x
-    b.y = d.y + 0.3
+    b.x = d.rx
+    b.y = d.ry + 0.3
     b.vx = 0
     b.vy = speed
     b.fromPlayer = true
@@ -2013,6 +2042,7 @@ function onBossKilled(boss: BossState) {
   store.setBossWarning(false)
   store.setBossHp(0, 0)
   addShake(0.6, 0.5)
+  bossDeathClearBullets = true
 }
 
 function fireBossBullet(boss: BossState, bullets: Bullet[]) {

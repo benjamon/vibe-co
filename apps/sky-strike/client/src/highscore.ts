@@ -205,9 +205,10 @@ type SubmitArgs = {
 }
 
 type VoteArgs = {
-  pair_id?: string
-  pairId?: string
-  delta: number
+  picked_code?: string
+  pickedCode?: string
+  passed_code?: string
+  passedCode?: string
 }
 
 let connection: RemoteConnection | null = null
@@ -300,9 +301,14 @@ export async function connectToHighscoreServer(): Promise<void> {
   }
 }
 
-export function submitPreferenceVote(pairId: string, delta: number): void {
-  if (!connection || !pairId || delta === 0) return
-  const args: VoteArgs = { pair_id: pairId, pairId, delta }
+export function submitPreferenceVote(pickedCode: string, passedCode: string): void {
+  if (!connection || !pickedCode || !passedCode || pickedCode === passedCode) return
+  const args: VoteArgs = {
+    picked_code: pickedCode,
+    pickedCode,
+    passed_code: passedCode,
+    passedCode,
+  }
   try {
     connection.reducers.votePair?.(args)
     connection.reducers.vote_pair?.(args)

@@ -11,6 +11,6 @@ import {
 } from "spacetimedb";
 
 export default {
-  pairId: __t.string(),
-  delta: __t.i32(),
+  pickedCode: __t.string(),
+  passedCode: __t.string(),
 };

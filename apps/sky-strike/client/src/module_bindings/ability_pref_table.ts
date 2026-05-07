@@ -10,8 +10,8 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export const AbilityPref = __t.object("AbilityPref", {
-  code: __t.string(),
+export default __t.row({
+  code: __t.string().primaryKey(),
   picks: __t.i32(),
   passes: __t.i32(),
   big: __t.i32(),
@@ -45,20 +45,3 @@ export const AbilityPref = __t.object("AbilityPref", {
   sz: __t.i32(),
   vamp: __t.i32(),
 });
-export type AbilityPref = __Infer<typeof AbilityPref>;
-
-export const Highscore = __t.object("Highscore", {
-  userId: __t.string(),
-  name: __t.string(),
-  score: __t.u32(),
-  build: __t.string(),
-  timestamp: __t.u64(),
-});
-export type Highscore = __Infer<typeof Highscore>;
-
-export const Preference = __t.object("Preference", {
-  pairId: __t.string(),
-  score: __t.i32(),
-});
-export type Preference = __Infer<typeof Preference>;
-

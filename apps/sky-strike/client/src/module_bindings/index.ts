@@ -40,6 +40,7 @@ import VotePairReducer from "./vote_pair_reducer";
 // Import all procedure arg schemas
 
 // Import all table schema definitions
+import AbilityPrefRow from "./ability_pref_table";
 import HighscoreRow from "./highscore_table";
 import PreferenceRow from "./preference_table";
 
@@ -47,6 +48,17 @@ import PreferenceRow from "./preference_table";
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
+  ability_pref: __table({
+    name: 'ability_pref',
+    indexes: [
+      { accessor: 'code', name: 'ability_pref_code_idx_btree', algorithm: 'btree', columns: [
+        'code',
+      ] },
+    ],
+    constraints: [
+      { name: 'ability_pref_code_key', constraint: 'unique', columns: ['code'] },
+    ],
+  }, AbilityPrefRow),
   highscore: __table({
     name: 'highscore',
     indexes: [

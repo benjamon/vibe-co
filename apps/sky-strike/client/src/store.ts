@@ -764,12 +764,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (choices.length === 2) {
       const otherId = choices[idx === 0 ? 1 : 0]
       const otherDef = UPGRADE_BY_ID[otherId]
-      if (otherDef) {
-        const codes = [def.code, otherDef.code].sort()
-        const pairId = `${codes[0]}-${codes[1]}`
-        const delta = def.code === codes[0] ? 1 : -1
-        submitPreferenceVote(pairId, delta)
-      }
+      if (otherDef) submitPreferenceVote(def.code, otherDef.code)
     }
     def.apply(playerStats)
     const wasBoss = def.bossOnly === true

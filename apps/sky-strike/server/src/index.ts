@@ -22,10 +22,8 @@ const highscore = table(
   },
 )
 
-// Cumulative preference between every pair of abilities offered together at a
-// level-up. pair_id is `${codeMin}-${codeMax}` (alphabetically sorted). score
-// is incremented when the alphabetically-first code was picked, decremented
-// when the second was picked. Positive = first preferred.
+// Legacy: kept (orphaned) so spacetime's migration system doesn't see this as
+// a destructive in-place change to its schema. New writes go to ability_pref.
 const preference = table(
   {
     name: 'preference',
@@ -37,7 +35,53 @@ const preference = table(
   },
 )
 
-const spacetimedb = schema({ highscore, preference })
+// One row per ability code. `picks` / `passes` track the totals each time
+// this ability was offered; the per-code columns track head-to-head outcomes
+// against every other ability — incremented when this ability was picked over
+// that one, decremented when it was passed in favour of that one.
+const ability_pref = table(
+  {
+    name: 'ability_pref',
+    public: true,
+  },
+  {
+    code: t.string().primaryKey(),
+    picks: t.i32(),
+    passes: t.i32(),
+    big: t.i32(),
+    brt: t.i32(),
+    bsp: t.i32(),
+    cn: t.i32(),
+    crit: t.i32(),
+    cryo: t.i32(),
+    dmg: t.i32(),
+    drn: t.i32(),
+    emd: t.i32(),
+    emp: t.i32(),
+    emr: t.i32(),
+    epd: t.i32(),
+    epw: t.i32(),
+    fr: t.i32(),
+    heal: t.i32(),
+    hm: t.i32(),
+    hms: t.i32(),
+    hp: t.i32(),
+    kb: t.i32(),
+    mag: t.i32(),
+    mc: t.i32(),
+    mov: t.i32(),
+    mp: t.i32(),
+    mrk: t.i32(),
+    nec: t.i32(),
+    oc: t.i32(),
+    pen: t.i32(),
+    shd: t.i32(),
+    sz: t.i32(),
+    vamp: t.i32(),
+  },
+)
+
+const spacetimedb = schema({ highscore, preference, ability_pref })
 
 const MAX_NAME_LEN = 32
 const MAX_BUILD_LEN = 4096
@@ -76,24 +120,55 @@ export const submit_score = spacetimedb.reducer(
   },
 )
 
-const MAX_PAIR_ID_LEN = 32
+const ABILITY_CODES = [
+  'big', 'brt', 'bsp', 'cn', 'crit', 'cryo', 'dmg', 'drn', 'emd', 'emp',
+  'emr', 'epd', 'epw', 'fr', 'heal', 'hm', 'hms', 'hp', 'kb', 'mag',
+  'mc', 'mov', 'mp', 'mrk', 'nec', 'oc', 'pen', 'shd', 'sz', 'vamp',
+] as const
+
+type AbilityCode = (typeof ABILITY_CODES)[number]
+
+const ABILITY_CODE_SET: Set<string> = new Set(ABILITY_CODES)
+
+type PreferenceRow = {
+  code: string
+  picks: number
+  passes: number
+} & Record<AbilityCode, number>
+
+function emptyPrefRow(code: string): PreferenceRow {
+  const row: any = { code, picks: 0, passes: 0 }
+  for (const c of ABILITY_CODES) row[c] = 0
+  return row as PreferenceRow
+}
 
 export const vote_pair = spacetimedb.reducer(
   {
-    pair_id: t.string(),
-    delta: t.i32(),
+    picked_code: t.string(),
+    passed_code: t.string(),
   },
-  (ctx, { pair_id, delta }) => {
-    if (!pair_id || pair_id.length > MAX_PAIR_ID_LEN) return
-    if (delta !== 1 && delta !== -1) return
-    const existing = ctx.db.preference.pair_id.find(pair_id)
-    if (existing) {
-      ctx.db.preference.pair_id.update({
-        pair_id,
-        score: existing.score + delta,
-      })
+  (ctx, { picked_code, passed_code }) => {
+    if (!ABILITY_CODE_SET.has(picked_code) || !ABILITY_CODE_SET.has(passed_code)) return
+    if (picked_code === passed_code) return
+
+    const pickedExisting = ctx.db.ability_pref.code.find(picked_code)
+    const pickedRow = pickedExisting ?? emptyPrefRow(picked_code)
+    pickedRow.picks += 1
+    ;(pickedRow as any)[passed_code] += 1
+    if (pickedExisting) {
+      ctx.db.ability_pref.code.update(pickedRow)
     } else {
-      ctx.db.preference.insert({ pair_id, score: delta })
+      ctx.db.ability_pref.insert(pickedRow)
+    }
+
+    const passedExisting = ctx.db.ability_pref.code.find(passed_code)
+    const passedRow = passedExisting ?? emptyPrefRow(passed_code)
+    passedRow.passes += 1
+    ;(passedRow as any)[picked_code] -= 1
+    if (passedExisting) {
+      ctx.db.ability_pref.code.update(passedRow)
+    } else {
+      ctx.db.ability_pref.insert(passedRow)
     }
   },
 )
