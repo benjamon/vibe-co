@@ -44,6 +44,9 @@ export const AbilityPref = __t.object("AbilityPref", {
   shd: __t.i32(),
   sz: __t.i32(),
   vamp: __t.i32(),
+  btime: __t.i32(),
+  hulk: __t.i32(),
+  slim: __t.i32(),
 });
 export type AbilityPref = __Infer<typeof AbilityPref>;
 
@@ -61,4 +64,46 @@ export const Preference = __t.object("Preference", {
   score: __t.i32(),
 });
 export type Preference = __Infer<typeof Preference>;
+
+export const UserAbilityPref = __t.object("UserAbilityPref", {
+  key: __t.string(),
+  userId: __t.string(),
+  code: __t.string(),
+  picks: __t.i32(),
+  passes: __t.i32(),
+  big: __t.i32(),
+  brt: __t.i32(),
+  bsp: __t.i32(),
+  cn: __t.i32(),
+  crit: __t.i32(),
+  cryo: __t.i32(),
+  dmg: __t.i32(),
+  drn: __t.i32(),
+  emd: __t.i32(),
+  emp: __t.i32(),
+  emr: __t.i32(),
+  epd: __t.i32(),
+  epw: __t.i32(),
+  fr: __t.i32(),
+  heal: __t.i32(),
+  hm: __t.i32(),
+  hms: __t.i32(),
+  hp: __t.i32(),
+  kb: __t.i32(),
+  mag: __t.i32(),
+  mc: __t.i32(),
+  mov: __t.i32(),
+  mp: __t.i32(),
+  mrk: __t.i32(),
+  nec: __t.i32(),
+  oc: __t.i32(),
+  pen: __t.i32(),
+  shd: __t.i32(),
+  sz: __t.i32(),
+  vamp: __t.i32(),
+  btime: __t.i32(),
+  hulk: __t.i32(),
+  slim: __t.i32(),
+});
+export type UserAbilityPref = __Infer<typeof UserAbilityPref>;
 

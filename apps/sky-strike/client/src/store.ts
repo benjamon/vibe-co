@@ -32,6 +32,8 @@ export type UpgradeId =
   | 'knockback'
   | 'slow'
   | 'overclock'
+  | 'powerHull'
+  | 'streamline'
 
 export interface PlayerStats {
   fireInterval: number
@@ -66,6 +68,8 @@ export interface PlayerStats {
   bulletKnockback: number
   bulletSlowEnabled: boolean
   overclockMul: number
+  playerSizeMul: number
+  cannotHeal: boolean
 }
 
 const INITIAL_LIVES = 3
@@ -108,6 +112,8 @@ const BASE_STATS: PlayerStats = {
   bulletKnockback: 0,
   bulletSlowEnabled: false,
   overclockMul: 1,
+  playerSizeMul: 1,
+  cannotHeal: false,
 }
 
 export const playerStats: PlayerStats = { ...BASE_STATS }
@@ -437,12 +443,15 @@ export const UPGRADES: UpgradeDef[] = [
   },
   {
     id: 'fullHeal',
-    code: 'heal',
-    name: 'Full Repair',
-    describe: () => 'Heal to max HP',
+    code: 'btime',
+    name: 'Borrowed Time',
+    describe: (s) => `Max HP ${s.maxLives} → ${s.maxLives * 2} & heal to full. You may no longer heal.`,
     bossOnly: true,
-    apply: () => {
-      // lives applied in selectUpgrade
+    isAvailable: (s) => !s.cannotHeal,
+    apply: (s) => {
+      s.maxLives *= 2
+      s.cannotHeal = true
+      // lives set to new maxLives in selectUpgrade
     },
   },
   {
@@ -468,7 +477,7 @@ export const UPGRADES: UpgradeDef[] = [
       return `+4% heal on kill (now ${Math.round(newChance * 100)}%)`
     },
     bossOnly: true,
-    isAvailable: (s) => s.healOnKillChance < 1,
+    isAvailable: (s) => !s.cannotHeal && s.healOnKillChance < 1,
     apply: (s) => {
       s.healOnKillChance = Math.min(1, s.healOnKillChance + 0.04)
     },
@@ -514,6 +523,36 @@ export const UPGRADES: UpgradeDef[] = [
     isAvailable: (s) => !s.bulletSlowEnabled,
     apply: (s) => {
       s.bulletSlowEnabled = true
+    },
+  },
+  {
+    id: 'powerHull',
+    code: 'hulk',
+    name: 'HULK UP',
+    describe: (s) =>
+      `Bullet damage ${s.bulletDamage} → ${s.bulletDamage * 2}, ship size ${Math.round(
+        s.playerSizeMul * 100,
+      )}% → ${Math.round(s.playerSizeMul * 150)}%`,
+    bossOnly: true,
+    apply: (s) => {
+      s.bulletDamage *= 2
+      s.playerSizeMul *= 1.5
+    },
+  },
+  {
+    id: 'streamline',
+    code: 'slim',
+    name: 'Streamline',
+    describe: (s) =>
+      `Ship size ${Math.round(s.playerSizeMul * 100)}% → ${Math.round(
+        s.playerSizeMul * 50,
+      )}%, bullet size ${Math.round(s.bulletRadiusMul * 100)}% → ${Math.round(
+        s.bulletRadiusMul * 50,
+      )}%`,
+    bossOnly: true,
+    apply: (s) => {
+      s.playerSizeMul *= 0.5
+      s.bulletRadiusMul *= 0.5
     },
   },
 ]
@@ -676,7 +715,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       ...RESET_VISUALS,
   ...RESET_BOSS_UI,
     })
-    get().grantUpgrade()
   },
   end: () =>
     set((s) => ({
@@ -717,6 +755,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
   heal: (n) => {
+    if (playerStats.cannotHeal) return
     set((s) => {
       const max = playerStats.maxLives
       const newLives = Math.min(max, s.lives + n)

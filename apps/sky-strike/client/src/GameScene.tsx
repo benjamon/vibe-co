@@ -17,7 +17,7 @@ import {
 } from 'three'
 import { CHAIN_DAMAGE, playerStats, useGameStore } from './store'
 import { useInput, type InputState } from './useInput'
-import { playConfirm, playDamage, playEmpTick, playHit, playKill, playLevelUp, playMissileHit, playPickup, playShoot, playSpawn } from './audio'
+import { playConfirm, playDamage, playEmpTick, playGameOver, playHit, playKill, playLevelUp, playMissileHit, playPickup, playShoot, playSpawn } from './audio'
 import {
   addBulletPop,
   addChainRing,
@@ -118,6 +118,12 @@ const BOSS_SCORE = 5000
 const BOSS_XP = 10
 const BOSS_DEATH_EXPLOSIONS = 14
 const BOSS_DEATH_EXPLOSION_INTERVAL = 0.11
+const PLAYER_DEATH_DURATION = 1.6
+const PLAYER_DEATH_EXPLOSIONS = 9
+const PLAYER_DEATH_EXPLOSION_INTERVAL = 0.13
+const INTRO_EMPTY_DURATION = 1.5
+const INTRO_FLY_IN_DURATION = 1.0
+const INTRO_START_Y = -13
 const BOSS_TARGET_Y = 5.5
 const BOSS_ENTER_SPEED = 3
 const BOSS_SWAY_AMP = 4
@@ -621,6 +627,19 @@ function GameSceneInner() {
   const elapsedRef = useRef(0)
   const eliteSpawnCounterRef = useRef(0)
   const invulnRef = useRef(0)
+  const playerDeathRef = useRef({
+    active: false,
+    timer: 0,
+    nextExplosion: 0,
+    explosionCount: 0,
+    x: 0,
+    y: 0,
+  })
+  const introRef = useRef({
+    active: false,
+    phase: 'empty' as 'empty' | 'flyIn',
+    timer: 0,
+  })
   const wasPausedRef = useRef(false)
   const pauseLockoutRef = useRef(0)
   const phaseRef = useRef<LevelUpPhase>('hold')
@@ -743,6 +762,17 @@ function GameSceneInner() {
       elapsedRef.current = 0
       eliteSpawnCounterRef.current = 0
       invulnRef.current = 1.2
+      playerDeathRef.current.active = false
+      playerDeathRef.current.timer = 0
+      playerDeathRef.current.nextExplosion = 0
+      playerDeathRef.current.explosionCount = 0
+      introRef.current.active = true
+      introRef.current.phase = 'empty'
+      introRef.current.timer = INTRO_EMPTY_DURATION
+      if (playerRef.current) {
+        playerRef.current.visible = false
+        playerRef.current.position.set(0, INTRO_START_Y, 0)
+      }
       for (let i = 0; i < bullets.length; i++) {
         bullets[i].active = false
         bullets[i].hitCount = 0
@@ -788,6 +818,34 @@ function GameSceneInner() {
       store.setBossProgress(0)
       store.setDangerMessage('')
       clearEffects()
+      const meshes = [
+        bulletsMeshRef.current,
+        missilesMeshRef.current,
+        empMeshRef.current,
+        empBallMeshRef.current,
+        diamondMeshRef.current,
+        basicMeshRef.current,
+        shooterMeshRef.current,
+        cockpitMeshRef.current,
+        zigzagMeshRef.current,
+        sparkMeshRef.current,
+        puffMeshRef.current,
+        ringMeshRef.current,
+        droneMeshRef.current,
+        ghostMeshRef.current,
+      ]
+      for (const mesh of meshes) {
+        if (!mesh) continue
+        for (let i = 0; i < mesh.count; i++) mesh.setMatrixAt(i, HIDDEN_MATRIX)
+        mesh.instanceMatrix.needsUpdate = true
+      }
+      if (bossMeshRef.current) bossMeshRef.current.visible = false
+      if (shieldMeshRef.current) shieldMeshRef.current.visible = false
+      if (markCrosshairRef.current) markCrosshairRef.current.visible = false
+      if (markLinesRef.current) markLinesRef.current.geometry.setDrawRange(0, 0)
+      prevSparkUsedRef.current = 0
+      prevPuffUsedRef.current = 0
+      prevRingUsedRef.current = 0
     }
   }, [started, bullets, missiles, emps, diamonds, drones, ghosts, enemiesBasic, enemiesShooter, enemiesZigzag])
 
@@ -795,6 +853,63 @@ function GameSceneInner() {
     const dt = Math.min(dtRaw, 0.05)
     const state = useGameStore.getState()
     if (state.userPaused) {
+      return
+    }
+    if (introRef.current.active) {
+      const intro = introRef.current
+      intro.timer -= dt
+      if (intro.phase === 'empty') {
+        if (playerRef.current) playerRef.current.visible = false
+        if (intro.timer <= 0) {
+          intro.phase = 'flyIn'
+          intro.timer = INTRO_FLY_IN_DURATION
+        }
+      } else {
+        if (playerRef.current) {
+          playerRef.current.visible = true
+          const t = 1 - Math.max(0, intro.timer) / INTRO_FLY_IN_DURATION
+          const eased = 1 - Math.pow(1 - t, 3)
+          const y = INTRO_START_Y + (PLAYER_Y - INTRO_START_Y) * eased
+          playerRef.current.position.x = 0
+          playerRef.current.position.y = y
+        }
+        if (intro.timer <= 0) {
+          intro.active = false
+          if (playerRef.current) {
+            playerRef.current.position.x = playerXRef.current
+            playerRef.current.position.y = PLAYER_Y
+          }
+          useGameStore.getState().grantUpgrade()
+        }
+      }
+      camera.position.x = 0
+      camera.position.y = 0
+      updateEffects(dt)
+      return
+    }
+    if (playerDeathRef.current.active) {
+      const d = playerDeathRef.current
+      d.timer -= dt
+      d.nextExplosion -= dt
+      if (d.nextExplosion <= 0 && d.explosionCount < PLAYER_DEATH_EXPLOSIONS) {
+        d.nextExplosion = PLAYER_DEATH_EXPLOSION_INTERVAL
+        const angle = Math.random() * Math.PI * 2
+        const dist = PLAYER_RADIUS * playerStats.playerSizeMul * (0.4 + Math.random() * 2.2)
+        const ox = d.x + Math.cos(angle) * dist
+        const oy = d.y + Math.sin(angle) * dist * 0.7
+        const colors = ['#ffaa44', '#ff5544', '#ffdd66']
+        addExplosion(ox, oy, colors[d.explosionCount % colors.length])
+        addShake(0.32, 0.3)
+        playKill()
+        d.explosionCount += 1
+      }
+      if (playerRef.current) playerRef.current.visible = false
+      if (d.timer <= 0) {
+        d.active = false
+        playGameOver()
+        useGameStore.getState().end()
+      }
+      updateEffects(dt)
       return
     }
     const paused = state.pendingLevelUps + state.pendingBossUpgrades > 0
@@ -1081,6 +1196,7 @@ function GameSceneInner() {
 
       const px = playerXRef.current
       const py = PLAYER_Y
+      const playerR = PLAYER_RADIUS * playerStats.playerSizeMul
       if (invulnRef.current <= 0) {
         let hit = false
         for (let i = 0; i < bullets.length; i++) {
@@ -1088,7 +1204,7 @@ function GameSceneInner() {
           if (!b.active || b.fromPlayer) continue
           const dx = b.x - px
           const dy = b.y - py
-          const r = b.radius + PLAYER_RADIUS
+          const r = b.radius + playerR
           if (dx * dx + dy * dy < r * r) {
             b.active = false
             hit = true
@@ -1107,8 +1223,8 @@ function GameSceneInner() {
         if (!hit && bossIsTargetable(boss)) {
           const dx = boss.x - px
           const dy = boss.y - py
-          const rx = BOSS_HALF_WIDTH + PLAYER_RADIUS
-          const ry = BOSS_HALF_HEIGHT + PLAYER_RADIUS
+          const rx = BOSS_HALF_WIDTH + playerR
+          const ry = BOSS_HALF_HEIGHT + playerR
           if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) < 1) {
             hit = true
           }
@@ -1124,8 +1240,20 @@ function GameSceneInner() {
             addPlayerHit(px, py)
             addShake(0.45, 0.4)
             playDamage()
-            state.loseLife()
-            invulnRef.current = 1.5
+            if (state.lives <= 1) {
+              useGameStore.setState({ lives: 0, pendingLevelUps: 0, pendingBossUpgrades: 0 })
+              const d = playerDeathRef.current
+              d.active = true
+              d.timer = PLAYER_DEATH_DURATION
+              d.nextExplosion = 0
+              d.explosionCount = 0
+              d.x = px
+              d.y = py
+              invulnRef.current = PLAYER_DEATH_DURATION + 1
+            } else {
+              state.loseLife()
+              invulnRef.current = 1.5
+            }
           }
         }
       }
@@ -1142,6 +1270,8 @@ function GameSceneInner() {
     if (playerRef.current) {
       playerRef.current.position.x = playerXRef.current
       playerRef.current.position.y = PLAYER_Y
+      const ps = playerStats.playerSizeMul
+      playerRef.current.scale.set(ps, ps, ps)
     }
     if (playerBodyMatRef.current) {
       const mat = playerBodyMatRef.current
@@ -2141,13 +2271,14 @@ function updateBoss(boss: BossState, dt: number, elapsed: number, bullets: Bulle
 }
 
 function tryRamPlayer(pool: Enemy[], px: number, py: number): boolean {
+  const playerR = PLAYER_RADIUS * playerStats.playerSizeMul
   for (let j = 0; j < pool.length; j++) {
     const e = pool[j]
     if (!e.active) continue
     const dx = e.x - px
     const dy = e.y - py
     const enemyR = e.elite ? ENEMY_RADIUS * ELITE_SCALE : ENEMY_RADIUS
-    const r = enemyR + PLAYER_RADIUS
+    const r = enemyR + playerR
     if (dx * dx + dy * dy < r * r) {
       addExplosion(e.x, e.y, colorHexFor(e.type))
       e.active = false
@@ -2424,6 +2555,8 @@ function updateGhosts(
   }
 }
 
+const MARK_SHARE_TARGETS = 4
+
 function spreadMarkDamage(
   src: Enemy,
   dmg: number,
@@ -2431,10 +2564,32 @@ function spreadMarkDamage(
   boss: BossState,
   diamonds: Diamond[],
 ) {
+  const reservoir: Array<Enemy | BossState> = []
+  let seen = 0
+  const consider = (item: Enemy | BossState) => {
+    if (reservoir.length < MARK_SHARE_TARGETS) {
+      reservoir.push(item)
+    } else {
+      const j = Math.floor(Math.random() * (seen + 1))
+      if (j < MARK_SHARE_TARGETS) reservoir[j] = item
+    }
+    seen++
+  }
   for (const pool of allPools) {
     for (let i = 0; i < pool.length; i++) {
       const other = pool[i]
       if (!other.active || other === src) continue
+      consider(other)
+    }
+  }
+  if (bossIsTargetable(boss)) consider(boss)
+
+  for (const target of reservoir) {
+    if (target === boss) {
+      addMarkLine(src.x, src.y, boss.x, boss.y)
+      applyBossDamage(boss, dmg, boss.x, boss.y)
+    } else {
+      const other = target as Enemy
       addMarkLine(src.x, src.y, other.x, other.y)
       other.hp -= dmg
       const color = colorHexFor(other.type)
@@ -2444,10 +2599,6 @@ function spreadMarkDamage(
         addHitSparks(other.x, other.y, '#aa44ff')
       }
     }
-  }
-  if (bossIsTargetable(boss)) {
-    addMarkLine(src.x, src.y, boss.x, boss.y)
-    applyBossDamage(boss, dmg, boss.x, boss.y)
   }
 }
 

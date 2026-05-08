@@ -176,6 +176,31 @@ function upsertLocal(entry: HighScoreEntry): boolean {
 
 // ---------- SpacetimeDB connection ----------
 
+type AbilityRow = {
+  code?: string
+  picks?: number | bigint
+  passes?: number | bigint
+}
+
+type UserAbilityRow = AbilityRow & {
+  user_id?: string
+  userId?: string
+}
+
+type AbilityTable = {
+  iter: () => Iterable<AbilityRow>
+  onInsert?: Function
+  onUpdate?: Function
+  onDelete?: Function
+}
+
+type UserAbilityTable = {
+  iter: () => Iterable<UserAbilityRow>
+  onInsert?: Function
+  onUpdate?: Function
+  onDelete?: Function
+}
+
 type RemoteConnection = {
   reducers: {
     submitScore?: (args: SubmitArgs) => void
@@ -183,8 +208,25 @@ type RemoteConnection = {
     votePair?: (args: VoteArgs) => void
     vote_pair?: (args: VoteArgs) => void
   }
-  db: { highscore: { iter: () => Iterable<RemoteRow>; onInsert?: Function; onUpdate?: Function } }
+  db: {
+    highscore: { iter: () => Iterable<RemoteRow>; onInsert?: Function; onUpdate?: Function }
+    ability_pref?: AbilityTable
+    abilityPref?: AbilityTable
+    user_ability_pref?: UserAbilityTable
+    userAbilityPref?: UserAbilityTable
+  }
   subscriptionBuilder?: () => { subscribe: (queries: string[]) => void }
+}
+
+export interface AbilityStat {
+  code: string
+  picks: number
+  passes: number
+}
+
+export interface AbilityStatsSnapshot {
+  global: AbilityStat[]
+  user: AbilityStat[]
 }
 
 type RemoteRow = {
@@ -205,6 +247,8 @@ type SubmitArgs = {
 }
 
 type VoteArgs = {
+  user_id?: string
+  userId?: string
   picked_code?: string
   pickedCode?: string
   passed_code?: string
@@ -236,6 +280,59 @@ function rowToEntry(row: RemoteRow): HighScoreEntry | null {
     timestamp: ts,
     source: 'remote',
   }
+}
+
+let globalAbilityStats: AbilityStat[] = []
+let userAbilityStats: AbilityStat[] = []
+
+type StatsListener = (snap: AbilityStatsSnapshot) => void
+const statsListeners = new Set<StatsListener>()
+
+function notifyStatsListeners(): void {
+  const snap: AbilityStatsSnapshot = { global: globalAbilityStats, user: userAbilityStats }
+  for (const fn of statsListeners) fn(snap)
+}
+
+export function subscribeAbilityStats(fn: StatsListener): () => void {
+  statsListeners.add(fn)
+  fn({ global: globalAbilityStats, user: userAbilityStats })
+  return () => {
+    statsListeners.delete(fn)
+  }
+}
+
+function toAbilityStat(row: AbilityRow): AbilityStat | null {
+  if (!row.code) return null
+  const picks = typeof row.picks === 'bigint' ? Number(row.picks) : Number(row.picks ?? 0)
+  const passes = typeof row.passes === 'bigint' ? Number(row.passes) : Number(row.passes ?? 0)
+  return { code: row.code, picks, passes }
+}
+
+function refreshAbilityStats(): void {
+  if (!connection) return
+  const globalTable = connection.db.ability_pref ?? connection.db.abilityPref
+  const userTable = connection.db.user_ability_pref ?? connection.db.userAbilityPref
+  try {
+    if (globalTable) {
+      globalAbilityStats = Array.from(globalTable.iter())
+        .map(toAbilityStat)
+        .filter((s): s is AbilityStat => s !== null)
+    }
+  } catch (e) {
+    console.warn('[stats] global iter failed:', e)
+  }
+  const myId = getUserId()
+  try {
+    if (userTable) {
+      userAbilityStats = Array.from(userTable.iter())
+        .filter((r) => (r.user_id ?? r.userId) === myId)
+        .map(toAbilityStat)
+        .filter((s): s is AbilityStat => s !== null)
+    }
+  } catch (e) {
+    console.warn('[stats] user iter failed:', e)
+  }
+  notifyStatsListeners()
 }
 
 function refreshRemoteScores(): void {
@@ -289,8 +386,26 @@ export async function connectToHighscoreServer(): Promise<void> {
         } catch (e) {
           console.warn('[highscore] failed to register row callbacks:', e)
         }
+        const onStatsChange = () => refreshAbilityStats()
         try {
-          conn.subscriptionBuilder?.().subscribe(['SELECT * FROM highscore'])
+          const globalTable = conn.db.ability_pref ?? conn.db.abilityPref
+          globalTable?.onInsert?.(onStatsChange)
+          globalTable?.onUpdate?.(onStatsChange)
+          globalTable?.onDelete?.(onStatsChange)
+          const userTable = conn.db.user_ability_pref ?? conn.db.userAbilityPref
+          userTable?.onInsert?.(onStatsChange)
+          userTable?.onUpdate?.(onStatsChange)
+          userTable?.onDelete?.(onStatsChange)
+        } catch (e) {
+          console.warn('[stats] failed to register row callbacks:', e)
+        }
+        const myId = getUserId()
+        try {
+          conn.subscriptionBuilder?.().subscribe([
+            'SELECT * FROM highscore',
+            'SELECT * FROM ability_pref',
+            `SELECT * FROM user_ability_pref WHERE user_id = '${myId.replace(/'/g, "''")}'`,
+          ])
         } catch (e) {
           console.warn('[highscore] subscribe failed:', e)
         }
@@ -303,7 +418,10 @@ export async function connectToHighscoreServer(): Promise<void> {
 
 export function submitPreferenceVote(pickedCode: string, passedCode: string): void {
   if (!connection || !pickedCode || !passedCode || pickedCode === passedCode) return
+  const userId = getUserId()
   const args: VoteArgs = {
+    user_id: userId,
+    userId,
     picked_code: pickedCode,
     pickedCode,
     passed_code: passedCode,

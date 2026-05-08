@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "shared": "*",
-    "spacetimedb": "2.1.0"
+    "spacetimedb": "^2.2.0"
   },
   "devDependencies": {
     "typescript": "5.8.3"

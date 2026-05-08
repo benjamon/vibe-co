@@ -4,6 +4,7 @@ import path from 'path'
 
 export default defineConfig({
   base: process.env.GITHUB_PAGES_BASE ?? '/',
+  publicDir: path.resolve(__dirname, '../public'),
   plugins: [react()],
   resolve: {
     alias: {

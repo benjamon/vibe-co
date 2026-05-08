@@ -11,6 +11,7 @@ import {
 } from "spacetimedb";
 
 export default {
+  userId: __t.string(),
   pickedCode: __t.string(),
   passedCode: __t.string(),
 };

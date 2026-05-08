@@ -43,6 +43,7 @@ import VotePairReducer from "./vote_pair_reducer";
 import AbilityPrefRow from "./ability_pref_table";
 import HighscoreRow from "./highscore_table";
 import PreferenceRow from "./preference_table";
+import UserAbilityPrefRow from "./user_ability_pref_table";
 
 /** Type-only namespace exports for generated type groups. */
 
@@ -84,6 +85,17 @@ const tablesSchema = __schema({
       { name: 'preference_pair_id_key', constraint: 'unique', columns: ['pairId'] },
     ],
   }, PreferenceRow),
+  user_ability_pref: __table({
+    name: 'user_ability_pref',
+    indexes: [
+      { accessor: 'key', name: 'user_ability_pref_key_idx_btree', algorithm: 'btree', columns: [
+        'key',
+      ] },
+    ],
+    constraints: [
+      { name: 'user_ability_pref_key_key', constraint: 'unique', columns: ['key'] },
+    ],
+  }, UserAbilityPrefRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */

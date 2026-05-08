@@ -3,7 +3,9 @@
   "textures": {},
   "audio": {
     "sfx": {},
-    "music": {}
+    "music": {
+      "gravitys_silent_pull": "audio/music/gravitys_silent_pull.ogg"
+    }
   },
   "fonts": {},
   "data": {}

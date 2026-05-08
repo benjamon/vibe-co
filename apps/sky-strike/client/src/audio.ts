@@ -48,50 +48,41 @@ export function setMusicVolume(v: number) {
   if (musicGainNode) musicGainNode.gain.value = musicVolume
 }
 
+const MUSIC_URL = `${import.meta.env.BASE_URL}assets/audio/music/gravitys_silent_pull.ogg`
+
 let musicStarted = false
+let musicBuffer: AudioBuffer | null = null
+let musicLoadPromise: Promise<AudioBuffer | null> | null = null
+
+function loadMusic(c: AudioContext): Promise<AudioBuffer | null> {
+  if (musicBuffer) return Promise.resolve(musicBuffer)
+  if (musicLoadPromise) return musicLoadPromise
+  musicLoadPromise = fetch(MUSIC_URL)
+    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((buf) => c.decodeAudioData(buf))
+    .then((decoded) => {
+      musicBuffer = decoded
+      return decoded
+    })
+    .catch((err) => {
+      console.warn('[audio] failed to load music', err)
+      return null
+    })
+  return musicLoadPromise
+}
+
 export function startMusic() {
   const c = getCtx()
   if (!c || !musicGainNode || musicStarted) return
   musicStarted = true
-  const droneGain = c.createGain()
-  droneGain.gain.value = 0.22
-  droneGain.connect(musicGainNode)
-  // Three-voice ambient pad on a low minor chord with detune & slow vibrato.
-  const freqs = [110, 146.83, 220] // A2, D3, A3
-  for (let i = 0; i < freqs.length; i++) {
-    const osc = c.createOscillator()
-    osc.type = 'sine'
-    osc.frequency.value = freqs[i]
-    osc.detune.value = (Math.random() - 0.5) * 6
-    const oscGain = c.createGain()
-    oscGain.gain.value = 0.32
-    osc.connect(oscGain).connect(droneGain)
-    const lfo = c.createOscillator()
-    lfo.type = 'sine'
-    lfo.frequency.value = 0.07 + Math.random() * 0.1
-    const lfoGain = c.createGain()
-    lfoGain.gain.value = 0.6 + Math.random() * 0.8
-    lfo.connect(lfoGain).connect(osc.frequency)
-    osc.start()
-    lfo.start()
-    // Higher harmonic shimmer
-    if (i === 2) {
-      const shimmer = c.createOscillator()
-      shimmer.type = 'triangle'
-      shimmer.frequency.value = freqs[i] * 2
-      const shimmerGain = c.createGain()
-      shimmerGain.gain.value = 0.05
-      const shimmerLfo = c.createOscillator()
-      shimmerLfo.type = 'sine'
-      shimmerLfo.frequency.value = 0.18
-      const shimmerLfoGain = c.createGain()
-      shimmerLfoGain.gain.value = 0.05
-      shimmerLfo.connect(shimmerLfoGain).connect(shimmerGain.gain)
-      shimmer.connect(shimmerGain).connect(droneGain)
-      shimmer.start()
-      shimmerLfo.start()
-    }
-  }
+  void loadMusic(c).then((buf) => {
+    if (!buf || !musicGainNode) return
+    const src = c.createBufferSource()
+    src.buffer = buf
+    src.loop = true
+    src.connect(musicGainNode)
+    src.start()
+  })
 }
 
 interface ToneOpts {
@@ -267,6 +258,15 @@ export function playConfirm() {
   tone({ type: 'sine', freq: 1320, duration: 0.1, volume: 0.2 })
   tone({ type: 'sine', freq: 1760, duration: 0.16, volume: 0.18, delay: 0.06 })
   tone({ type: 'triangle', freq: 660, duration: 0.18, volume: 0.1 })
+}
+
+export function playGameOver() {
+  tone({ type: 'sawtooth', freq: 220, freqEnd: 55, duration: 1.4, volume: 0.35 })
+  tone({ type: 'square', freq: 110, freqEnd: 28, duration: 1.5, volume: 0.28 })
+  tone({ type: 'triangle', freq: 330, freqEnd: 70, duration: 1.0, volume: 0.18, delay: 0.05 })
+  tone({ type: 'sine', freq: 60, freqEnd: 24, duration: 1.6, volume: 0.5 })
+  noise({ duration: 1.2, volume: 0.4, filterFreq: 500, filterType: 'lowpass' })
+  noise({ duration: 0.5, volume: 0.18, filterFreq: 2400, filterType: 'highpass' })
 }
 
 export function playLevelUp() {

@@ -11,7 +11,9 @@ import {
 } from "spacetimedb";
 
 export default __t.row({
-  code: __t.string().primaryKey(),
+  key: __t.string().primaryKey(),
+  userId: __t.string().name("user_id"),
+  code: __t.string(),
   picks: __t.i32(),
   passes: __t.i32(),
   big: __t.i32(),

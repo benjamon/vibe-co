@@ -5,6 +5,7 @@ import { LevelUpOverlay } from './LevelUpOverlay'
 import { BossUI } from './BossUI'
 import { PauseControls } from './PauseMenu'
 import { HighscorePanel } from './HighscorePanel'
+import { GlobalStats } from './GlobalStats'
 import { getUpgrade, getUpgradeByCode, useGameStore, type RunBuild, type UpgradeId } from './store'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { startMusic, unlockAudio } from './audio'
@@ -88,37 +89,98 @@ export function App() {
 }
 
 function StartOverlay({ onStart }: { onStart: () => void }) {
+  const [statsOpen, setStatsOpen] = useState(false)
+  const handleStart = () => {
+    if (statsOpen) return
+    onStart()
+  }
   return (
-    <Overlay onClick={onStart}>
-      <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-        <h1 style={titleStyle}>SKY STRIKE</h1>
-        <p style={subtitleStyle}>Tap / click left or right side to move</p>
-        <p style={subtitleStyle}>Auto-fire engaged. Survive the swarm.</p>
-        <button style={buttonStyle}>Start</button>
-        <HighscorePanel />
-      </div>
-    </Overlay>
+    <>
+      <Overlay onClick={handleStart}>
+        <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <h1 style={titleStyle}>SKY STRIKE</h1>
+          <p style={subtitleStyle}>Tap / click left or right side to move</p>
+          <p style={subtitleStyle}>Auto-fire engaged. Survive the swarm.</p>
+          <button style={buttonStyle}>Start</button>
+          <button
+            style={secondaryButtonStyle}
+            onClick={(e) => {
+              e.stopPropagation()
+              setStatsOpen(true)
+            }}
+          >
+            Global Stats
+          </button>
+          <HighscorePanel />
+        </div>
+      </Overlay>
+      {statsOpen && <GlobalStats onClose={() => setStatsOpen(false)} />}
+    </>
   )
 }
+
+const GAME_OVER_SLIDE_MS = 650
 
 function GameOverOverlay({ onRestart }: { onRestart: () => void }) {
   const score = useGameStore((s) => s.score)
   const highScore = useGameStore((s) => s.highScore)
   const runBuild = useGameStore((s) => s.runBuild)
+  const reset = useGameStore((s) => s.reset)
   const [scores, setScores] = useState<HighScoreEntry[]>([])
+  const [slidIn, setSlidIn] = useState(false)
+  const [ready, setReady] = useState(false)
   useEffect(() => subscribeHighscores(setScores), [])
+  useEffect(() => {
+    const inFrame = requestAnimationFrame(() =>
+      requestAnimationFrame(() => setSlidIn(true)),
+    )
+    const readyTimer = setTimeout(() => setReady(true), GAME_OVER_SLIDE_MS + 30)
+    return () => {
+      cancelAnimationFrame(inFrame)
+      clearTimeout(readyTimer)
+    }
+  }, [])
 
   const myId = getUserId()
   const better = scores.filter((s) => s.score > score && s.userId !== myId).length
   const rank = 1 + better
   const total = Math.max(scores.length, rank)
 
+  const handleRestart = () => {
+    if (!ready) return
+    onRestart()
+  }
+
+  const handleMainMenu = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!ready) return
+    reset()
+  }
+
   return (
-    <Overlay onClick={onRestart}>
+    <Overlay
+      onClick={handleRestart}
+      style={{
+        transform: slidIn ? 'translateY(0)' : 'translateY(-100vh)',
+        transition: `transform ${GAME_OVER_SLIDE_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`,
+        pointerEvents: ready ? 'auto' : 'none',
+      }}
+    >
       <div style={cardStyle} onClick={(e) => e.stopPropagation()}>
         <h1 style={{ ...titleStyle, color: '#ff5577', marginBottom: '0.6rem' }}>GAME OVER</h1>
-        <button style={{ ...buttonStyle, marginTop: 0 }} onClick={onRestart}>
+        <button
+          style={{ ...buttonStyle, marginTop: 0, opacity: ready ? 1 : 0.5 }}
+          onClick={handleRestart}
+          disabled={!ready}
+        >
           Play Again
+        </button>
+        <button
+          style={{ ...secondaryButtonStyle, opacity: ready ? 1 : 0.5 }}
+          onClick={handleMainMenu}
+          disabled={!ready}
+        >
+          Main Menu
         </button>
         <HighscorePanel />
         <div style={statRowStyle}>
@@ -174,7 +236,15 @@ function formatStatNumber(n: number): string {
   return n.toString().padStart(6, '0')
 }
 
-function Overlay({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function Overlay({
+  children,
+  onClick,
+  style,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  style?: React.CSSProperties
+}) {
   return (
     <div
       onClick={onClick}
@@ -191,6 +261,7 @@ function Overlay({ children, onClick }: { children: React.ReactNode; onClick: ()
         userSelect: 'none',
         overflowY: 'auto',
         padding: '24px 12px',
+        ...style,
       }}
     >
       {children}
@@ -228,6 +299,19 @@ const buttonStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontWeight: 'bold',
   letterSpacing: '0.1em',
+}
+
+const secondaryButtonStyle: React.CSSProperties = {
+  marginTop: '0.75rem',
+  padding: '0.55rem 1.4rem',
+  fontSize: '0.75rem',
+  fontFamily: "'Press Start 2P', monospace",
+  background: 'transparent',
+  color: '#33ddff',
+  border: '1.5px solid rgba(51, 221, 255, 0.6)',
+  borderRadius: '6px',
+  cursor: 'pointer',
+  letterSpacing: '0.14em',
 }
 
 const cardStyle: React.CSSProperties = {
