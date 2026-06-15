@@ -68,6 +68,12 @@ interface GameState {
   countries: string[]
   setCountries: (countries: string[]) => void
 
+  // Name → ISO 3166-1 alpha-2 code (lowercase). Populated alongside countries.
+  // Drives the flag icons in the HUD. Countries without a valid ISO_A2 in the
+  // Natural Earth dataset are simply absent (the HUD then omits the flag).
+  countryCodes: Record<string, string>
+  setCountryCodes: (codes: Record<string, string>) => void
+
   // Last country clicked on the globe (whichever phase we're in).
   country: string | null
   setCountry: (country: string | null) => void
@@ -175,6 +181,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   countries: [],
   setCountries: (countries) => set({ countries }),
+
+  countryCodes: {},
+  setCountryCodes: (countryCodes) => set({ countryCodes }),
 
   country: null,
   setCountry: (country) => set({ country }),

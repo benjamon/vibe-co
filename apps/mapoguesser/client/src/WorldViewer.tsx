@@ -15,7 +15,6 @@ import {
   LabelStyle,
   Math as CesiumMath,
   Matrix4,
-  PinBuilder,
   PolylineOutlineMaterialProperty,
   UrlTemplateImageryProvider,
   VerticalOrigin,
@@ -222,17 +221,81 @@ export function WorldViewer() {
     const gameMarkers = new CustomDataSource('gameMarkers')
     viewer.dataSources.add(gameMarkers)
 
-    // Pin sprites — generated once on the canvas, reused for every marker.
-    const pinBuilder = new PinBuilder()
-    const wrongPinImg = pinBuilder
-      .fromText('✗', Color.fromCssColorString('#9aa0a6'), 48)
-      .toDataURL()
-    const correctPinImg = pinBuilder
-      .fromText('✓', Color.fromCssColorString('#3fb84e'), 48)
-      .toDataURL()
-    const revealXImg = pinBuilder
-      .fromText('✗', Color.fromCssColorString('#e64545'), 48)
-      .toDataURL()
+    // Flag-on-coloured-tile pin sprites. Composed on demand per (kind, code)
+    // because flag images load asynchronously from flagcdn.com; cached so a
+    // re-render of the same marker is free. Background colour carries the
+    // correctness signal now that the ✓/✗ glyph is gone.
+    const PIN_BG: Record<Marker['kind'], string> = {
+      correct: '#3fb84e',
+      wrong: '#9aa0a6',
+      reveal: '#e64545',
+    }
+    const PIN_W = 50
+    const PIN_H = 40
+    // Flag dimensions are 0.85× a 48×36 reference (4:3 to match flagcdn).
+    const FLAG_W = 41
+    const FLAG_H = 31
+    const flagPinCache = new Map<string, Promise<string>>()
+
+    const buildFlagPin = (
+      code: string | undefined,
+      kind: Marker['kind'],
+    ): Promise<string> => {
+      const key = `${kind}:${code ?? '_'}`
+      const cached = flagPinCache.get(key)
+      if (cached) return cached
+      const promise = (async () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = PIN_W
+        canvas.height = PIN_H
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return ''
+
+        // Rounded-rect background using arcTo so the corners match the white
+        // border below without a separate path.
+        const r = 8
+        ctx.fillStyle = PIN_BG[kind]
+        ctx.beginPath()
+        ctx.moveTo(r, 0)
+        ctx.arcTo(PIN_W, 0, PIN_W, PIN_H, r)
+        ctx.arcTo(PIN_W, PIN_H, 0, PIN_H, r)
+        ctx.arcTo(0, PIN_H, 0, 0, r)
+        ctx.arcTo(0, 0, PIN_W, 0, r)
+        ctx.closePath()
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+        ctx.lineWidth = 1
+        ctx.stroke()
+
+        if (code) {
+          try {
+            const img = new Image()
+            img.crossOrigin = 'anonymous'
+            await new Promise<void>((resolve, reject) => {
+              img.onload = () => resolve()
+              img.onerror = () => reject(new Error('flag load failed'))
+              img.src = `https://flagcdn.com/w160/${code}.png`
+            })
+            const fx = (PIN_W - FLAG_W) / 2
+            const fy = (PIN_H - FLAG_H) / 2
+            ctx.drawImage(img, fx, fy, FLAG_W, FLAG_H)
+          } catch {
+            // Flag fetch / CORS failure: leave the bare coloured tile.
+          }
+        }
+
+        try {
+          return canvas.toDataURL('image/png')
+        } catch {
+          // Canvas tainted (CORS lost) — drop the cached entry so a future
+          // marker can retry, and return an empty string the caller can skip.
+          flagPinCache.delete(key)
+          return ''
+        }
+      })()
+      flagPinCache.set(key, promise)
+      return promise
+    }
 
     // Country PIP/centroid index built from the raw GeoJSON. We don't render
     // the polygons (the hover highlight effect is gone), only use them for
@@ -250,6 +313,21 @@ export function WorldViewer() {
     // unclickable on the globe (Vatican, Monaco, Tuvalu, Nauru, …).
     const MIN_TARGET_AREA = 0.1
 
+    // Pulls an ISO 3166-1 alpha-2 code from a Natural Earth feature. Prefer
+    // ISO_A2_EH ("Edward Hand" fix-up of disputed codes like Norway/France/
+    // Kosovo); fall back to ISO_A2. The dataset uses "-99" as a sentinel for
+    // missing codes, which we skip.
+    const isoA2Of = (props: Record<string, unknown> | undefined): string | null => {
+      if (!props) return null
+      for (const key of ['ISO_A2_EH', 'ISO_A2'] as const) {
+        const v = props[key]
+        if (typeof v === 'string' && /^[A-Za-z]{2}$/.test(v)) {
+          return v.toLowerCase()
+        }
+      }
+      return null
+    }
+
     fetch(COUNTRY_POLYGONS_URL)
       .then((r) => {
         if (!r.ok) throw new Error(`http ${r.status}`)
@@ -264,6 +342,7 @@ export function WorldViewer() {
         }) => {
           if (destroyed || viewer.isDestroyed()) return
           const list: CountryEntry[] = []
+          const codes: Record<string, string> = {}
           for (const feature of geo.features ?? []) {
             const name =
               typeof feature?.properties?.NAME === 'string'
@@ -279,8 +358,11 @@ export function WorldViewer() {
               centroid: computeCentroid(polygons),
               area: computeArea(polygons),
             })
+            const iso = isoA2Of(feature.properties)
+            if (iso) codes[name] = iso
           }
           countryEntries = list
+          useGameStore.getState().setCountryCodes(codes)
           useGameStore
             .getState()
             .setCountries(
@@ -295,7 +377,7 @@ export function WorldViewer() {
     // Country border lines: white core wrapped in a dark halo so the lines
     // stay readable over bright basemap features (deserts, ice, sun glare).
     const borderMat = new PolylineOutlineMaterialProperty({
-      color: Color.NAVY.withAlpha(0.55),
+      color: Color.BLACK.withAlpha(0.55),
       outlineColor: Color.WHITE.withAlpha(0.9),
       outlineWidth: 1.5,
     })
@@ -439,34 +521,41 @@ export function WorldViewer() {
 
     // Render a marker entity for one store record. The store owns the marker
     // list (so it persists); this function is the Cesium-side projection.
-    const imageFor = (kind: Marker['kind']): string =>
-      kind === 'correct'
-        ? correctPinImg
-        : kind === 'reveal'
-          ? revealXImg
-          : wrongPinImg
-    const renderMarker = (m: Marker) => {
-      gameMarkers.entities.add({
-        position: Cartesian3.fromDegrees(m.lon, m.lat),
-        billboard: {
-          image: imageFor(m.kind),
-          verticalOrigin: VerticalOrigin.BOTTOM,
-          heightReference: HeightReference.CLAMP_TO_GROUND,
-        },
-        label: m.label
-          ? {
-              text: m.label,
-              font: '16px sans-serif',
-              fillColor: Color.WHITE,
-              outlineColor: Color.BLACK,
-              outlineWidth: 3,
-              style: LabelStyle.FILL_AND_OUTLINE,
-              verticalOrigin: VerticalOrigin.BOTTOM,
-              horizontalOrigin: HorizontalOrigin.LEFT,
-              pixelOffset: new Cartesian2(8, -4),
-              heightReference: HeightReference.CLAMP_TO_GROUND,
-            }
-          : undefined,
+    // Flag pin composition is async (image load); `gen` lets us abandon a
+    // pending render if the markers array got wiped (new match) before it
+    // resolved, so we don't leak stale entities into the next game.
+    let renderGen = 0
+    const renderMarker = (m: Marker, gen: number): void => {
+      const code = useGameStore.getState().countryCodes[m.label]
+      buildFlagPin(code, m.kind).then((image) => {
+        if (gen !== renderGen || destroyed || viewer.isDestroyed()) return
+        if (!image) return
+        gameMarkers.entities.add({
+          position: Cartesian3.fromDegrees(m.lon, m.lat),
+          billboard: {
+            image,
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+          },
+          label: m.label
+            ? {
+                text: m.label,
+                font: '16px sans-serif',
+                fillColor: Color.WHITE,
+                outlineColor: Color.BLACK,
+                outlineWidth: 3,
+                style: LabelStyle.FILL_AND_OUTLINE,
+                // Pin is bottom-anchored at the lat/lon and extends PIN_H px
+                // upward, horizontally centred. Centre the label against the
+                // pin's mid-height (−PIN_H/2) and push it clear of the pin's
+                // right edge (PIN_W/2 + small padding).
+                verticalOrigin: VerticalOrigin.CENTER,
+                horizontalOrigin: HorizontalOrigin.LEFT,
+                pixelOffset: new Cartesian2(PIN_W / 2 + 4, -PIN_H / 2),
+                heightReference: HeightReference.CLAMP_TO_GROUND,
+              }
+            : undefined,
+        })
       })
     }
 
@@ -827,7 +916,7 @@ export function WorldViewer() {
     // resume path: a returning player with a saved match already has markers
     // before the viewer subscribes.
     let renderedMarkerCount = 0
-    for (const m of prevMarkers) renderMarker(m)
+    for (const m of prevMarkers) renderMarker(m, renderGen)
     renderedMarkerCount = prevMarkers.length
 
     const unsub = useGameStore.subscribe((state) => {
@@ -836,11 +925,14 @@ export function WorldViewer() {
       // wipe and re-render. Otherwise render any newly appended markers.
       if (state.markers !== prevMarkers) {
         if (state.markers.length < renderedMarkerCount) {
+          // Bump the generation so any in-flight renderMarker promises from
+          // the previous match drop their entities on resolve.
+          renderGen++
           gameMarkers.entities.removeAll()
           renderedMarkerCount = 0
         }
         while (renderedMarkerCount < state.markers.length) {
-          renderMarker(state.markers[renderedMarkerCount])
+          renderMarker(state.markers[renderedMarkerCount], renderGen)
           renderedMarkerCount++
         }
         prevMarkers = state.markers

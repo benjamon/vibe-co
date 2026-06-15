@@ -11,31 +11,72 @@ const overlayBase = {
   textShadow: '0 1px 2px rgba(0,0,0,0.85)',
 } as const
 
-const CHECK_COLORS: Record<AttemptResult, string> = {
-  pending: 'rgba(255,255,255,0.85)',
-  correct: '#7eff8e',
-  wrong: '#ff7e7e',
+// Background colour encodes the round outcome (green = correct, red = wrong,
+// dark = pending). Replaces the older ✓/✗ glyph — the flag now lives in the
+// box, so the colour is the only thing carrying right/wrong.
+const CHECK_BG: Record<AttemptResult, string> = {
+  pending: 'rgba(0,0,0,0.45)',
+  correct: 'rgba(63, 184, 78, 0.9)',
+  wrong: 'rgba(230, 69, 69, 0.9)',
 }
 
-const Checkbox = ({ result }: { result: AttemptResult }) => (
+// flagcdn.com serves free, CORS-friendly PNGs at 4:3 (w40 = 40×30). Using
+// images instead of emoji because Windows browsers render regional-indicator
+// flag emojis as ISO letters, which looks broken.
+const FlagIcon = ({
+  code,
+  height,
+}: {
+  code: string | undefined
+  height: number
+}) => {
+  if (!code) return null
+  return (
+    <img
+      src={`https://flagcdn.com/w80/${code}.png`}
+      alt=""
+      width={Math.round((height * 4) / 3)}
+      height={height}
+      style={{
+        display: 'inline-block',
+        verticalAlign: 'middle',
+        borderRadius: 2,
+        boxShadow: '0 1px 2px rgba(0,0,0,0.55)',
+      }}
+    />
+  )
+}
+
+const Checkbox = ({
+  result,
+  code,
+}: {
+  result: AttemptResult
+  code: string | undefined
+}) => (
   <div
     style={{
-      width: 36,
-      height: 36,
+      width: 40,
+      height: 32,
       border: '2px solid rgba(255,255,255,0.9)',
       borderRadius: 6,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      fontSize: 22,
-      fontWeight: 700,
-      lineHeight: 1,
-      color: CHECK_COLORS[result],
-      background: 'rgba(0,0,0,0.45)',
+      background: CHECK_BG[result],
       boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+      overflow: 'hidden',
     }}
   >
-    {result === 'correct' ? '✓' : result === 'wrong' ? '✗' : ''}
+    {result !== 'pending' && code && (
+      <img
+        src={`https://flagcdn.com/w80/${code}.png`}
+        alt=""
+        width={28}
+        height={21}
+        style={{ display: 'block', borderRadius: 2 }}
+      />
+    )}
   </div>
 )
 
@@ -44,10 +85,24 @@ export function App() {
   const target = useGameStore((s) => s.target)
   const revealTarget = useGameStore((s) => s.revealTarget)
   const attempts = useGameStore((s) => s.attempts)
+  const markers = useGameStore((s) => s.markers)
+  const countryCodes = useGameStore((s) => s.countryCodes)
   const ready = useGameStore((s) => s.countries.length > 0)
   const startGame = useGameStore((s) => s.startGame)
   const guess = useGameStore((s) => s.country)
   const seed = useGameStore((s) => s.seed)
+
+  // Pair each resolved attempt with what the user actually clicked. Click
+  // markers (kind 'correct' | 'wrong') are appended 1:1 with resolved attempts
+  // in chronological order; reveal markers are interleaved separately and must
+  // be filtered out. We need this — not targets[i] — because a wrong guess
+  // should show the flag of the country the player picked, not the answer.
+  const clickMarkers = markers.filter((m) => m.kind !== 'reveal')
+  let clickCursor = 0
+  const guessByAttempt = attempts.map((a) => {
+    if (a === 'pending') return null
+    return clickMarkers[clickCursor++]?.label ?? null
+  })
 
   const [shareLabel, setShareLabel] = useState<'idle' | 'copied'>('idle')
 
@@ -117,20 +172,38 @@ export function App() {
           }}
         >
           <div style={{ display: 'flex', gap: 6 }}>
-            {attempts.map((a, i) => (
-              <Checkbox key={i} result={a} />
-            ))}
+            {attempts.map((a, i) => {
+              const g = guessByAttempt[i]
+              return (
+                <Checkbox
+                  key={i}
+                  result={a}
+                  code={g ? countryCodes[g] : undefined}
+                />
+              )
+            })}
           </div>
-          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: 0.3 }}>
+          <div
+            style={{
+              fontSize: 26,
+              fontWeight: 600,
+              letterSpacing: 0.3,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
             {revealTarget ? (
               <>
-                <span style={{ opacity: 0.7, marginRight: 8 }}>Was:</span>
-                {revealTarget}
+                <span style={{ opacity: 0.7 }}>Was:</span>
+                <FlagIcon code={countryCodes[revealTarget]} height={22} />
+                <span>{revealTarget}</span>
               </>
             ) : phase === 'playing' && target ? (
               <>
-                <span style={{ opacity: 0.7, marginRight: 8 }}>Find:</span>
-                {target}
+                <span style={{ opacity: 0.7 }}>Find:</span>
+                <FlagIcon code={countryCodes[target]} height={22} />
+                <span>{target}</span>
               </>
             ) : phase === 'finished' ? (
               <span>
@@ -214,10 +287,14 @@ export function App() {
             fontSize: 20,
             fontWeight: 500,
             letterSpacing: 0.3,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
           }}
         >
-          <span style={{ opacity: 0.75, marginRight: 8 }}>Guessed:</span>
-          {guess}
+          <span style={{ opacity: 0.75 }}>Guessed:</span>
+          <FlagIcon code={countryCodes[guess]} height={18} />
+          <span>{guess}</span>
         </div>
       )}
 
