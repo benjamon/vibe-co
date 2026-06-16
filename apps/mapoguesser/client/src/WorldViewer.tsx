@@ -50,10 +50,12 @@ const REVEAL_MS = 1200
 // pin to). Anchored drags use a true 1:1 inverse projection instead.
 const FALLBACK_SENSITIVITY = 0.005
 
-// Asymmetric pitch limits: 35° from the north pole, 30° from the south pole.
+// Asymmetric pitch limits: 17.5° from the north pole, 30° from the south pole.
 // Negative pitch sends the camera over the north (looking south); positive
-// pitch sends it over the south (looking north).
-const PITCH_MIN = -CesiumMath.toRadians(55)
+// pitch sends it over the south (looking north). The north-pole gap was
+// halved from 35° → 17.5° so the camera can swing further over the top of
+// the globe.
+const PITCH_MIN = -CesiumMath.toRadians(72.5)
 const PITCH_MAX = CesiumMath.toRadians(60)
 
 // Exponential decay rate for spin momentum (1/s). Higher = stops faster.
@@ -221,6 +223,12 @@ export function WorldViewer() {
     const gameMarkers = new CustomDataSource('gameMarkers')
     viewer.dataSources.add(gameMarkers)
 
+    // Stats highlight dots — driven by the sidebar's selected country. Lives
+    // in a separate data source so picking a different row can wipe it with
+    // a single removeAll() without disturbing the in-match game markers.
+    const statsDots = new CustomDataSource('statsDots')
+    viewer.dataSources.add(statsDots)
+
     // Flag-on-coloured-tile pin sprites. Composed on demand per (kind, code)
     // because flag images load asynchronously from flagcdn.com; cached so a
     // re-render of the same marker is free. Background colour carries the
@@ -363,6 +371,9 @@ export function WorldViewer() {
           }
           countryEntries = list
           useGameStore.getState().setCountryCodes(codes)
+          // Register every country (not just playable targets) so guess
+          // markers, which can land on any country, always resolve to an ID.
+          useGameStore.getState().registerCountries(list.map((c) => c.name))
           useGameStore
             .getState()
             .setCountries(
@@ -741,7 +752,7 @@ export function WorldViewer() {
           label: name,
         })
       }
-      useGameStore.getState().handleGlobeClick(name)
+      useGameStore.getState().handleGlobeClick(name, lat, lon)
     }
 
     const onPointerDown = (e: PointerEvent) => {
@@ -910,7 +921,41 @@ export function WorldViewer() {
     let prevReveal = useGameStore.getState().revealTarget
     let prevEnding = useGameStore.getState().endingTarget
     let prevMarkers = useGameStore.getState().markers
+    let prevStatsSelection = useGameStore.getState().selectedStatsCountryId
     let endingHoldTimeout: number | null = null
+
+    // Replace the stats-highlight dot layer with one dot per past guess at
+    // its stored lat/lon. Correct guesses (guess.id === target id) draw
+    // green; misses draw red. Entries from before lat/lon was stored just
+    // get skipped — they had no position to render.
+    const renderStatsDots = (countryId: number | null): void => {
+      statsDots.entities.removeAll()
+      if (countryId === null) return
+      const entry = useGameStore.getState().stats[countryId]
+      if (!entry) return
+      for (const g of entry.guesses) {
+        if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
+        const isCorrect = g.id === countryId
+        statsDots.entities.add({
+          position: Cartesian3.fromDegrees(g.lon, g.lat),
+          point: {
+            pixelSize: 9,
+            color: isCorrect
+              ? Color.fromCssColorString('#3fb84e')
+              : Color.fromCssColorString('#e64545'),
+            outlineColor: Color.fromCssColorString('rgba(0,0,0,0.7)'),
+            outlineWidth: 1.5,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+            // Skip Cesium's depth test so dots stay visible against the
+            // globe surface at glancing angles instead of getting culled.
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        })
+      }
+    }
+    // Mount-time replay: if a country was selected via persisted state
+    // (it isn't today, but cheap to handle for future-proofing), draw it now.
+    renderStatsDots(prevStatsSelection)
 
     // Replay any markers already in the store at mount time. This is the
     // resume path: a returning player with a saved match already has markers
@@ -975,6 +1020,39 @@ export function WorldViewer() {
         })
       }
       prevEnding = state.endingTarget
+
+      // Stats sidebar row selection: pan the camera over to the picked
+      // country, then redraw the dot layer once the cinematic completes.
+      // null = deselect, so just clear the dots without a fly-to.
+      if (state.selectedStatsCountryId !== prevStatsSelection) {
+        const newId = state.selectedStatsCountryId
+        prevStatsSelection = newId
+        if (newId === null) {
+          renderStatsDots(null)
+        } else {
+          // Reverse-lookup the country name from the (small, ~200-entry) map.
+          let name: string | null = null
+          const ids = useGameStore.getState().countryIds
+          for (const k in ids) {
+            if (ids[k] === newId) {
+              name = k
+              break
+            }
+          }
+          // Wipe the previous selection's dots before the pan so they don't
+          // sit on a country we're flying away from. flyToCountry already
+          // sets `cinematic = true`, which locks pointer / wheel input until
+          // the animation finishes.
+          renderStatsDots(null)
+          if (name) {
+            flyToCountry(name, () => renderStatsDots(newId))
+          } else {
+            // No matching country — just paint whatever positioned guesses
+            // are stored under this ID at the current camera position.
+            renderStatsDots(newId)
+          }
+        }
+      }
     })
 
     canvas.addEventListener('pointerdown', onPointerDown)

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { WorldViewer } from './WorldViewer'
 import { useGameStore, ROUNDS, type AttemptResult } from './store'
 
@@ -80,6 +80,32 @@ const Checkbox = ({
   </div>
 )
 
+// Stats sum colour: green for net-positive, red for net-negative, neutral
+// otherwise. A zero result still gets shown but uses the muted style so the
+// strong colours stay reserved for clear signal.
+const scoreColour = (sum: number): string => {
+  if (sum > 0) return '#7eff8e'
+  if (sum < 0) return '#ff7e7e'
+  return 'rgba(255,255,255,0.85)'
+}
+
+// Hamburger / menu / stats / start-screen all share this button look so the
+// HUD reads as one consistent UI rather than a pile of bespoke styles.
+const menuButtonStyle = {
+  padding: '10px 22px',
+  fontSize: 16,
+  fontWeight: 600,
+  color: 'white',
+  background: 'rgba(20, 60, 110, 0.85)',
+  border: '2px solid rgba(255,255,255,0.85)',
+  borderRadius: 8,
+  cursor: 'pointer',
+  fontFamily: 'system-ui, sans-serif',
+  letterSpacing: 0.3,
+  boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+  pointerEvents: 'auto',
+} as const
+
 export function App() {
   const phase = useGameStore((s) => s.phase)
   const target = useGameStore((s) => s.target)
@@ -87,10 +113,41 @@ export function App() {
   const attempts = useGameStore((s) => s.attempts)
   const markers = useGameStore((s) => s.markers)
   const countryCodes = useGameStore((s) => s.countryCodes)
+  const countryIds = useGameStore((s) => s.countryIds)
+  const stats = useGameStore((s) => s.stats)
+  const selectedStatsCountryId = useGameStore((s) => s.selectedStatsCountryId)
+  const selectStatsCountry = useGameStore((s) => s.selectStatsCountry)
   const ready = useGameStore((s) => s.countries.length > 0)
   const startGame = useGameStore((s) => s.startGame)
+  const resetGame = useGameStore((s) => s.resetGame)
   const guess = useGameStore((s) => s.country)
   const seed = useGameStore((s) => s.seed)
+
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
+
+  // Reverse lookup ID → name so the stats list can label its rows. Recompute
+  // only when the (grow-only) ID map changes, which is once per app load.
+  const idToName = useMemo(() => {
+    const m: Record<number, string> = {}
+    for (const [name, id] of Object.entries(countryIds)) m[id] = name
+    return m
+  }, [countryIds])
+
+  // Flatten the stats map into a sorted, render-ready array. Only countries
+  // that have been attempted at least once show up — an alphabetical wall of
+  // every country in the dataset would be mostly noise.
+  const statsRows = useMemo(() => {
+    const rows: { id: number; name: string; sum: number; code?: string }[] = []
+    for (const [idStr, s] of Object.entries(stats)) {
+      const id = Number(idStr)
+      const name = idToName[id]
+      if (!name) continue
+      rows.push({ id, name, sum: s.recentScore, code: countryCodes[name] })
+    }
+    rows.sort((a, b) => a.name.localeCompare(b.name))
+    return rows
+  }, [stats, idToName, countryCodes])
 
   // Pair each resolved attempt with what the user actually clicked. Click
   // markers (kind 'correct' | 'wrong') are appended 1:1 with resolved attempts
@@ -154,9 +211,96 @@ export function App() {
     }
   }
 
+  const handleNewGame = () => {
+    setMenuOpen(false)
+    startGame()
+  }
+  const handleMainMenu = () => {
+    setMenuOpen(false)
+    resetGame()
+  }
+  const handleOpenStats = () => {
+    // Strip ?seed= first so the auto-start effect doesn't immediately
+    // re-launch the same match once resetGame() flips us back to 'idle'.
+    const url = new URL(window.location.href)
+    if (url.searchParams.has('seed')) {
+      url.searchParams.delete('seed')
+      window.history.replaceState(null, '', url.toString())
+    }
+    // Wipe the last game's pins/labels so the stats dots aren't drawn on
+    // top of leftover correct/wrong markers from the previous round.
+    resetGame()
+    setStatsOpen(true)
+  }
+
   return (
     <>
       <WorldViewer />
+
+      {phase !== 'idle' && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 16,
+            left: 16,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            gap: 8,
+            pointerEvents: 'auto',
+          }}
+        >
+          <button
+            type="button"
+            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            onClick={() => setMenuOpen((v) => !v)}
+            style={{
+              width: 44,
+              height: 44,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0,
+              fontSize: 22,
+              fontWeight: 700,
+              color: 'white',
+              background: 'rgba(20, 60, 110, 0.85)',
+              border: '2px solid rgba(255,255,255,0.85)',
+              borderRadius: 8,
+              cursor: 'pointer',
+              fontFamily: 'system-ui, sans-serif',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+              lineHeight: 1,
+            }}
+          >
+            {menuOpen ? '×' : '☰'}
+          </button>
+          {menuOpen && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              <button
+                type="button"
+                onClick={handleMainMenu}
+                style={menuButtonStyle}
+              >
+                Main Menu
+              </button>
+              <button
+                type="button"
+                onClick={handleNewGame}
+                style={menuButtonStyle}
+              >
+                New Game
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {phase !== 'idle' && (
         <div
@@ -214,7 +358,7 @@ export function App() {
         </div>
       )}
 
-      {(phase === 'idle' || phase === 'finished') && (
+      {!statsOpen && (phase === 'idle' || phase === 'finished') && (
         <div
           style={{
             position: 'absolute',
@@ -252,6 +396,13 @@ export function App() {
                 ? 'Start Game'
                 : 'Loading…'
               : 'Play Again'}
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenStats}
+            style={menuButtonStyle}
+          >
+            View Stats
           </button>
           {phase === 'finished' && seed && (
             <button
@@ -309,6 +460,122 @@ export function App() {
       >
         mapoguesser
       </div>
+
+      {statsOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 16,
+            bottom: 16,
+            left: 16,
+            width: 'min(340px, 92vw)',
+            background: 'rgba(8, 18, 32, 0.92)',
+            border: '1px solid rgba(255,255,255,0.2)',
+            borderRadius: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            padding: 12,
+            pointerEvents: 'auto',
+            fontFamily: 'system-ui, sans-serif',
+            color: 'white',
+            boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
+              Last-5 score per country
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                // Closing the panel also clears the dot layer — leaving stale
+                // highlights on the globe after the list is gone would be
+                // confusing with nothing visible to tie them back to.
+                selectStatsCountry(null)
+                setStatsOpen(false)
+              }}
+              style={{ ...menuButtonStyle, padding: '6px 14px', fontSize: 14 }}
+            >
+              Close
+            </button>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              background: 'rgba(0,0,0,0.35)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: 8,
+            }}
+          >
+            {statsRows.length === 0 ? (
+              <div
+                style={{
+                  padding: 24,
+                  textAlign: 'center',
+                  opacity: 0.75,
+                  fontSize: 14,
+                }}
+              >
+                No guesses yet — play a round to start filling this in.
+              </div>
+            ) : (
+              statsRows.map((row) => {
+                const active = selectedStatsCountryId === row.id
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    onClick={() =>
+                      selectStatsCountry(active ? null : row.id)
+                    }
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: '8px 12px',
+                      width: '100%',
+                      background: active
+                        ? 'rgba(60, 130, 220, 0.35)'
+                        : 'transparent',
+                      border: 'none',
+                      borderBottom: '1px solid rgba(255,255,255,0.08)',
+                      color: 'white',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    <FlagIcon code={row.code} height={20} />
+                    <span style={{ flex: 1, fontSize: 15 }}>{row.name}</span>
+                    <span
+                      style={{
+                        fontVariantNumeric: 'tabular-nums',
+                        fontWeight: 700,
+                        fontSize: 16,
+                        color: scoreColour(row.sum),
+                        minWidth: 32,
+                        textAlign: 'right',
+                      }}
+                    >
+                      {row.sum > 0 ? `+${row.sum}` : row.sum}
+                    </span>
+                  </button>
+                )
+              })
+            )}
+          </div>
+        </div>
+      )}
     </>
   )
 }

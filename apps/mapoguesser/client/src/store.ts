@@ -19,6 +19,32 @@ export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // Single-slot save: a returning player can resume one in-progress match.
 // Starting a different seed overwrites it.
 const SAVE_KEY = 'mapoguesser:save'
+// Persistent across matches: stable integer ID per country (grow-only) and
+// the guess history / rolling score keyed by those IDs.
+const IDS_KEY = 'mapoguesser:countryIds'
+const STATS_KEY = 'mapoguesser:stats'
+
+// Window size for the rolling "score" shown in the stats list. +1 per correct
+// guess, −1 per wrong, summed over the last N attempts at that country.
+export const STATS_WINDOW = 5
+
+// One guess on a target. `id` is the country the player actually clicked.
+// `lat`/`lon` are the exact click position on the globe — optional only
+// because guesses persisted before this field was added don't carry them
+// (they still count toward recentScore, they just don't draw dots).
+export interface GuessRecord {
+  id: number
+  lat?: number
+  lon?: number
+}
+
+export interface CountryStats {
+  guesses: GuessRecord[]
+  // Sum of the most recent STATS_WINDOW guesses: each guess scores +1 when it
+  // matches the target ID, −1 otherwise. Cached so the stats view doesn't
+  // recompute it for every row on every render.
+  recentScore: number
+}
 
 interface SavedMatch {
   seed: string
@@ -59,6 +85,85 @@ const writeSave = (data: SavedMatch): void => {
   }
 }
 
+const loadCountryIds = (): Record<string, number> => {
+  if (typeof localStorage === 'undefined') return {}
+  try {
+    const raw = localStorage.getItem(IDS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<string, number> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'number' && Number.isInteger(v) && v >= 0) out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+// Accept both the legacy plain-number form ("guesses: [3, 7, 7]") and the
+// new {id, lat, lon} form. Legacy entries survive with no position and just
+// don't render dots on the map.
+const parseGuessRecord = (v: unknown): GuessRecord | null => {
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 0) {
+    return { id: v }
+  }
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  if (typeof o.id !== 'number' || !Number.isInteger(o.id) || o.id < 0) return null
+  const rec: GuessRecord = { id: o.id }
+  if (typeof o.lat === 'number' && Number.isFinite(o.lat)) rec.lat = o.lat
+  if (typeof o.lon === 'number' && Number.isFinite(o.lon)) rec.lon = o.lon
+  return rec
+}
+
+const loadStats = (): Record<number, CountryStats> => {
+  if (typeof localStorage === 'undefined') return {}
+  try {
+    const raw = localStorage.getItem(STATS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<number, CountryStats> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      const id = Number(k)
+      if (!Number.isInteger(id) || id < 0) continue
+      if (!v || typeof v !== 'object') continue
+      const o = v as Record<string, unknown>
+      if (!Array.isArray(o.guesses) || typeof o.recentScore !== 'number') continue
+      const guesses: GuessRecord[] = []
+      for (const raw of o.guesses as unknown[]) {
+        const rec = parseGuessRecord(raw)
+        if (rec) guesses.push(rec)
+      }
+      out[id] = { guesses, recentScore: o.recentScore }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+const writeJSON = (key: string, data: unknown): void => {
+  if (typeof localStorage === 'undefined') return
+  try {
+    localStorage.setItem(key, JSON.stringify(data))
+  } catch {
+    // quota exceeded / private browsing — silent skip
+  }
+}
+
+const computeRecentScore = (
+  guesses: GuessRecord[],
+  targetId: number,
+): number => {
+  const slice = guesses.slice(-STATS_WINDOW)
+  let sum = 0
+  for (const g of slice) sum += g.id === targetId ? 1 : -1
+  return sum
+}
+
 interface GameState {
   heading: number
   setHeading: (heading: number) => void
@@ -73,6 +178,22 @@ interface GameState {
   // Natural Earth dataset are simply absent (the HUD then omits the flag).
   countryCodes: Record<string, string>
   setCountryCodes: (codes: Record<string, string>) => void
+
+  // Name → stable integer ID. Grow-only across reloads so stats keyed by ID
+  // stay valid as new countries appear in the dataset. WorldViewer calls
+  // registerCountries(names) after the GeoJSON loads.
+  countryIds: Record<string, number>
+  registerCountries: (names: string[]) => void
+
+  // Per-target guess history. Keyed by the target country's ID. Persisted to
+  // localStorage independently of the in-progress match save.
+  stats: Record<number, CountryStats>
+
+  // Which row in the stats sidebar is currently selected. Drives the dots the
+  // WorldViewer paints at the player's past guess locations for that country.
+  // null = no row selected; the dot layer is empty.
+  selectedStatsCountryId: number | null
+  selectStatsCountry: (id: number | null) => void
 
   // Last country clicked on the globe (whichever phase we're in).
   country: string | null
@@ -105,7 +226,13 @@ interface GameState {
   clearReveal: () => void
   finishGame: () => void
   // Routes a globe click through the game logic when in 'playing' phase.
-  handleGlobeClick: (clicked: string | null) => void
+  // lat/lon are the exact click location on the ellipsoid; they're recorded
+  // into the per-country guess history so the stats view can pin them later.
+  handleGlobeClick: (
+    clicked: string | null,
+    lat?: number,
+    lon?: number,
+  ) => void
   // Records a marker drop. The viewer also handles the Cesium-side render via
   // a subscription to `markers`.
   addMarker: (marker: Marker) => void
@@ -185,6 +312,30 @@ export const useGameStore = create<GameState>((set, get) => ({
   countryCodes: {},
   setCountryCodes: (countryCodes) => set({ countryCodes }),
 
+  countryIds: loadCountryIds(),
+  registerCountries: (names) => {
+    set((state) => {
+      const ids = { ...state.countryIds }
+      // maxId starts at -1 so the first ever country becomes id 0.
+      let maxId = -1
+      for (const v of Object.values(ids)) if (v > maxId) maxId = v
+      let changed = false
+      for (const name of names) {
+        if (ids[name] === undefined) {
+          maxId++
+          ids[name] = maxId
+          changed = true
+        }
+      }
+      return changed ? { countryIds: ids } : state
+    })
+  },
+
+  stats: loadStats(),
+
+  selectedStatsCountryId: null,
+  selectStatsCountry: (id) => set({ selectedStatsCountryId: id }),
+
   country: null,
   setCountry: (country) => set({ country }),
 
@@ -256,7 +407,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   finishGame: () => set({ phase: 'finished', endingTarget: null }),
 
-  handleGlobeClick: (clicked) => {
+  handleGlobeClick: (clicked, lat, lon) => {
     set({ country: clicked })
 
     const s = get()
@@ -271,6 +422,30 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const idx = s.attempts.findIndex((a) => a === 'pending')
     if (idx === -1) return
+
+    // Record this guess against the active target in the persistent stats
+    // before we mutate any game state. Skipped if either name lacks an ID
+    // (registerCountries hasn't run yet — shouldn't happen in practice).
+    if (s.target) {
+      const targetId = s.countryIds[s.target]
+      const guessId = s.countryIds[clicked]
+      if (targetId !== undefined && guessId !== undefined) {
+        const existing = s.stats[targetId] ?? { guesses: [], recentScore: 0 }
+        const record: GuessRecord = { id: guessId }
+        if (typeof lat === 'number' && Number.isFinite(lat)) record.lat = lat
+        if (typeof lon === 'number' && Number.isFinite(lon)) record.lon = lon
+        const guesses = [...existing.guesses, record]
+        set({
+          stats: {
+            ...s.stats,
+            [targetId]: {
+              guesses,
+              recentScore: computeRecentScore(guesses, targetId),
+            },
+          },
+        })
+      }
+    }
 
     const correct = clicked === s.target
     const next = [...s.attempts]
@@ -334,4 +509,11 @@ useGameStore.subscribe((state, prev) => {
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,
   })
+})
+
+// Persist long-lived state (IDs and stats) independently of the match save —
+// it survives across matches and is never wiped by a "new game".
+useGameStore.subscribe((state, prev) => {
+  if (state.countryIds !== prev.countryIds) writeJSON(IDS_KEY, state.countryIds)
+  if (state.stats !== prev.stats) writeJSON(STATS_KEY, state.stats)
 })
