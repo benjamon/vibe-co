@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { WorldViewer } from './WorldViewer'
+import { Confetti } from './Confetti'
+import { sfxEndJingle } from './sfx'
 import { useGameStore, ROUNDS, type AttemptResult } from './store'
 
 const overlayBase = {
@@ -125,6 +127,7 @@ export function App() {
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
+  const [showConfetti, setShowConfetti] = useState(false)
 
   // Reverse lookup ID → name so the stats list can label its rows. Recompute
   // only when the (grow-only) ID map changes, which is once per app load.
@@ -143,11 +146,27 @@ export function App() {
       const id = Number(idStr)
       const name = idToName[id]
       if (!name) continue
-      rows.push({ id, name, sum: s.recentScore, code: countryCodes[name] })
+      rows.push({ id, name, sum: s.score, code: countryCodes[name] })
     }
     rows.sort((a, b) => a.name.localeCompare(b.name))
     return rows
   }, [stats, idToName, countryCodes])
+
+  // Totals across every target, for the synthetic "All" row at the top of the
+  // list. A guess is correct when the country clicked matches the target it
+  // was recorded under.
+  const statsTotals = useMemo(() => {
+    let correct = 0
+    let total = 0
+    for (const [idStr, s] of Object.entries(stats)) {
+      const targetId = Number(idStr)
+      for (const g of s.guesses) {
+        total += 1
+        if (g.id === targetId) correct += 1
+      }
+    }
+    return { correct, wrong: total - correct, total }
+  }, [stats])
 
   // Pair each resolved attempt with what the user actually clicked. Click
   // markers (kind 'correct' | 'wrong') are appended 1:1 with resolved attempts
@@ -190,6 +209,19 @@ export function App() {
   }, [seed])
 
   const correctCount = attempts.filter((a) => a === 'correct').length
+
+  // When a match wraps up, play the score-appropriate jingle and — only on a
+  // flawless 9/9 — let the confetti fly. Keyed on `phase` so it fires once per
+  // transition into 'finished'.
+  useEffect(() => {
+    if (phase !== 'finished') {
+      setShowConfetti(false)
+      return
+    }
+    sfxEndJingle(correctCount)
+    if (correctCount >= ROUNDS) setShowConfetti(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
 
   const handleShareSeed = async () => {
     if (!seed) return
@@ -236,6 +268,8 @@ export function App() {
   return (
     <>
       <WorldViewer />
+
+      {showConfetti && <Confetti onDone={() => setShowConfetti(false)} />}
 
       {phase !== 'idle' && (
         <div
@@ -491,7 +525,7 @@ export function App() {
             }}
           >
             <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
-              Last-5 score per country
+              Total score per country
             </div>
             <button
               type="button"
@@ -529,7 +563,67 @@ export function App() {
                 No guesses yet — play a round to start filling this in.
               </div>
             ) : (
-              statsRows.map((row) => {
+              <>
+                {(() => {
+                  const active = selectedStatsCountryId === 'all'
+                  return (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        selectStatsCountry(active ? null : 'all')
+                      }
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '8px 12px',
+                        width: '100%',
+                        background: active
+                          ? 'rgba(60, 130, 220, 0.35)'
+                          : 'rgba(255,255,255,0.05)',
+                        border: 'none',
+                        borderBottom: '1px solid rgba(255,255,255,0.18)',
+                        color: 'white',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      <span
+                        style={{
+                          flex: 1,
+                          fontSize: 15,
+                          fontWeight: 700,
+                          letterSpacing: 0.3,
+                        }}
+                      >
+                        All ({statsTotals.total})
+                      </span>
+                      <span
+                        style={{
+                          fontVariantNumeric: 'tabular-nums',
+                          fontWeight: 700,
+                          fontSize: 15,
+                          color: '#3fb84e',
+                        }}
+                      >
+                        {statsTotals.correct}
+                      </span>
+                      <span style={{ opacity: 0.4 }}>/</span>
+                      <span
+                        style={{
+                          fontVariantNumeric: 'tabular-nums',
+                          fontWeight: 700,
+                          fontSize: 15,
+                          color: '#e64545',
+                        }}
+                      >
+                        {statsTotals.wrong}
+                      </span>
+                    </button>
+                  )
+                })()}
+                {statsRows.map((row) => {
                 const active = selectedStatsCountryId === row.id
                 return (
                   <button
@@ -571,7 +665,8 @@ export function App() {
                     </span>
                   </button>
                 )
-              })
+                })}
+              </>
             )}
           </div>
         </div>

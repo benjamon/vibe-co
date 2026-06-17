@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { sfxCorrect, sfxWrong } from './sfx'
 
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
@@ -24,14 +25,10 @@ const SAVE_KEY = 'mapoguesser:save'
 const IDS_KEY = 'mapoguesser:countryIds'
 const STATS_KEY = 'mapoguesser:stats'
 
-// Window size for the rolling "score" shown in the stats list. +1 per correct
-// guess, −1 per wrong, summed over the last N attempts at that country.
-export const STATS_WINDOW = 5
-
 // One guess on a target. `id` is the country the player actually clicked.
 // `lat`/`lon` are the exact click position on the globe — optional only
 // because guesses persisted before this field was added don't carry them
-// (they still count toward recentScore, they just don't draw dots).
+// (they still count toward score, they just don't draw dots).
 export interface GuessRecord {
   id: number
   lat?: number
@@ -40,10 +37,10 @@ export interface GuessRecord {
 
 export interface CountryStats {
   guesses: GuessRecord[]
-  // Sum of the most recent STATS_WINDOW guesses: each guess scores +1 when it
-  // matches the target ID, −1 otherwise. Cached so the stats view doesn't
-  // recompute it for every row on every render.
-  recentScore: number
+  // Running total over every guess at this country: +1 when the guess matches
+  // the target ID, −1 otherwise. Cached so the stats view doesn't recompute it
+  // for every row on every render.
+  score: number
 }
 
 interface SavedMatch {
@@ -131,13 +128,15 @@ const loadStats = (): Record<number, CountryStats> => {
       if (!Number.isInteger(id) || id < 0) continue
       if (!v || typeof v !== 'object') continue
       const o = v as Record<string, unknown>
-      if (!Array.isArray(o.guesses) || typeof o.recentScore !== 'number') continue
+      if (!Array.isArray(o.guesses)) continue
       const guesses: GuessRecord[] = []
       for (const raw of o.guesses as unknown[]) {
         const rec = parseGuessRecord(raw)
         if (rec) guesses.push(rec)
       }
-      out[id] = { guesses, recentScore: o.recentScore }
+      // Recompute from the full history rather than trusting the stored value —
+      // older saves cached only a last-5 rolling score under `recentScore`.
+      out[id] = { guesses, score: computeScore(guesses, id) }
     }
     return out
   } catch {
@@ -154,13 +153,9 @@ const writeJSON = (key: string, data: unknown): void => {
   }
 }
 
-const computeRecentScore = (
-  guesses: GuessRecord[],
-  targetId: number,
-): number => {
-  const slice = guesses.slice(-STATS_WINDOW)
+const computeScore = (guesses: GuessRecord[], targetId: number): number => {
   let sum = 0
-  for (const g of slice) sum += g.id === targetId ? 1 : -1
+  for (const g of guesses) sum += g.id === targetId ? 1 : -1
   return sum
 }
 
@@ -191,9 +186,10 @@ interface GameState {
 
   // Which row in the stats sidebar is currently selected. Drives the dots the
   // WorldViewer paints at the player's past guess locations for that country.
-  // null = no row selected; the dot layer is empty.
-  selectedStatsCountryId: number | null
-  selectStatsCountry: (id: number | null) => void
+  // null = no row selected; the dot layer is empty. 'all' = the synthetic top
+  // row, which paints every guess ever made across all countries.
+  selectedStatsCountryId: number | 'all' | null
+  selectStatsCountry: (id: number | 'all' | null) => void
 
   // Last country clicked on the globe (whichever phase we're in).
   country: string | null
@@ -430,7 +426,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const targetId = s.countryIds[s.target]
       const guessId = s.countryIds[clicked]
       if (targetId !== undefined && guessId !== undefined) {
-        const existing = s.stats[targetId] ?? { guesses: [], recentScore: 0 }
+        const existing = s.stats[targetId] ?? { guesses: [], score: 0 }
         const record: GuessRecord = { id: guessId }
         if (typeof lat === 'number' && Number.isFinite(lat)) record.lat = lat
         if (typeof lon === 'number' && Number.isFinite(lon)) record.lon = lon
@@ -440,7 +436,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             ...s.stats,
             [targetId]: {
               guesses,
-              recentScore: computeRecentScore(guesses, targetId),
+              score: computeScore(guesses, targetId),
             },
           },
         })
@@ -450,6 +446,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     const correct = clicked === s.target
     const next = [...s.attempts]
     next[idx] = correct ? 'correct' : 'wrong'
+
+    // Audible feedback for the placement, before any state transition.
+    if (correct) sfxCorrect()
+    else sfxWrong()
 
     const finished = next.every((a) => a !== 'pending')
 

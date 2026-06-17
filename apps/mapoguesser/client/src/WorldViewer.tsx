@@ -229,20 +229,24 @@ export function WorldViewer() {
     const statsDots = new CustomDataSource('statsDots')
     viewer.dataSources.add(statsDots)
 
-    // Flag-on-coloured-tile pin sprites. Composed on demand per (kind, code)
-    // because flag images load asynchronously from flagcdn.com; cached so a
-    // re-render of the same marker is free. Background colour carries the
-    // correctness signal now that the ✓/✗ glyph is gone.
+    // Flag-on-a-pole pin sprites. Composed on demand per (kind, code) because
+    // flag images load asynchronously from flagcdn.com; cached so a re-render
+    // of the same marker is free. The pole colour carries the correctness
+    // signal (green correct / grey wrong / red reveal).
     const PIN_BG: Record<Marker['kind'], string> = {
       correct: '#3fb84e',
       wrong: '#9aa0a6',
       reveal: '#e64545',
     }
-    const PIN_W = 50
-    const PIN_H = 40
-    // Flag dimensions are 0.85× a 48×36 reference (4:3 to match flagcdn).
-    const FLAG_W = 41
-    const FLAG_H = 31
+    // Marker geometry. The pole is a thin vertical bar whose base touches the
+    // clicked point; the flag flies off to the right from near its top.
+    const POLE_W = 6 // pole thickness incl. its 1.5px outline
+    const POLE_H = 48 // pole height == canvas height
+    const FLAG_W = 40
+    const FLAG_H = 28 // 4:3-ish to match flagcdn
+    const FLAG_TOP = 2 // gap between flag top and the very top of the pole
+    const PIN_W = POLE_W + FLAG_W // full canvas width
+    const PIN_H = POLE_H // full canvas height
     const flagPinCache = new Map<string, Promise<string>>()
 
     const buildFlagPin = (
@@ -259,22 +263,10 @@ export function WorldViewer() {
         const ctx = canvas.getContext('2d')
         if (!ctx) return ''
 
-        // Rounded-rect background using arcTo so the corners match the white
-        // border below without a separate path.
-        const r = 8
-        ctx.fillStyle = PIN_BG[kind]
-        ctx.beginPath()
-        ctx.moveTo(r, 0)
-        ctx.arcTo(PIN_W, 0, PIN_W, PIN_H, r)
-        ctx.arcTo(PIN_W, PIN_H, 0, PIN_H, r)
-        ctx.arcTo(0, PIN_H, 0, 0, r)
-        ctx.arcTo(0, 0, PIN_W, 0, r)
-        ctx.closePath()
-        ctx.fill()
-        ctx.strokeStyle = 'rgba(255,255,255,0.95)'
-        ctx.lineWidth = 1
-        ctx.stroke()
-
+        // 1. Flag, flying right from the top of the pole. Tucked 1px behind
+        //    the pole's right edge so the pole drawn next hides the seam.
+        const flagX = POLE_W - 1
+        let drewFlag = false
         if (code) {
           try {
             const img = new Image()
@@ -284,13 +276,39 @@ export function WorldViewer() {
               img.onerror = () => reject(new Error('flag load failed'))
               img.src = `https://flagcdn.com/w160/${code}.png`
             })
-            const fx = (PIN_W - FLAG_W) / 2
-            const fy = (PIN_H - FLAG_H) / 2
-            ctx.drawImage(img, fx, fy, FLAG_W, FLAG_H)
+            ctx.drawImage(img, flagX, FLAG_TOP, FLAG_W, FLAG_H)
+            drewFlag = true
           } catch {
-            // Flag fetch / CORS failure: leave the bare coloured tile.
+            // Flag fetch / CORS failure: fall back to a plain coloured flag.
           }
         }
+        if (!drewFlag) {
+          ctx.fillStyle = PIN_BG[kind]
+          ctx.fillRect(flagX, FLAG_TOP, FLAG_W, FLAG_H)
+        }
+        // Thin dark border so a pale flag still reads against the globe.
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)'
+        ctx.lineWidth = 1
+        ctx.strokeRect(flagX + 0.5, FLAG_TOP + 0.5, FLAG_W - 1, FLAG_H - 1)
+
+        // 2. Pole on top, coloured by correctness with a black outline. Flat
+        //    base (no bottom edge stroke) so it reads as touching the ground;
+        //    rounded top as a finial.
+        const inset = 0.75 // half the 1.5px stroke, kept inside the canvas
+        const left = inset
+        const right = POLE_W - inset
+        const topR = (right - left) / 2
+        ctx.beginPath()
+        ctx.moveTo(left, POLE_H)
+        ctx.lineTo(left, inset + topR)
+        ctx.arcTo(left, inset, left + topR, inset, topR)
+        ctx.arcTo(right, inset, right, inset + topR, topR)
+        ctx.lineTo(right, POLE_H)
+        ctx.fillStyle = PIN_BG[kind]
+        ctx.fill()
+        ctx.lineWidth = 1.5
+        ctx.strokeStyle = '#000'
+        ctx.stroke()
 
         try {
           return canvas.toDataURL('image/png')
@@ -545,24 +563,31 @@ export function WorldViewer() {
           position: Cartesian3.fromDegrees(m.lon, m.lat),
           billboard: {
             image,
+            // Pole base touches the clicked point: bottom-anchored, and shifted
+            // left by half the pole width so the pole's centre (not the image's
+            // left edge) lands on the lat/lon.
             verticalOrigin: VerticalOrigin.BOTTOM,
+            horizontalOrigin: HorizontalOrigin.LEFT,
+            pixelOffset: new Cartesian2(-POLE_W / 2, 0),
             heightReference: HeightReference.CLAMP_TO_GROUND,
           },
           label: m.label
             ? {
                 text: m.label,
-                font: '16px sans-serif',
+                font: 'bold 15px sans-serif',
                 fillColor: Color.WHITE,
                 outlineColor: Color.BLACK,
                 outlineWidth: 3,
                 style: LabelStyle.FILL_AND_OUTLINE,
-                // Pin is bottom-anchored at the lat/lon and extends PIN_H px
-                // upward, horizontally centred. Centre the label against the
-                // pin's mid-height (−PIN_H/2) and push it clear of the pin's
-                // right edge (PIN_W/2 + small padding).
-                verticalOrigin: VerticalOrigin.CENTER,
-                horizontalOrigin: HorizontalOrigin.LEFT,
-                pixelOffset: new Cartesian2(PIN_W / 2 + 4, -PIN_H / 2),
+                // Sit just above the flag, horizontally centred over it. The
+                // flag's centre is (POLE_W/2 + FLAG_W/2) right of the pole base;
+                // its top is POLE_H px above the ground anchor.
+                verticalOrigin: VerticalOrigin.BOTTOM,
+                horizontalOrigin: HorizontalOrigin.CENTER,
+                pixelOffset: new Cartesian2(
+                  POLE_W / 2 + FLAG_W / 2,
+                  -(POLE_H + 2),
+                ),
                 heightReference: HeightReference.CLAMP_TO_GROUND,
               }
             : undefined,
@@ -927,30 +952,40 @@ export function WorldViewer() {
     // Replace the stats-highlight dot layer with one dot per past guess at
     // its stored lat/lon. Correct guesses (guess.id === target id) draw
     // green; misses draw red. Entries from before lat/lon was stored just
-    // get skipped — they had no position to render.
-    const renderStatsDots = (countryId: number | null): void => {
+    // get skipped — they had no position to render. 'all' paints every guess
+    // across every target country at once.
+    const renderStatsDots = (countryId: number | 'all' | null): void => {
       statsDots.entities.removeAll()
       if (countryId === null) return
-      const entry = useGameStore.getState().stats[countryId]
-      if (!entry) return
-      for (const g of entry.guesses) {
-        if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
-        const isCorrect = g.id === countryId
-        statsDots.entities.add({
-          position: Cartesian3.fromDegrees(g.lon, g.lat),
-          point: {
-            pixelSize: 9,
-            color: isCorrect
-              ? Color.fromCssColorString('#3fb84e')
-              : Color.fromCssColorString('#e64545'),
-            outlineColor: Color.fromCssColorString('rgba(0,0,0,0.7)'),
-            outlineWidth: 1.5,
-            heightReference: HeightReference.CLAMP_TO_GROUND,
-            // Skip Cesium's depth test so dots stay visible against the
-            // globe surface at glancing angles instead of getting culled.
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          },
-        })
+      const stats = useGameStore.getState().stats
+      const targetIds =
+        countryId === 'all'
+          ? Object.keys(stats).map(Number)
+          : stats[countryId]
+            ? [countryId]
+            : []
+      for (const targetId of targetIds) {
+        const entry = stats[targetId]
+        if (!entry) continue
+        for (const g of entry.guesses) {
+          if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
+          const isCorrect = g.id === targetId
+          statsDots.entities.add({
+            position: Cartesian3.fromDegrees(g.lon, g.lat),
+            point: {
+              pixelSize: 9,
+              color: isCorrect
+                ? Color.fromCssColorString('#3fb84e')
+                : Color.fromCssColorString('#e64545'),
+              outlineColor: Color.fromCssColorString('rgba(0,0,0,0.7)'),
+              outlineWidth: 1.5,
+              heightReference: HeightReference.CLAMP_TO_GROUND,
+              // Leave the depth test enabled (default) so the globe occludes
+              // dots on its far side — otherwise, zoomed out for the "all"
+              // view, back-of-globe guesses bleed through the front.
+            },
+          })
+        }
       }
     }
     // Mount-time replay: if a country was selected via persisted state
@@ -1029,6 +1064,10 @@ export function WorldViewer() {
         prevStatsSelection = newId
         if (newId === null) {
           renderStatsDots(null)
+        } else if (newId === 'all') {
+          // Whole-history view: paint every guess at once. No fly-to — keep
+          // the current camera so the player sees the global spread.
+          renderStatsDots('all')
         } else {
           // Reverse-lookup the country name from the (small, ~200-entry) map.
           let name: string | null = null

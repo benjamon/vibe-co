@@ -1,0 +1,179 @@
+// Procedural sound effects, synthesised with the Web Audio API so the game
+// ships zero audio assets. A single lazily-created AudioContext is reused for
+// every blip; it's resumed on demand because browsers start it suspended until
+// a user gesture (the first globe click counts, so by the time anything plays
+// we're already inside a gesture-driven call stack).
+
+type Ctx = { c: AudioContext; master: GainNode }
+
+let cached: Ctx | null = null
+let unavailable = false
+
+const ac = (): Ctx | null => {
+  if (unavailable) return null
+  if (cached) {
+    if (cached.c.state === 'suspended') void cached.c.resume()
+    return cached
+  }
+  try {
+    const Ctor =
+      typeof window !== 'undefined'
+        ? window.AudioContext ?? (window as any).webkitAudioContext
+        : undefined
+    if (!Ctor) {
+      unavailable = true
+      return null
+    }
+    const c: AudioContext = new Ctor()
+    const master = c.createGain()
+    master.gain.value = 0.5
+    master.connect(c.destination)
+    cached = { c, master }
+    if (c.state === 'suspended') void c.resume()
+    return cached
+  } catch {
+    // No audio device / blocked context (e.g. jsdom in unit tests).
+    unavailable = true
+    return null
+  }
+}
+
+// MIDI note number → frequency in Hz. C4 = 60, A4 = 69 = 440Hz.
+const hz = (midi: number): number => 440 * Math.pow(2, (midi - 69) / 12)
+
+interface Tone {
+  midi: number
+  start: number // seconds from now
+  dur: number
+  wave?: OscillatorType
+  gain?: number
+  slideFrom?: number // glide up/down from this midi at the note's onset
+  bendTo?: number // glide to this midi by the note's end (falls/scoops)
+}
+
+const play = (tones: Tone[], filterHz?: number): void => {
+  const a = ac()
+  if (!a) return
+  const { c, master } = a
+  const now = c.currentTime
+  for (const t of tones) {
+    const osc = c.createOscillator()
+    const g = c.createGain()
+    osc.type = t.wave ?? 'triangle'
+    const s = now + t.start
+    const f = hz(t.midi)
+    if (t.slideFrom != null) {
+      osc.frequency.setValueAtTime(hz(t.slideFrom), s)
+      osc.frequency.exponentialRampToValueAtTime(f, s + t.dur * 0.5)
+    } else {
+      osc.frequency.setValueAtTime(f, s)
+    }
+    if (t.bendTo != null) {
+      osc.frequency.exponentialRampToValueAtTime(hz(t.bendTo), s + t.dur)
+    }
+    // Quick attack, exponential decay. exponentialRamp can't hit 0, so we
+    // floor at 0.0001 and start from there.
+    const peak = t.gain ?? 0.25
+    g.gain.setValueAtTime(0.0001, s)
+    g.gain.exponentialRampToValueAtTime(peak, s + 0.015)
+    g.gain.exponentialRampToValueAtTime(0.0001, s + t.dur)
+    if (filterHz) {
+      const lp = c.createBiquadFilter()
+      lp.type = 'lowpass'
+      lp.frequency.value = filterHz
+      osc.connect(lp)
+      lp.connect(g)
+    } else {
+      osc.connect(g)
+    }
+    g.connect(master)
+    osc.start(s)
+    osc.stop(s + t.dur + 0.05)
+  }
+}
+
+// --- Per-guess feedback -----------------------------------------------------
+
+// Bright rising two-note "bing" for a correct placement.
+export const sfxCorrect = (): void =>
+  play([
+    { midi: 79, start: 0, dur: 0.13, wave: 'triangle', gain: 0.3 }, // G5
+    { midi: 84, start: 0.09, dur: 0.22, wave: 'triangle', gain: 0.32 }, // C6
+  ])
+
+// Low descending buzz that bends further down — a clear "nope".
+export const sfxWrong = (): void =>
+  play(
+    [
+      { midi: 52, start: 0, dur: 0.16, wave: 'sawtooth', gain: 0.22 }, // E3
+      { midi: 47, start: 0.1, dur: 0.3, wave: 'sawtooth', gain: 0.22, bendTo: 43 }, // B2 → G2
+    ],
+    1200,
+  )
+
+// --- End-of-match jingles ---------------------------------------------------
+
+// <= 1/9 : the classic "wah-wah-wah-waaah" sad trombone — four descending
+// brass notes, each scooping in, with a long downward bend on the last.
+const jingleSadTrombone = (): void =>
+  play(
+    [
+      { midi: 58, start: 0.0, dur: 0.34, wave: 'sawtooth', gain: 0.26, slideFrom: 60 },
+      { midi: 57, start: 0.32, dur: 0.34, wave: 'sawtooth', gain: 0.26, slideFrom: 58 },
+      { midi: 56, start: 0.64, dur: 0.34, wave: 'sawtooth', gain: 0.26, slideFrom: 57 },
+      { midi: 55, start: 0.96, dur: 0.75, wave: 'sawtooth', gain: 0.28, slideFrom: 56, bendTo: 49 },
+    ],
+    1300,
+  )
+
+// <= 3/9 : "oh well" — a plain descending A-G-F, not sad but not a win.
+const jingleOhWell = (): void =>
+  play([
+    { midi: 69, start: 0.0, dur: 0.2, wave: 'triangle', gain: 0.26 }, // A4
+    { midi: 67, start: 0.18, dur: 0.2, wave: 'triangle', gain: 0.26 }, // G4
+    { midi: 65, start: 0.36, dur: 0.45, wave: 'triangle', gain: 0.26 }, // F4
+    { midi: 53, start: 0.36, dur: 0.45, wave: 'sine', gain: 0.18 }, // F3 pad
+  ])
+
+// <= 6/9 : a cheerful C-major arpeggio climbing to the octave.
+const jingleHappy = (): void =>
+  play([
+    { midi: 72, start: 0.0, dur: 0.16, gain: 0.28 }, // C5
+    { midi: 76, start: 0.12, dur: 0.16, gain: 0.28 }, // E5
+    { midi: 79, start: 0.24, dur: 0.16, gain: 0.28 }, // G5
+    { midi: 84, start: 0.36, dur: 0.45, gain: 0.3 }, // C6
+  ])
+
+// <= 8/9 : a "ta-ta-ta-taaa" fanfare landing on a held C-major chord.
+const jingleTriumphant = (): void =>
+  play([
+    { midi: 79, start: 0.0, dur: 0.12, wave: 'triangle', gain: 0.26 },
+    { midi: 79, start: 0.14, dur: 0.12, wave: 'triangle', gain: 0.26 },
+    { midi: 79, start: 0.28, dur: 0.12, wave: 'triangle', gain: 0.26 },
+    { midi: 84, start: 0.42, dur: 0.55, wave: 'triangle', gain: 0.3 }, // C6 hold
+    { midi: 76, start: 0.42, dur: 0.55, wave: 'sine', gain: 0.18 }, // E5
+    { midi: 72, start: 0.42, dur: 0.55, wave: 'sine', gain: 0.16 }, // C5
+  ])
+
+// 9/9 : an epic ascending fanfare crowned by a big sustained triad + sparkle.
+const jingleEpic = (): void =>
+  play([
+    { midi: 67, start: 0.0, dur: 0.14, wave: 'sawtooth', gain: 0.22 }, // G4
+    { midi: 72, start: 0.14, dur: 0.14, wave: 'sawtooth', gain: 0.24 }, // C5
+    { midi: 76, start: 0.28, dur: 0.14, wave: 'sawtooth', gain: 0.24 }, // E5
+    { midi: 79, start: 0.42, dur: 0.2, wave: 'sawtooth', gain: 0.26 }, // G5
+    { midi: 84, start: 0.62, dur: 0.85, wave: 'sawtooth', gain: 0.3 }, // C6 hold
+    { midi: 72, start: 0.62, dur: 0.85, wave: 'triangle', gain: 0.2 }, // C5
+    { midi: 76, start: 0.62, dur: 0.85, wave: 'triangle', gain: 0.2 }, // E5
+    { midi: 79, start: 0.62, dur: 0.85, wave: 'triangle', gain: 0.2 }, // G5
+    { midi: 88, start: 0.9, dur: 0.6, wave: 'triangle', gain: 0.18 }, // E6 sparkle
+  ])
+
+// Pick the jingle for a final score (correct guesses out of ROUNDS = 9).
+export const sfxEndJingle = (correct: number): void => {
+  if (correct <= 1) jingleSadTrombone()
+  else if (correct <= 3) jingleOhWell()
+  else if (correct <= 6) jingleHappy()
+  else if (correct <= 8) jingleTriumphant()
+  else jingleEpic()
+}
