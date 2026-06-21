@@ -1,5 +1,16 @@
 import { create } from 'zustand'
 import { sfxCorrect, sfxWrong } from './sfx'
+import {
+  recordGuess,
+  selectGlobalCountryGuesses,
+  type CountryAgg,
+  type GuessDot,
+} from './stats'
+
+// Which dataset the stats sidebar shows. 'mine' = this player's local history
+// (also mirrored to the server); 'global' = aggregate totals across all users
+// pulled from SpacetimeDB.
+export type StatsMode = 'mine' | 'global'
 
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
@@ -191,6 +202,27 @@ interface GameState {
   selectedStatsCountryId: number | 'all' | null
   selectStatsCountry: (id: number | 'all' | null) => void
 
+  // 'mine' vs 'global' toggle for the stats sidebar.
+  statsMode: StatsMode
+  setStatsMode: (mode: StatsMode) => void
+
+  // Server-fed aggregate snapshots, keyed by country NAME (stable across
+  // clients). `globalStats` spans all users; `myStats` is this user's totals
+  // retrieved from the server by the locally-stored random id. Populated by the
+  // stats subscription wired up in App.
+  globalStats: Record<string, CountryAgg>
+  myStats: Record<string, CountryAgg>
+  setServerStats: (
+    global: Record<string, CountryAgg>,
+    mine: Record<string, CountryAgg>,
+  ) => void
+
+  // Up to the most-recent 200 guesses for the currently-selected global
+  // country, loaded on demand for painting on the globe. `country` is the name
+  // those dots belong to (so a stale update for a different country is ignored).
+  globalGuesses: { country: string | null; dots: GuessDot[] }
+  setGlobalGuesses: (country: string | null, dots: GuessDot[]) => void
+
   // Last country clicked on the globe (whichever phase we're in).
   country: string | null
   setCountry: (country: string | null) => void
@@ -330,7 +362,42 @@ export const useGameStore = create<GameState>((set, get) => ({
   stats: loadStats(),
 
   selectedStatsCountryId: null,
-  selectStatsCountry: (id) => set({ selectedStatsCountryId: id }),
+  selectStatsCountry: (id) => {
+    set({ selectedStatsCountryId: id })
+    // In global mode, picking a specific country opens a server subscription
+    // for its most-recent guesses so the globe can paint them. 'all' and the
+    // deselect case clear it; 'mine' mode paints from local history instead.
+    const { statsMode, countryIds } = get()
+    if (statsMode === 'global' && typeof id === 'number') {
+      let name: string | null = null
+      for (const k in countryIds) {
+        if (countryIds[k] === id) {
+          name = k
+          break
+        }
+      }
+      selectGlobalCountryGuesses(name)
+    } else {
+      selectGlobalCountryGuesses(null)
+    }
+  },
+
+  statsMode: 'mine',
+  setStatsMode: (mode) => {
+    // Switching mode clears the current selection so we don't carry a 'mine'
+    // highlight into the 'global' dataset (or vice versa).
+    selectGlobalCountryGuesses(null)
+    set({ statsMode: mode, selectedStatsCountryId: null })
+  },
+
+  globalStats: {},
+  myStats: {},
+  setServerStats: (global, mine) =>
+    set({ globalStats: global, myStats: mine }),
+
+  globalGuesses: { country: null, dots: [] },
+  setGlobalGuesses: (country, dots) =>
+    set({ globalGuesses: { country, dots } }),
 
   country: null,
   setCountry: (country) => set({ country }),
@@ -423,6 +490,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     // before we mutate any game state. Skipped if either name lacks an ID
     // (registerCountries hasn't run yet — shouldn't happen in practice).
     if (s.target) {
+      // Mirror the guess to the server, keyed by country NAME (stable across
+      // clients) and the player's random user id. lat/lon may be undefined for
+      // guesses made outside the globe viewer (e.g. unit tests); recordGuess
+      // guards on finite coordinates and no-ops in that case.
+      recordGuess(s.target, clicked, lat as number, lon as number)
+
       const targetId = s.countryIds[s.target]
       const guessId = s.countryIds[clicked]
       if (targetId !== undefined && guessId !== undefined) {

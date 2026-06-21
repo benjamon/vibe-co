@@ -129,44 +129,44 @@ const jingleSadTrombone = (): void =>
 // <= 3/9 : "oh well" — a plain descending A-G-F, not sad but not a win.
 const jingleOhWell = (): void =>
   play([
-    { midi: 69, start: 0.0, dur: 0.2, wave: 'triangle', gain: 0.26 }, // A4
-    { midi: 67, start: 0.18, dur: 0.2, wave: 'triangle', gain: 0.26 }, // G4
-    { midi: 65, start: 0.36, dur: 0.45, wave: 'triangle', gain: 0.26 }, // F4
-    { midi: 53, start: 0.36, dur: 0.45, wave: 'sine', gain: 0.18 }, // F3 pad
+    { midi: 69, start: 0.0, dur: 0.22, wave: 'triangle', gain: 0.26 }, // A4
+    { midi: 67, start: 0.26, dur: 0.22, wave: 'triangle', gain: 0.26 }, // G4
+    { midi: 65, start: 0.52, dur: 0.5, wave: 'triangle', gain: 0.26 }, // F4
+    { midi: 53, start: 0.52, dur: 0.5, wave: 'sine', gain: 0.18 }, // F3 pad
   ])
 
 // <= 6/9 : a cheerful C-major arpeggio climbing to the octave.
 const jingleHappy = (): void =>
   play([
-    { midi: 72, start: 0.0, dur: 0.16, gain: 0.28 }, // C5
-    { midi: 76, start: 0.12, dur: 0.16, gain: 0.28 }, // E5
-    { midi: 79, start: 0.24, dur: 0.16, gain: 0.28 }, // G5
-    { midi: 84, start: 0.36, dur: 0.45, gain: 0.3 }, // C6
+    { midi: 72, start: 0.0, dur: 0.18, gain: 0.28 }, // C5
+    { midi: 76, start: 0.19, dur: 0.18, gain: 0.28 }, // E5
+    { midi: 79, start: 0.38, dur: 0.18, gain: 0.28 }, // G5
+    { midi: 84, start: 0.58, dur: 0.5, gain: 0.3 }, // C6
   ])
 
 // <= 8/9 : a "ta-ta-ta-taaa" fanfare landing on a held C-major chord.
 const jingleTriumphant = (): void =>
   play([
-    { midi: 79, start: 0.0, dur: 0.12, wave: 'triangle', gain: 0.26 },
-    { midi: 79, start: 0.14, dur: 0.12, wave: 'triangle', gain: 0.26 },
-    { midi: 79, start: 0.28, dur: 0.12, wave: 'triangle', gain: 0.26 },
-    { midi: 84, start: 0.42, dur: 0.55, wave: 'triangle', gain: 0.3 }, // C6 hold
-    { midi: 76, start: 0.42, dur: 0.55, wave: 'sine', gain: 0.18 }, // E5
-    { midi: 72, start: 0.42, dur: 0.55, wave: 'sine', gain: 0.16 }, // C5
+    { midi: 79, start: 0.0, dur: 0.13, wave: 'triangle', gain: 0.26 },
+    { midi: 79, start: 0.2, dur: 0.13, wave: 'triangle', gain: 0.26 },
+    { midi: 79, start: 0.4, dur: 0.13, wave: 'triangle', gain: 0.26 },
+    { midi: 84, start: 0.62, dur: 0.6, wave: 'triangle', gain: 0.3 }, // C6 hold
+    { midi: 76, start: 0.62, dur: 0.6, wave: 'sine', gain: 0.18 }, // E5
+    { midi: 72, start: 0.62, dur: 0.6, wave: 'sine', gain: 0.16 }, // C5
   ])
 
 // 9/9 : an epic ascending fanfare crowned by a big sustained triad + sparkle.
 const jingleEpic = (): void =>
   play([
-    { midi: 67, start: 0.0, dur: 0.14, wave: 'sawtooth', gain: 0.22 }, // G4
-    { midi: 72, start: 0.14, dur: 0.14, wave: 'sawtooth', gain: 0.24 }, // C5
-    { midi: 76, start: 0.28, dur: 0.14, wave: 'sawtooth', gain: 0.24 }, // E5
-    { midi: 79, start: 0.42, dur: 0.2, wave: 'sawtooth', gain: 0.26 }, // G5
-    { midi: 84, start: 0.62, dur: 0.85, wave: 'sawtooth', gain: 0.3 }, // C6 hold
-    { midi: 72, start: 0.62, dur: 0.85, wave: 'triangle', gain: 0.2 }, // C5
-    { midi: 76, start: 0.62, dur: 0.85, wave: 'triangle', gain: 0.2 }, // E5
-    { midi: 79, start: 0.62, dur: 0.85, wave: 'triangle', gain: 0.2 }, // G5
-    { midi: 88, start: 0.9, dur: 0.6, wave: 'triangle', gain: 0.18 }, // E6 sparkle
+    { midi: 67, start: 0.0, dur: 0.16, wave: 'sawtooth', gain: 0.22 }, // G4
+    { midi: 72, start: 0.2, dur: 0.16, wave: 'sawtooth', gain: 0.24 }, // C5
+    { midi: 76, start: 0.4, dur: 0.16, wave: 'sawtooth', gain: 0.24 }, // E5
+    { midi: 79, start: 0.6, dur: 0.24, wave: 'sawtooth', gain: 0.26 }, // G5
+    { midi: 84, start: 0.86, dur: 0.9, wave: 'sawtooth', gain: 0.3 }, // C6 hold
+    { midi: 72, start: 0.86, dur: 0.9, wave: 'triangle', gain: 0.2 }, // C5
+    { midi: 76, start: 0.86, dur: 0.9, wave: 'triangle', gain: 0.2 }, // E5
+    { midi: 79, start: 0.86, dur: 0.9, wave: 'triangle', gain: 0.2 }, // G5
+    { midi: 88, start: 1.16, dur: 0.6, wave: 'triangle', gain: 0.18 }, // E6 sparkle
   ])
 
 // Pick the jingle for a final score (correct guesses out of ROUNDS = 9).

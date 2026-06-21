@@ -10,15 +10,11 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
-    "outDir": "dist",
-    "rootDir": "src",
-    "composite": true,
+    "noEmit": true,
+    "types": ["vite/client"],
     "paths": {
       "shared": ["../shared/src/index.ts"]
     }
   },
-  "include": ["src"],
-  "references": [
-    { "path": "../shared" }
-  ]
+  "include": ["src"]
 }

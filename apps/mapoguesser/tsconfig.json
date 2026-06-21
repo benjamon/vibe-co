@@ -12,8 +12,6 @@
     "jsx": "react-jsx"
   },
   "references": [
-    { "path": "./client" },
-    { "path": "./shared" },
-    { "path": "./server" }
+    { "path": "./shared" }
   ]
 }

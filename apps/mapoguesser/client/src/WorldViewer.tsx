@@ -947,50 +947,73 @@ export function WorldViewer() {
     let prevEnding = useGameStore.getState().endingTarget
     let prevMarkers = useGameStore.getState().markers
     let prevStatsSelection = useGameStore.getState().selectedStatsCountryId
+    let prevStatsMode = useGameStore.getState().statsMode
+    let prevGlobalGuesses = useGameStore.getState().globalGuesses
     let endingHoldTimeout: number | null = null
 
-    // Replace the stats-highlight dot layer with one dot per past guess at
-    // its stored lat/lon. Correct guesses (guess.id === target id) draw
-    // green; misses draw red. Entries from before lat/lon was stored just
-    // get skipped — they had no position to render. 'all' paints every guess
-    // across every target country at once.
-    const renderStatsDots = (countryId: number | 'all' | null): void => {
+    // Reverse-lookup a country name from its local integer ID.
+    const nameForId = (id: number): string | null => {
+      const ids = useGameStore.getState().countryIds
+      for (const k in ids) if (ids[k] === id) return k
+      return null
+    }
+
+    // Add one dot at a guess location. Correct guesses draw green, misses red.
+    const addStatsDot = (lat: number, lon: number, isCorrect: boolean): void => {
+      statsDots.entities.add({
+        position: Cartesian3.fromDegrees(lon, lat),
+        point: {
+          pixelSize: 9,
+          color: isCorrect
+            ? Color.fromCssColorString('#3fb84e')
+            : Color.fromCssColorString('#e64545'),
+          outlineColor: Color.fromCssColorString('rgba(0,0,0,0.7)'),
+          outlineWidth: 1.5,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          // Leave the depth test enabled (default) so the globe occludes dots
+          // on its far side — otherwise back-of-globe guesses bleed through.
+        },
+      })
+    }
+
+    // Replace the stats-highlight dot layer to match the current selection.
+    // In 'mine' mode dots come from the player's local guess history (keyed by
+    // the target's local ID); 'all' paints every local guess at once. In
+    // 'global' mode they come from the up-to-200 server guesses loaded for the
+    // selected country (global 'all' paints nothing — far too many to show).
+    const renderStatsDots = (): void => {
       statsDots.entities.removeAll()
-      if (countryId === null) return
-      const stats = useGameStore.getState().stats
+      const st = useGameStore.getState()
+      const sel = st.selectedStatsCountryId
+      if (sel === null) return
+
+      if (st.statsMode === 'global') {
+        if (sel === 'all') return
+        const name = nameForId(sel)
+        const gg = st.globalGuesses
+        if (!name || gg.country !== name) return
+        for (const d of gg.dots) addStatsDot(d.lat, d.lon, d.correct)
+        return
+      }
+
+      const stats = st.stats
       const targetIds =
-        countryId === 'all'
+        sel === 'all'
           ? Object.keys(stats).map(Number)
-          : stats[countryId]
-            ? [countryId]
+          : stats[sel]
+            ? [sel]
             : []
       for (const targetId of targetIds) {
         const entry = stats[targetId]
         if (!entry) continue
         for (const g of entry.guesses) {
           if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
-          const isCorrect = g.id === targetId
-          statsDots.entities.add({
-            position: Cartesian3.fromDegrees(g.lon, g.lat),
-            point: {
-              pixelSize: 9,
-              color: isCorrect
-                ? Color.fromCssColorString('#3fb84e')
-                : Color.fromCssColorString('#e64545'),
-              outlineColor: Color.fromCssColorString('rgba(0,0,0,0.7)'),
-              outlineWidth: 1.5,
-              heightReference: HeightReference.CLAMP_TO_GROUND,
-              // Leave the depth test enabled (default) so the globe occludes
-              // dots on its far side — otherwise, zoomed out for the "all"
-              // view, back-of-globe guesses bleed through the front.
-            },
-          })
+          addStatsDot(g.lat, g.lon, g.id === targetId)
         }
       }
     }
-    // Mount-time replay: if a country was selected via persisted state
-    // (it isn't today, but cheap to handle for future-proofing), draw it now.
-    renderStatsDots(prevStatsSelection)
+    // Mount-time replay in case a selection already exists.
+    renderStatsDots()
 
     // Replay any markers already in the store at mount time. This is the
     // resume path: a returning player with a saved match already has markers
@@ -1056,40 +1079,29 @@ export function WorldViewer() {
       }
       prevEnding = state.endingTarget
 
-      // Stats sidebar row selection: pan the camera over to the picked
-      // country, then redraw the dot layer once the cinematic completes.
-      // null = deselect, so just clear the dots without a fly-to.
-      if (state.selectedStatsCountryId !== prevStatsSelection) {
+      // Stats sidebar: repaint the dot layer when the selection, the mode, or
+      // the loaded global guesses change. A brand-new country selection also
+      // pans the camera; mode toggles and async guess arrivals just repaint in
+      // place (no fly-to).
+      const selChanged = state.selectedStatsCountryId !== prevStatsSelection
+      const modeChanged = state.statsMode !== prevStatsMode
+      const guessesChanged = state.globalGuesses !== prevGlobalGuesses
+      if (selChanged || modeChanged || guessesChanged) {
         const newId = state.selectedStatsCountryId
         prevStatsSelection = newId
-        if (newId === null) {
-          renderStatsDots(null)
-        } else if (newId === 'all') {
-          // Whole-history view: paint every guess at once. No fly-to — keep
-          // the current camera so the player sees the global spread.
-          renderStatsDots('all')
+        prevStatsMode = state.statsMode
+        prevGlobalGuesses = state.globalGuesses
+        if (selChanged && typeof newId === 'number') {
+          const name = nameForId(newId)
+          // Wipe the previous selection's dots before the pan so they don't sit
+          // on a country we're flying away from. flyToCountry sets
+          // `cinematic = true`, locking input until the animation finishes. The
+          // dots are repainted on arrival (global) or on done (mine).
+          statsDots.entities.removeAll()
+          if (name) flyToCountry(name, () => renderStatsDots())
+          else renderStatsDots()
         } else {
-          // Reverse-lookup the country name from the (small, ~200-entry) map.
-          let name: string | null = null
-          const ids = useGameStore.getState().countryIds
-          for (const k in ids) {
-            if (ids[k] === newId) {
-              name = k
-              break
-            }
-          }
-          // Wipe the previous selection's dots before the pan so they don't
-          // sit on a country we're flying away from. flyToCountry already
-          // sets `cinematic = true`, which locks pointer / wheel input until
-          // the animation finishes.
-          renderStatsDots(null)
-          if (name) {
-            flyToCountry(name, () => renderStatsDots(newId))
-          } else {
-            // No matching country — just paint whatever positioned guesses
-            // are stored under this ID at the current camera position.
-            renderStatsDots(newId)
-          }
+          renderStatsDots()
         }
       }
     })

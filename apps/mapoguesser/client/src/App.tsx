@@ -3,6 +3,12 @@ import { WorldViewer } from './WorldViewer'
 import { Confetti } from './Confetti'
 import { sfxEndJingle } from './sfx'
 import { useGameStore, ROUNDS, type AttemptResult } from './store'
+import {
+  connectStats,
+  subscribeStats,
+  subscribeCountryGuesses,
+  type CountryAgg,
+} from './stats'
 
 const overlayBase = {
   position: 'absolute',
@@ -119,6 +125,10 @@ export function App() {
   const stats = useGameStore((s) => s.stats)
   const selectedStatsCountryId = useGameStore((s) => s.selectedStatsCountryId)
   const selectStatsCountry = useGameStore((s) => s.selectStatsCountry)
+  const statsMode = useGameStore((s) => s.statsMode)
+  const setStatsMode = useGameStore((s) => s.setStatsMode)
+  const globalStats = useGameStore((s) => s.globalStats)
+  const myStats = useGameStore((s) => s.myStats)
   const ready = useGameStore((s) => s.countries.length > 0)
   const startGame = useGameStore((s) => s.startGame)
   const resetGame = useGameStore((s) => s.resetGame)
@@ -129,44 +139,69 @@ export function App() {
   const [statsOpen, setStatsOpen] = useState(false)
   const [showConfetti, setShowConfetti] = useState(false)
 
-  // Reverse lookup ID → name so the stats list can label its rows. Recompute
-  // only when the (grow-only) ID map changes, which is once per app load.
+  // Reverse lookup ID → name so we can fold the local guess history into the
+  // "mine" aggregate. Recompute only when the (grow-only) ID map changes.
   const idToName = useMemo(() => {
     const m: Record<number, string> = {}
     for (const [name, id] of Object.entries(countryIds)) m[id] = name
     return m
   }, [countryIds])
 
-  // Flatten the stats map into a sorted, render-ready array. Only countries
-  // that have been attempted at least once show up — an alphabetical wall of
-  // every country in the dataset would be mostly noise.
-  const statsRows = useMemo(() => {
-    const rows: { id: number; name: string; sum: number; code?: string }[] = []
+  // "Mine" aggregate keyed by country NAME: the server's per-user totals
+  // (retrieved by the local random id) merged with this device's local history.
+  // Local overlays the server when it holds at least as many samples, so the
+  // view never shows fewer guesses than the player has actually made here.
+  const mineAgg = useMemo(() => {
+    const out: Record<string, CountryAgg> = {}
+    for (const [name, a] of Object.entries(myStats)) {
+      out[name] = { correct: a.correct, total: a.total }
+    }
     for (const [idStr, s] of Object.entries(stats)) {
       const id = Number(idStr)
       const name = idToName[id]
       if (!name) continue
-      rows.push({ id, name, sum: s.score, code: countryCodes[name] })
+      let correct = 0
+      for (const g of s.guesses) if (g.id === id) correct += 1
+      const total = s.guesses.length
+      const prev = out[name]
+      if (!prev || total >= prev.total) out[name] = { correct, total }
+    }
+    return out
+  }, [myStats, stats, idToName])
+
+  // The dataset the sidebar is currently showing.
+  const activeAgg = statsMode === 'global' ? globalStats : mineAgg
+
+  // Flatten the active aggregate into a sorted, render-ready array. Only
+  // countries with at least one recorded guess appear — an alphabetical wall of
+  // every country in the dataset would be mostly noise. `sum` is the net score
+  // (correct − wrong); selection is keyed by the local country ID.
+  const statsRows = useMemo(() => {
+    const rows: { id: number; name: string; sum: number; code?: string }[] = []
+    for (const [name, a] of Object.entries(activeAgg)) {
+      const id = countryIds[name]
+      if (id === undefined) continue
+      rows.push({
+        id,
+        name,
+        sum: a.correct - (a.total - a.correct),
+        code: countryCodes[name],
+      })
     }
     rows.sort((a, b) => a.name.localeCompare(b.name))
     return rows
-  }, [stats, idToName, countryCodes])
+  }, [activeAgg, countryIds, countryCodes])
 
-  // Totals across every target, for the synthetic "All" row at the top of the
-  // list. A guess is correct when the country clicked matches the target it
-  // was recorded under.
+  // Totals across every country, for the synthetic "All" row at the top.
   const statsTotals = useMemo(() => {
     let correct = 0
     let total = 0
-    for (const [idStr, s] of Object.entries(stats)) {
-      const targetId = Number(idStr)
-      for (const g of s.guesses) {
-        total += 1
-        if (g.id === targetId) correct += 1
-      }
+    for (const a of Object.values(activeAgg)) {
+      correct += a.correct
+      total += a.total
     }
     return { correct, wrong: total - correct, total }
-  }, [stats])
+  }, [activeAgg])
 
   // Pair each resolved attempt with what the user actually clicked. Click
   // markers (kind 'correct' | 'wrong') are appended 1:1 with resolved attempts
@@ -187,6 +222,23 @@ export function App() {
     return useGameStore.subscribe((state) => {
       ;(window as any).__gameState = state
     })
+  }, [])
+
+  // Connect to SpacetimeDB and pipe its snapshots into the store: aggregate
+  // per-country stats (global + this user's), and the on-demand guess dots for
+  // a selected global country.
+  useEffect(() => {
+    connectStats()
+    const unsubStats = subscribeStats((snap) => {
+      useGameStore.getState().setServerStats(snap.global, snap.mine)
+    })
+    const unsubGuesses = subscribeCountryGuesses((country, dots) => {
+      useGameStore.getState().setGlobalGuesses(country, dots)
+    })
+    return () => {
+      unsubStats()
+      unsubGuesses()
+    }
   }, [])
 
   // Auto-start a match if the URL carries a ?seed=. Runs once countries have
@@ -525,7 +577,7 @@ export function App() {
             }}
           >
             <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
-              Total score per country
+              {statsMode === 'global' ? 'Global stats' : 'My stats'}
             </div>
             <button
               type="button"
@@ -540,6 +592,47 @@ export function App() {
             >
               Close
             </button>
+          </div>
+          {/* Segmented My / Global toggle. Switching wipes the current
+              selection (handled in setStatsMode) so dots from one dataset don't
+              linger when viewing the other. */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 0,
+              border: '1px solid rgba(255,255,255,0.25)',
+              borderRadius: 8,
+              overflow: 'hidden',
+            }}
+          >
+            {(['mine', 'global'] as const).map((mode) => {
+              const active = statsMode === mode
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    if (statsMode !== mode) setStatsMode(mode)
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '8px 0',
+                    fontSize: 14,
+                    fontWeight: 700,
+                    letterSpacing: 0.3,
+                    color: 'white',
+                    background: active
+                      ? 'rgba(60, 130, 220, 0.55)'
+                      : 'rgba(255,255,255,0.05)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {mode === 'mine' ? 'My stats' : 'Global stats'}
+                </button>
+              )
+            })}
           </div>
           <div
             style={{
@@ -560,7 +653,9 @@ export function App() {
                   fontSize: 14,
                 }}
               >
-                No guesses yet — play a round to start filling this in.
+                {statsMode === 'global'
+                  ? 'No global guesses yet — or still connecting.'
+                  : 'No guesses yet — play a round to start filling this in.'}
               </div>
             ) : (
               <>
