@@ -4,7 +4,8 @@ import { Confetti } from './Confetti'
 import { sfxEndJingle } from './sfx'
 import { useGameStore, ROUNDS, type AttemptResult } from './store'
 import {
-  connectStats,
+  fetchStats,
+  releaseStats,
   subscribeStats,
   subscribeCountryGuesses,
   type CountryAgg,
@@ -224,11 +225,11 @@ export function App() {
     })
   }, [])
 
-  // Connect to SpacetimeDB and pipe its snapshots into the store: aggregate
-  // per-country stats (global + this user's), and the on-demand guess dots for
-  // a selected global country.
+  // Pipe SpacetimeDB snapshots into the store: aggregate per-country stats
+  // (global + this user's) and the on-demand guess dots for a selected global
+  // country. The connection itself is opened lazily (on the first guess or when
+  // the stats panel opens), not here — visitors who only look hold nothing.
   useEffect(() => {
-    connectStats()
     const unsubStats = subscribeStats((snap) => {
       useGameStore.getState().setServerStats(snap.global, snap.mine)
     })
@@ -315,6 +316,16 @@ export function App() {
     // top of leftover correct/wrong markers from the previous round.
     resetGame()
     setStatsOpen(true)
+    // Pull a fresh one-time snapshot of the server aggregates. There's no live
+    // subscription; this is the only point the global/your stats are fetched.
+    fetchStats()
+  }
+  const handleCloseStats = () => {
+    // Drop the transient stats + per-country subscriptions, and clear the dot
+    // layer so stale highlights don't linger on the globe.
+    selectStatsCountry(null)
+    releaseStats()
+    setStatsOpen(false)
   }
 
   return (
@@ -581,13 +592,7 @@ export function App() {
             </div>
             <button
               type="button"
-              onClick={() => {
-                // Closing the panel also clears the dot layer — leaving stale
-                // highlights on the globe after the list is gone would be
-                // confusing with nothing visible to tie them back to.
-                selectStatsCountry(null)
-                setStatsOpen(false)
-              }}
+              onClick={handleCloseStats}
               style={{ ...menuButtonStyle, padding: '6px 14px', fontSize: 14 }}
             >
               Close

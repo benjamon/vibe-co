@@ -3,6 +3,7 @@ import { sfxCorrect, sfxWrong } from './sfx'
 import {
   recordGuess,
   selectGlobalCountryGuesses,
+  ALL_GUESSES,
   type CountryAgg,
   type GuessDot,
 } from './stats'
@@ -364,11 +365,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   selectedStatsCountryId: null,
   selectStatsCountry: (id) => {
     set({ selectedStatsCountryId: id })
-    // In global mode, picking a specific country opens a server subscription
-    // for its most-recent guesses so the globe can paint them. 'all' and the
-    // deselect case clear it; 'mine' mode paints from local history instead.
+    // In global mode, picking a country opens a server subscription for its
+    // most-recent guesses; 'all' opens one for the latest guesses across every
+    // country. Either way the globe paints what loads. 'mine' mode paints from
+    // local history instead, so the server subscription is cleared.
     const { statsMode, countryIds } = get()
-    if (statsMode === 'global' && typeof id === 'number') {
+    if (statsMode === 'global' && id === 'all') {
+      selectGlobalCountryGuesses(ALL_GUESSES)
+    } else if (statsMode === 'global' && typeof id === 'number') {
       let name: string | null = null
       for (const k in countryIds) {
         if (countryIds[k] === id) {

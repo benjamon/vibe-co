@@ -22,6 +22,7 @@ import {
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { useGameStore, type Marker } from './store'
+import { ALL_GUESSES } from './stats'
 
 // Cesium would otherwise reach Cesium ion for default assets; blank the token
 // so the only network calls are to our chosen tile provider.
@@ -988,9 +989,18 @@ export function WorldViewer() {
       if (sel === null) return
 
       if (st.statsMode === 'global') {
-        if (sel === 'all') return
-        const name = nameForId(sel)
         const gg = st.globalGuesses
+        // 'all' paints the most-recent guesses across every country; a specific
+        // row paints just that country's. In both cases gg.country must match
+        // what the store currently holds, so stale dots from a previous
+        // selection (loaded async) aren't shown against the new one.
+        if (sel === 'all') {
+          if (gg.country === ALL_GUESSES) {
+            for (const d of gg.dots) addStatsDot(d.lat, d.lon, d.correct)
+          }
+          return
+        }
+        const name = nameForId(sel)
         if (!name || gg.country !== name) return
         for (const d of gg.dots) addStatsDot(d.lat, d.lon, d.correct)
         return
