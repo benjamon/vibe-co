@@ -43,6 +43,10 @@ const COUNTRY_BORDERS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_boundary_lines_land.geojson'
 const COUNTRY_POLYGONS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson'
+// Capital cities (small 110m set, ~240 points) — used to place a country's flag
+// pin when its centroid falls outside its own borders.
+const CAPITALS_URL =
+  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_populated_places_simple.geojson'
 
 // Reveal animation duration when the player misses twice on the same target.
 const REVEAL_MS = 1200
@@ -232,12 +236,14 @@ export function WorldViewer() {
 
     // Flag-on-a-pole pin sprites. Composed on demand per (kind, code) because
     // flag images load asynchronously from flagcdn.com; cached so a re-render
-    // of the same marker is free. The pole colour carries the correctness
-    // signal (green correct / grey wrong / red reveal).
-    const PIN_BG: Record<Marker['kind'], string> = {
+    // of the same marker is free. The pole colour carries the meaning (green
+    // correct / grey wrong / red reveal / blue the stats-screen location pin).
+    type PinKind = Marker['kind'] | 'stats'
+    const PIN_BG: Record<PinKind, string> = {
       correct: '#3fb84e',
       wrong: '#9aa0a6',
       reveal: '#e64545',
+      stats: '#3d7bdb',
     }
     // Marker geometry. The pole is a thin vertical bar whose base touches the
     // clicked point; the flag flies off to the right from near its top.
@@ -252,7 +258,7 @@ export function WorldViewer() {
 
     const buildFlagPin = (
       code: string | undefined,
-      kind: Marker['kind'],
+      kind: PinKind,
     ): Promise<string> => {
       const key = `${kind}:${code ?? '_'}`
       const cached = flagPinCache.get(key)
@@ -327,14 +333,84 @@ export function WorldViewer() {
     // Country PIP/centroid index built from the raw GeoJSON. We don't render
     // the polygons (the hover highlight effect is gone), only use them for
     // hit-testing clicks and aiming the reveal animation.
+    type LatLonPt = { lat: number; lon: number }
     type CountryEntry = {
       name: string
       bbox: [number, number, number, number]
-      centroid: { lat: number; lon: number }
+      centroid: LatLonPt
       polygons: SubPolygon[]
       area: number
+      // Natural Earth's manually-placed label anchor (LABEL_X/Y) — usually
+      // inside the country; used as a flag-placement fallback.
+      label?: LatLonPt
+      // Normalised name variants, for matching this country to a capital city.
+      aliases: string[]
     }
     let countryEntries: CountryEntry[] | null = null
+
+    // Capital cities keyed by normalised country name. Loaded from CAPITALS_URL;
+    // empty until then (placement just falls back to centroid/label meanwhile).
+    const capitalByName = new Map<string, LatLonPt>()
+    const normName = (s: string): string =>
+      s.toLowerCase().replace(/[^a-z0-9]+/g, '')
+
+    // Is (lat, lon) inside any of the country's sub-polygons?
+    const insideCountry = (entry: CountryEntry, lat: number, lon: number) =>
+      entry.polygons.some((poly) => pointInSubPolygon(lon, lat, poly))
+
+    // Where to plant a country's flag. The mean-of-vertices centroid lands
+    // outside the borders for crescent/multi-island nations, so when that
+    // happens fall back to the capital (validated inside), then the NE label
+    // anchor, then the centroid as a last resort.
+    const flagPointFor = (entry: CountryEntry): LatLonPt => {
+      if (insideCountry(entry, entry.centroid.lat, entry.centroid.lon)) {
+        return entry.centroid
+      }
+      for (const alias of entry.aliases) {
+        const cap = capitalByName.get(alias)
+        if (cap && insideCountry(entry, cap.lat, cap.lon)) return cap
+      }
+      if (entry.label && insideCountry(entry, entry.label.lat, entry.label.lon)) {
+        return entry.label
+      }
+      return entry.centroid
+    }
+
+    fetch(CAPITALS_URL)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('capitals'))))
+      .then((geo: { features?: Array<Record<string, any>> }) => {
+        if (destroyed || viewer.isDestroyed()) return
+        for (const f of geo.features ?? []) {
+          const p = f.properties ?? {}
+          const isCapital =
+            p.adm0cap === 1 ||
+            p.ADM0CAP === 1 ||
+            String(p.featurecla ?? p.FEATURECLA ?? '')
+              .toLowerCase()
+              .includes('capital')
+          if (!isCapital) continue
+          const coords = f.geometry?.coordinates
+          if (!Array.isArray(coords) || coords.length < 2) continue
+          const lon = Number(coords[0])
+          const lat = Number(coords[1])
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
+          // Key by country name variants and, when present, the ISO-A2 code
+          // (the most reliable match — names vary in spelling/abbreviation).
+          const iso = p.iso_a2 ?? p.ISO_A2
+          const keys = [p.adm0name, p.ADM0NAME, p.sov0name, p.SOV0NAME]
+          if (typeof iso === 'string' && /^[A-Za-z]{2}$/.test(iso)) {
+            keys.push(`iso:${iso.toLowerCase()}`)
+          }
+          for (const key of keys) {
+            if (typeof key !== 'string') continue
+            const n = key.startsWith('iso:') ? key : normName(key)
+            if (n && !capitalByName.has(n)) capitalByName.set(n, { lat, lon })
+          }
+        }
+      })
+      .catch(() => {
+        // No capitals → flag placement falls back to label/centroid.
+      })
     // Min total polygon area (deg²) for a country to be eligible as a target.
     // Excludes city-states and pinprick island nations that are effectively
     // unclickable on the globe (Vatican, Monaco, Tuvalu, Nauru, …).
@@ -378,15 +454,44 @@ export function WorldViewer() {
             if (!name || !feature.geometry) continue
             const polygons = normalizeGeometry(feature.geometry)
             if (polygons.length === 0) continue
+            const props = feature.properties ?? {}
+            const labelX = Number(props.LABEL_X)
+            const labelY = Number(props.LABEL_Y)
+            const label =
+              Number.isFinite(labelX) && Number.isFinite(labelY)
+                ? { lat: labelY, lon: labelX }
+                : undefined
+            // Candidate keys to match against the capitals dataset: the ISO-A2
+            // code (most reliable) plus name variants.
+            const aliases = new Set<string>()
+            const iso = isoA2Of(feature.properties)
+            if (iso) {
+              codes[name] = iso
+              aliases.add(`iso:${iso}`)
+            }
+            for (const key of [
+              'NAME',
+              'ADMIN',
+              'NAME_LONG',
+              'SOVEREIGNT',
+              'FORMAL_EN',
+              'GEOUNIT',
+            ]) {
+              const v = props[key]
+              if (typeof v === 'string') {
+                const n = normName(v)
+                if (n) aliases.add(n)
+              }
+            }
             list.push({
               name,
               polygons,
               bbox: computeBBox(polygons),
               centroid: computeCentroid(polygons),
               area: computeArea(polygons),
+              label,
+              aliases: [...aliases],
             })
-            const iso = isoA2Of(feature.properties)
-            if (iso) codes[name] = iso
           }
           countryEntries = list
           useGameStore.getState().setCountryCodes(codes)
@@ -438,9 +543,17 @@ export function WorldViewer() {
     ssc.enableTilt = false
     ssc.enableLook = false
 
+    // On a portrait (tall) viewport the globe reads as small when fully zoomed
+    // out, so pull the furthest-out distance in by 40% — both the starting
+    // range and the zoom-out clamp. Landscape is unchanged.
+    const portrait = window.innerHeight > window.innerWidth
+    const zoomScale = portrait ? 0.6 : 1
+    const initialRange = INITIAL_RANGE * zoomScale
+    const maxRange = MAX_RANGE * zoomScale
+
     let heading = 0
     let pitch = 0
-    let range = INITIAL_RANGE
+    let range = initialRange
 
     // applyCamera writes the camera state from heading/pitch/range; updateCamera
     // additionally broadcasts heading to the store. The Newton solve below
@@ -612,6 +725,7 @@ export function WorldViewer() {
           centroid: { lat: 0, lon: 0 },
           polygons: [],
           area: 0,
+          aliases: [],
         })
         return
       }
@@ -860,7 +974,7 @@ export function WorldViewer() {
         if (!anchored) {
           // No anchor (drag started in space) or solve failed: fall back to
           // proportional drag, keeping the original sign convention.
-          const sensitivity = FALLBACK_SENSITIVITY * (range / INITIAL_RANGE)
+          const sensitivity = FALLBACK_SENSITIVITY * (range / initialRange)
           const dHeading = dx * sensitivity
           const dPitch = -dy * sensitivity
           heading = CesiumMath.zeroToTwoPi(heading + dHeading)
@@ -877,7 +991,7 @@ export function WorldViewer() {
           range = clamp(
             (range * pinchDistance) / newDist,
             MIN_RANGE,
-            MAX_RANGE,
+            maxRange,
           )
           updateCamera()
         }
@@ -938,7 +1052,7 @@ export function WorldViewer() {
       if (cinematic) return
       stopMomentum()
       const factor = Math.exp(e.deltaY * WHEEL_ZOOM_RATE)
-      range = clamp(range * factor, MIN_RANGE, MAX_RANGE)
+      range = clamp(range * factor, MIN_RANGE, maxRange)
       updateCamera()
       refreshAnchorIfActive(e.clientX, e.clientY)
     }
@@ -977,16 +1091,61 @@ export function WorldViewer() {
       })
     }
 
+    // Drop a blue flag pin on the selected country to confirm where it is —
+    // alongside the guess dots, not replacing them. Async (flag image load), so
+    // guarded by statsGen against a selection that changed before it resolved.
+    let statsGen = 0
+    const addStatsFlagPin = (name: string, gen: number): void => {
+      const entry = countryEntries?.find((c) => c.name === name)
+      if (!entry) return
+      const pt = flagPointFor(entry)
+      const code = useGameStore.getState().countryCodes[name]
+      buildFlagPin(code, 'stats').then((image) => {
+        if (gen !== statsGen || destroyed || viewer.isDestroyed()) return
+        if (!image) return
+        statsDots.entities.add({
+          position: Cartesian3.fromDegrees(pt.lon, pt.lat),
+          billboard: {
+            image,
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            horizontalOrigin: HorizontalOrigin.LEFT,
+            pixelOffset: new Cartesian2(-POLE_W / 2, 0),
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+          },
+          label: {
+            text: name,
+            font: 'bold 15px sans-serif',
+            fillColor: Color.WHITE,
+            outlineColor: Color.BLACK,
+            outlineWidth: 3,
+            style: LabelStyle.FILL_AND_OUTLINE,
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            horizontalOrigin: HorizontalOrigin.CENTER,
+            pixelOffset: new Cartesian2(POLE_W / 2 + FLAG_W / 2, -(POLE_H + 2)),
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+          },
+        })
+      })
+    }
+
     // Replace the stats-highlight dot layer to match the current selection.
     // In 'mine' mode dots come from the player's local guess history (keyed by
     // the target's local ID); 'all' paints every local guess at once. In
     // 'global' mode they come from the up-to-200 server guesses loaded for the
     // selected country (global 'all' paints nothing — far too many to show).
+    // A specific country (either mode) also gets a flag pin marking its location.
     const renderStatsDots = (): void => {
+      statsGen++
+      const gen = statsGen
       statsDots.entities.removeAll()
       const st = useGameStore.getState()
       const sel = st.selectedStatsCountryId
       if (sel === null) return
+
+      if (typeof sel === 'number') {
+        const pinName = nameForId(sel)
+        if (pinName) addStatsFlagPin(pinName, gen)
+      }
 
       if (st.statsMode === 'global') {
         const gg = st.globalGuesses
@@ -1055,9 +1214,10 @@ export function WorldViewer() {
         const name = state.revealTarget
         flyToCountry(name, (entry) => {
           if (entry.polygons.length > 0) {
+            const pt = flagPointFor(entry)
             useGameStore.getState().addMarker({
-              lat: entry.centroid.lat,
-              lon: entry.centroid.lon,
+              lat: pt.lat,
+              lon: pt.lon,
               kind: 'reveal',
               label: name,
             })

@@ -147,6 +147,7 @@ export function App() {
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
+  const [statsSort, setStatsSort] = useState<'name' | 'sum'>('name')
   const [showConfetti, setShowConfetti] = useState(false)
   const [confettiIntensity, setConfettiIntensity] = useState<'small' | 'full'>(
     'full',
@@ -202,9 +203,13 @@ export function App() {
         code: countryCodes[name],
       })
     }
-    rows.sort((a, b) => a.name.localeCompare(b.name))
+    rows.sort((a, b) =>
+      statsSort === 'sum'
+        ? b.sum - a.sum || a.name.localeCompare(b.name) // best net score first
+        : a.name.localeCompare(b.name),
+    )
     return rows
-  }, [activeAgg, countryIds, countryCodes])
+  }, [activeAgg, countryIds, countryCodes, statsSort])
 
   // Totals across every country, for the synthetic "All" row at the top.
   const statsTotals = useMemo(() => {
@@ -697,46 +702,98 @@ export function App() {
               Close
             </button>
           </div>
-          {/* Segmented My / Global toggle. Switching wipes the current
-              selection (handled in setStatsMode) so dots from one dataset don't
-              linger when viewing the other. */}
-          <div
-            style={{
-              display: 'flex',
-              gap: 0,
-              border: '1px solid rgba(255,255,255,0.25)',
-              borderRadius: 8,
-              overflow: 'hidden',
-            }}
-          >
-            {(['mine', 'global'] as const).map((mode) => {
-              const active = statsMode === mode
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => {
-                    if (statsMode !== mode) setStatsMode(mode)
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: '8px 0',
-                    fontSize: 14,
-                    fontWeight: 700,
-                    letterSpacing: 0.3,
-                    color: 'white',
-                    background: active
-                      ? 'rgba(60, 130, 220, 0.55)'
-                      : 'rgba(255,255,255,0.05)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                  }}
+          {/* Segmented My / Global toggle, with a single sort-toggle icon to its
+              right. Switching mode wipes the current selection (handled in
+              setStatsMode) so dots from one dataset don't linger. */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+            <div
+              style={{
+                display: 'flex',
+                flex: 1,
+                gap: 0,
+                border: '1px solid rgba(255,255,255,0.25)',
+                borderRadius: 8,
+                overflow: 'hidden',
+              }}
+            >
+              {(['mine', 'global'] as const).map((mode) => {
+                const active = statsMode === mode
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      if (statsMode !== mode) setStatsMode(mode)
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '8px 0',
+                      fontSize: 14,
+                      fontWeight: 700,
+                      letterSpacing: 0.3,
+                      color: 'white',
+                      background: active
+                        ? 'rgba(60, 130, 220, 0.55)'
+                        : 'rgba(255,255,255,0.05)',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {mode === 'mine' ? 'My stats' : 'Global stats'}
+                  </button>
+                )
+              })}
+            </div>
+            {/* Sort toggle: shows "AZ" when sorting by name, a funnel when
+                sorting by net hit−miss sum. Tapping flips between them. */}
+            <button
+              type="button"
+              aria-label={
+                statsSort === 'name'
+                  ? 'Sorted by name — tap to sort by hit − miss'
+                  : 'Sorted by hit − miss — tap to sort by name'
+              }
+              title={
+                statsSort === 'name' ? 'Sort by hit − miss' : 'Sort by name'
+              }
+              onClick={() =>
+                setStatsSort((s) => (s === 'name' ? 'sum' : 'name'))
+              }
+              style={{
+                width: 44,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'white',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.25)',
+                borderRadius: 8,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                fontSize: 14,
+                fontWeight: 800,
+                letterSpacing: 0.5,
+              }}
+            >
+              {statsSort === 'name' ? (
+                'AZ'
+              ) : (
+                <svg
+                  width="17"
+                  height="17"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
                 >
-                  {mode === 'mine' ? 'My stats' : 'Global stats'}
-                </button>
-              )
-            })}
+                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                </svg>
+              )}
+            </button>
           </div>
           <div
             style={{
