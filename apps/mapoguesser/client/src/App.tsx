@@ -60,16 +60,20 @@ const FlagIcon = ({
 const Checkbox = ({
   result,
   code,
+  count,
 }: {
   result: AttemptResult
   code: string | undefined
+  // How many boxes share the row — drives the responsive shrink so they all fit
+  // across a narrow viewport even when misses push the count above 9.
+  count: number
 }) => (
   <div
     style={{
-      // 40px on desktop, but shrink to fit 9 boxes (+ 8×4px gaps) across the
+      // 40px on desktop, but shrink to fit `count` boxes (+ 4px gaps) across the
       // viewport on a narrow portrait phone. aspectRatio keeps the 40:32 shape
       // as the width shrinks; the flag inside scales with it.
-      width: 'min(40px, calc((96vw - 32px) / 9))',
+      width: `min(40px, calc((96vw - ${(count - 1) * 4}px) / ${count}))`,
       aspectRatio: '40 / 32',
       boxSizing: 'border-box',
       flex: 'none',
@@ -213,17 +217,34 @@ export function App() {
     return { correct, wrong: total - correct, total }
   }, [activeAgg])
 
-  // Pair each resolved attempt with what the user actually clicked. Click
-  // markers (kind 'correct' | 'wrong') are appended 1:1 with resolved attempts
-  // in chronological order; reveal markers are interleaved separately and must
-  // be filtered out. We need this — not targets[i] — because a wrong guess
-  // should show the flag of the country the player picked, not the answer.
-  const clickMarkers = markers.filter((m) => m.kind !== 'reveal')
-  let clickCursor = 0
-  const guessByAttempt = attempts.map((a) => {
-    if (a === 'pending') return null
-    return clickMarkers[clickCursor++]?.label ?? null
-  })
+  // The per-guess log and the click markers grow together (one of each per
+  // click), so they pair 1:1 in order — guess i was the country of click marker
+  // i. Reveal markers are interleaved separately and filtered out. We want the
+  // player's pick (so a missed box shows the wrong flag), not the answer.
+  const clickMarkers = useMemo(
+    () => markers.filter((m) => m.kind !== 'reveal'),
+    [markers],
+  )
+
+  // The HUD shows a fixed ROUNDS boxes — the player's guess budget. Each guess
+  // made fills a box (flagged by what was clicked); unused guesses are pending.
+  // A missed-twice country leaves two 'wrong' boxes, eating into the budget.
+  const guessBoxes = useMemo(() => {
+    const boxes: { result: AttemptResult; code: string | undefined }[] = []
+    for (let i = 0; i < ROUNDS; i++) {
+      if (i < attempts.length) {
+        boxes.push({
+          result: attempts[i],
+          code: clickMarkers[i]
+            ? countryCodes[clickMarkers[i].label]
+            : undefined,
+        })
+      } else {
+        boxes.push({ result: 'pending', code: undefined })
+      }
+    }
+    return boxes
+  }, [attempts, clickMarkers, countryCodes])
 
   const [shareLabel, setShareLabel] = useState<'idle' | 'copied'>('idle')
 
@@ -467,16 +488,14 @@ export function App() {
           }}
         >
           <div style={{ display: 'flex', gap: 4 }}>
-            {attempts.map((a, i) => {
-              const g = guessByAttempt[i]
-              return (
-                <Checkbox
-                  key={i}
-                  result={a}
-                  code={g ? countryCodes[g] : undefined}
-                />
-              )
-            })}
+            {guessBoxes.map((b, i) => (
+              <Checkbox
+                key={i}
+                result={b.result}
+                code={b.code}
+                count={guessBoxes.length}
+              />
+            ))}
           </div>
           <div
             style={{

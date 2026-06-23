@@ -90,6 +90,73 @@ describe('GameStore', () => {
     expect(useGameStore.getState().markers).toEqual(beforeReload.markers)
   })
 
+  it('serves all 9 countries in order on a flawless run', () => {
+    useGameStore.getState().startGame('perfect-seed')
+    const targets = useGameStore.getState().targets
+    expect(targets).toHaveLength(ROUNDS)
+
+    const served: string[] = []
+    for (let i = 0; i < ROUNDS; i++) {
+      const target = useGameStore.getState().target!
+      served.push(target)
+      useGameStore.getState().handleGlobeClick(target)
+    }
+    expect(served).toEqual(targets)
+    expect(useGameStore.getState().attempts).toHaveLength(ROUNDS)
+    expect(
+      useGameStore.getState().attempts.filter((a) => a === 'correct'),
+    ).toHaveLength(ROUNDS)
+  })
+
+  it('caps the match at 9 guesses — a miss costs a later country', () => {
+    useGameStore.getState().startGame('cap-seed')
+    const targets = useGameStore.getState().targets
+    const served: string[] = []
+
+    // Burn one extra guess by missing the first country once, then correct it.
+    served.push(useGameStore.getState().target!) // targets[0]
+    const wrong = targets.find((t) => t !== targets[0])!
+    useGameStore.getState().handleGlobeClick(wrong) // guess 1: miss, same target
+    expect(useGameStore.getState().target).toBe(targets[0])
+    useGameStore.getState().handleGlobeClick(targets[0]) // guess 2: correct
+
+    // Spend the rest of the 9-guess budget guessing correctly.
+    while (useGameStore.getState().attempts.length < ROUNDS) {
+      const target = useGameStore.getState().target!
+      served.push(target)
+      useGameStore.getState().handleGlobeClick(target)
+    }
+
+    // Exactly ROUNDS guesses were used, and the single miss means the last
+    // country in the seed was never reached.
+    expect(useGameStore.getState().attempts).toHaveLength(ROUNDS)
+    expect(served).not.toContain(targets[ROUNDS - 1])
+    expect(useGameStore.getState().targetIndex).toBe(ROUNDS - 1)
+  })
+
+  it('advances one target after two misses and logs both guesses', () => {
+    useGameStore.getState().startGame('reveal-seed')
+    const targets = useGameStore.getState().targets
+    const first = useGameStore.getState().target
+    expect(first).toBe(targets[0])
+    const wrong = targets.find((t) => t !== first)!
+
+    useGameStore.getState().handleGlobeClick(wrong) // miss 1 → same target
+    expect(useGameStore.getState().target).toBe(first)
+    expect(useGameStore.getState().attempts).toEqual(['wrong'])
+    expect(useGameStore.getState().targetIndex).toBe(0)
+
+    useGameStore.getState().handleGlobeClick(wrong) // miss 2 → reveal + advance
+    expect(useGameStore.getState().revealTarget).toBe(first)
+    expect(useGameStore.getState().target).toBe(targets[1])
+    // Both misses occupy a slot; the sequence advanced by exactly one.
+    expect(useGameStore.getState().attempts).toEqual(['wrong', 'wrong'])
+    expect(useGameStore.getState().targetIndex).toBe(1)
+
+    useGameStore.getState().clearReveal()
+    expect(useGameStore.getState().target).toBe(targets[1])
+  })
+
   it('increments the perfect-game streak on a flawless 9/9 finish', () => {
     useGameStore.setState({
       perfectStreak: 2,
@@ -103,11 +170,13 @@ describe('GameStore', () => {
   it('resets the perfect-game streak when a match ends with a miss', () => {
     useGameStore.setState({
       perfectStreak: 4,
-      attempts: Array.from({ length: ROUNDS }, (_, i) =>
-        i === 0 ? 'wrong' : 'correct',
-      ) as AttemptResult[],
+      // A full 9-guess budget spent, with a miss in it → not perfect.
+      attempts: Array.from(
+        { length: ROUNDS },
+        (_, i) => (i === 0 ? 'wrong' : 'correct') as AttemptResult,
+      ),
     })
-    // A reveal that resolves the final round finishes the match.
+    // The last guess is spent, so the reveal ends the match.
     useGameStore.getState().clearReveal()
     expect(useGameStore.getState().phase).toBe('finished')
     expect(useGameStore.getState().perfectStreak).toBe(0)
@@ -126,8 +195,7 @@ describe('GameStore', () => {
     useGameStore.getState().startGame('second-seed')
     expect(useGameStore.getState().seed).toBe('second-seed')
     expect(useGameStore.getState().markers).toEqual([])
-    expect(
-      useGameStore.getState().attempts.every((a) => a === 'pending'),
-    ).toBe(true)
+    expect(useGameStore.getState().attempts).toEqual([])
+    expect(useGameStore.getState().targetIndex).toBe(0)
   })
 })

@@ -60,7 +60,11 @@ export interface CountryStats {
 
 interface SavedMatch {
   seed: string
+  // Per-guess log (one entry per click), NOT one per country. See GameState.
   attempts: AttemptResult[]
+  // How far through the 9-country sequence we are (advances on a correct guess
+  // or the second consecutive miss). Drives which country is served.
+  targetIndex: number
   consecutiveWrong: number
   markers: Marker[]
 }
@@ -71,6 +75,7 @@ const isSavedMatch = (v: unknown): v is SavedMatch => {
   return (
     typeof o.seed === 'string' &&
     Array.isArray(o.attempts) &&
+    typeof o.targetIndex === 'number' &&
     typeof o.consecutiveWrong === 'number' &&
     Array.isArray(o.markers)
   )
@@ -186,17 +191,14 @@ const loadPerfectStreak = (): number => {
   }
 }
 
-// Given a finished match's attempts, return the next perfect-game streak:
-// +1 on a flawless 9/9, reset to 0 on any miss. Returns the current streak
-// unchanged if the match isn't fully resolved (defensive; callers only invoke
-// this on completion).
+// Given a finished match's per-guess log, return the next perfect-game streak:
+// +1 on a flawless run, reset to 0 otherwise. A perfect run is exactly ROUNDS
+// guesses that are all correct — any miss adds an extra 'wrong' entry, pushing
+// the length past ROUNDS, so the equality check rules it out.
 const nextPerfectStreak = (
   attempts: AttemptResult[],
   current: number,
 ): number => {
-  if (attempts.length === 0 || attempts.some((a) => a === 'pending')) {
-    return current
-  }
   const correct = attempts.filter((a) => a === 'correct').length
   return correct === ROUNDS && attempts.length === ROUNDS ? current + 1 : 0
 }
@@ -267,9 +269,22 @@ interface GameState {
   // Match seed (base36, 6 chars). Drives the deterministic target draw and is
   // mirrored to the URL so a link reproduces the same match.
   seed: string | null
-  // The full draw of ROUNDS unique countries for this match, in order.
+  // The full draw of ROUNDS unique countries for this match, in order. This is
+  // the source of truth for what's served next — independent of the guess log.
   targets: string[]
+  // Pointer into `targets`: the index of the country currently being asked.
+  // Advances by one on a correct guess or the second consecutive miss, so each
+  // country is served at most once, in order. Because the match is capped at
+  // ROUNDS *guesses* (not countries), a miss spends a guess without reaching a
+  // later country — so targetIndex can finish below ROUNDS.
+  targetIndex: number
   target: string | null
+  // Per-GUESS result log (one entry per click, in order) — the player's fixed
+  // budget is ROUNDS guesses total, so this never exceeds ROUNDS and the match
+  // ends when it fills. A country missed twice contributes two 'wrong' entries;
+  // a country guessed right first try contributes one 'correct'. Drives the HUD
+  // flag boxes (which pad to ROUNDS with pending boxes for unused guesses); it
+  // never contains 'pending'.
   attempts: AttemptResult[]
   // Markers placed on the globe. Owned by the store (rather than the viewer's
   // Cesium data source) so we can persist them and replay them on resume.
@@ -352,18 +367,10 @@ export const generateSeed = (): string =>
     .toString(36)
     .padStart(6, '0')
 
-const emptyAttempts = (): AttemptResult[] =>
-  Array.from({ length: ROUNDS }, () => 'pending')
-
-// Index into the precomputed targets list based on how many attempts have
-// resolved. Returns null past the end (final round has no follow-up).
-const targetAfter = (
-  targets: string[],
-  attempts: AttemptResult[],
-): string | null => {
-  const resolved = attempts.filter((a) => a !== 'pending').length
-  return targets[resolved] ?? null
-}
+// The country served for a given position in the pre-drawn sequence, or null
+// once the sequence is exhausted (game over).
+const targetAt = (targets: string[], index: number): string | null =>
+  targets[index] ?? null
 
 export const useGameStore = create<GameState>((set, get) => ({
   heading: 0,
@@ -445,6 +452,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   phase: 'idle',
   seed: null,
   targets: [],
+  targetIndex: 0,
   target: null,
   attempts: [],
   markers: [],
@@ -463,20 +471,19 @@ export const useGameStore = create<GameState>((set, get) => ({
     // seed (Play Again, or a friend's URL) starts fresh — the persistence
     // subscriber will overwrite the save below.
     const saved = loadSave()
-    const restore =
-      saved && saved.seed === matchSeed && saved.attempts.length === ROUNDS
-        ? saved
-        : null
-    const attempts = restore?.attempts ?? emptyAttempts()
+    const restore = saved && saved.seed === matchSeed ? saved : null
+    const attempts = restore?.attempts ?? []
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
-    const finished = attempts.every((a) => a !== 'pending')
+    const targetIndex = restore?.targetIndex ?? 0
+    const finished = targetIndex >= ROUNDS
 
     set({
       phase: finished ? 'finished' : 'playing',
       seed: matchSeed,
       targets,
-      target: finished ? null : targetAfter(targets, attempts),
+      targetIndex,
+      target: finished ? null : targetAt(targets, targetIndex),
       attempts,
       markers,
       country: null,
@@ -491,6 +498,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       phase: 'idle',
       seed: null,
       targets: [],
+      targetIndex: 0,
       target: null,
       attempts: [],
       markers: [],
@@ -502,9 +510,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   clearReveal: () =>
     set((state) => {
-      // A reveal that resolves the final round ends the match (with a miss, so
-      // the streak resets). Mid-game reveals leave phase/streak untouched.
-      const finished = state.attempts.every((a) => a !== 'pending')
+      // A reveal that spends the last guess ends the match (with a miss, so the
+      // streak resets). Mid-game reveals leave phase/streak untouched.
+      const finished = state.attempts.length >= ROUNDS
       return {
         revealTarget: null,
         phase: finished ? 'finished' : state.phase,
@@ -536,8 +544,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     )
       return
 
-    const idx = s.attempts.findIndex((a) => a === 'pending')
-    if (idx === -1) return
+    // No active country (sequence exhausted) → nothing to guess against.
+    if (s.target === null || s.targetIndex >= ROUNDS) return
 
     // Record this guess against the active target in the persistent stats
     // before we mutate any game state. Skipped if either name lacks an ID
@@ -570,46 +578,57 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     const correct = clicked === s.target
-    const next = [...s.attempts]
-    next[idx] = correct ? 'correct' : 'wrong'
 
     // Audible feedback for the placement, before any state transition.
     if (correct) sfxCorrect()
     else sfxWrong()
 
-    const finished = next.every((a) => a !== 'pending')
+    // The player has a fixed budget of ROUNDS guesses for the whole match. Each
+    // click consumes one (logged here), and the match ends once all are spent —
+    // so a miss costs a guess that would otherwise have reached a later country.
+    // The country pointer is separate: it only advances on a correct guess or
+    // the second consecutive miss, and a miss never adds a guess to the budget.
+    const attempts: AttemptResult[] = [
+      ...s.attempts,
+      correct ? 'correct' : 'wrong',
+    ]
+    const finished = attempts.length >= ROUNDS
 
     if (correct) {
-      // On the final round, hand the camera to the viewer for a celebratory
-      // pan. Phase stays 'playing' until finishGame() fires after the hold.
+      const targetIndex = s.targetIndex + 1
+      // On the final guess, hand the camera to the viewer for a celebratory pan.
+      // Phase stays 'playing' until finishGame() fires after the hold.
       set({
-        attempts: next,
+        attempts,
+        targetIndex,
         consecutiveWrong: 0,
-        target: finished ? null : targetAfter(s.targets, next),
+        target: finished ? null : targetAt(s.targets, targetIndex),
         endingTarget: finished ? clicked : null,
       })
       return
     }
 
     const newWrong = s.consecutiveWrong + 1
-    // Always reveal on the final round so the player sees where they missed,
-    // not just the score screen. Phase stays 'playing' through the reveal hold;
-    // clearReveal flips to 'finished' once attempts are full.
-    if (newWrong >= WRONG_GUESSES_BEFORE_REVEAL || finished) {
-      set({
-        attempts: next,
-        consecutiveWrong: 0,
-        revealTarget: s.target,
-        target: finished ? null : targetAfter(s.targets, next),
-        phase: 'playing',
-      })
+    if (newWrong < WRONG_GUESSES_BEFORE_REVEAL && !finished) {
+      // Still have a guess left on this country (and in the match) — log the
+      // miss but keep the same target so the next click retries it.
+      set({ attempts, consecutiveWrong: newWrong, target: s.target })
       return
     }
 
+    // Reveal the answer: either this is the second miss on the country, or the
+    // guess budget just ran out mid-country. Advance the pointer only on a true
+    // second miss. Phase stays 'playing' through the reveal hold; clearReveal
+    // flips to 'finished' once the guess budget is spent.
+    const doubleMiss = newWrong >= WRONG_GUESSES_BEFORE_REVEAL
+    const targetIndex = doubleMiss ? s.targetIndex + 1 : s.targetIndex
     set({
-      attempts: next,
-      consecutiveWrong: newWrong,
-      target: s.target,
+      attempts,
+      targetIndex,
+      consecutiveWrong: 0,
+      revealTarget: s.target,
+      target: finished ? null : targetAt(s.targets, targetIndex),
+      phase: 'playing',
     })
   },
 
@@ -625,6 +644,7 @@ useGameStore.subscribe((state, prev) => {
   if (
     state.seed === prev.seed &&
     state.attempts === prev.attempts &&
+    state.targetIndex === prev.targetIndex &&
     state.markers === prev.markers &&
     state.consecutiveWrong === prev.consecutiveWrong
   )
@@ -632,6 +652,7 @@ useGameStore.subscribe((state, prev) => {
   writeSave({
     seed: state.seed,
     attempts: state.attempts,
+    targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,
   })
