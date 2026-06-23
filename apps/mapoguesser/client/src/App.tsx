@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { WorldViewer } from './WorldViewer'
 import { Confetti } from './Confetti'
-import { sfxEndJingle } from './sfx'
+import { Fireworks } from './Fireworks'
+import { sfxEndJingle, installAudioUnlock } from './sfx'
 import { useGameStore, ROUNDS, type AttemptResult } from './store'
 import {
   fetchStats,
@@ -65,8 +66,13 @@ const Checkbox = ({
 }) => (
   <div
     style={{
-      width: 40,
-      height: 32,
+      // 40px on desktop, but shrink to fit 9 boxes (+ 8×4px gaps) across the
+      // viewport on a narrow portrait phone. aspectRatio keeps the 40:32 shape
+      // as the width shrinks; the flag inside scales with it.
+      width: 'min(40px, calc((96vw - 32px) / 9))',
+      aspectRatio: '40 / 32',
+      boxSizing: 'border-box',
+      flex: 'none',
       border: '2px solid rgba(255,255,255,0.9)',
       borderRadius: 6,
       display: 'flex',
@@ -81,9 +87,7 @@ const Checkbox = ({
       <img
         src={`https://flagcdn.com/w80/${code}.png`}
         alt=""
-        width={28}
-        height={21}
-        style={{ display: 'block', borderRadius: 2 }}
+        style={{ display: 'block', width: '70%', height: 'auto', borderRadius: 2 }}
       />
     )}
   </div>
@@ -135,10 +139,15 @@ export function App() {
   const resetGame = useGameStore((s) => s.resetGame)
   const guess = useGameStore((s) => s.country)
   const seed = useGameStore((s) => s.seed)
+  const perfectStreak = useGameStore((s) => s.perfectStreak)
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
   const [showConfetti, setShowConfetti] = useState(false)
+  const [confettiIntensity, setConfettiIntensity] = useState<'small' | 'full'>(
+    'full',
+  )
+  const [showFireworks, setShowFireworks] = useState(false)
 
   // Reverse lookup ID → name so we can fold the local guess history into the
   // "mine" aggregate. Recompute only when the (grow-only) ID map changes.
@@ -263,18 +272,36 @@ export function App() {
 
   const correctCount = attempts.filter((a) => a === 'correct').length
 
-  // When a match wraps up, play the score-appropriate jingle and — only on a
-  // flawless 9/9 — let the confetti fly. Keyed on `phase` so it fires once per
-  // transition into 'finished'.
+  // When a match wraps up, play the score-appropriate jingle and fire the
+  // matching visual celebration. Keyed on `phase` so it runs once per
+  // transition into 'finished'. Tiers:
+  //   7/9 → small confetti
+  //   8/9 → full confetti
+  //   9/9 → full confetti + fireworks
   useEffect(() => {
     if (phase !== 'finished') {
       setShowConfetti(false)
+      setShowFireworks(false)
       return
     }
     sfxEndJingle(correctCount)
-    if (correctCount >= ROUNDS) setShowConfetti(true)
+    if (correctCount >= ROUNDS) {
+      setConfettiIntensity('full')
+      setShowConfetti(true)
+      setShowFireworks(true)
+    } else if (correctCount === ROUNDS - 1) {
+      setConfettiIntensity('full')
+      setShowConfetti(true)
+    } else if (correctCount === ROUNDS - 2) {
+      setConfettiIntensity('small')
+      setShowConfetti(true)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
+
+  // Prime Web Audio on the first user interaction so end-game sounds reliably
+  // play on iOS/Safari (which keeps the audio context suspended until then).
+  useEffect(() => installAudioUnlock(), [])
 
   const handleShareSeed = async () => {
     if (!seed) return
@@ -300,18 +327,24 @@ export function App() {
     setMenuOpen(false)
     startGame()
   }
-  const handleMainMenu = () => {
-    setMenuOpen(false)
-    resetGame()
-  }
-  const handleOpenStats = () => {
-    // Strip ?seed= first so the auto-start effect doesn't immediately
-    // re-launch the same match once resetGame() flips us back to 'idle'.
+  // Drop ?seed= from the URL so the auto-start effect doesn't immediately
+  // re-launch the just-ended match the moment resetGame() flips us to 'idle'.
+  const clearSeedFromUrl = () => {
     const url = new URL(window.location.href)
     if (url.searchParams.has('seed')) {
       url.searchParams.delete('seed')
       window.history.replaceState(null, '', url.toString())
     }
+  }
+  const handleMainMenu = () => {
+    setMenuOpen(false)
+    // Back to the unseeded URL + the idle main-menu screen. Without clearing the
+    // seed, the auto-start effect would just replay the same match.
+    clearSeedFromUrl()
+    resetGame()
+  }
+  const handleOpenStats = () => {
+    clearSeedFromUrl()
     // Wipe the last game's pins/labels so the stats dots aren't drawn on
     // top of leftover correct/wrong markers from the previous round.
     resetGame()
@@ -332,14 +365,20 @@ export function App() {
     <>
       <WorldViewer />
 
-      {showConfetti && <Confetti onDone={() => setShowConfetti(false)} />}
+      {showConfetti && (
+        <Confetti
+          intensity={confettiIntensity}
+          onDone={() => setShowConfetti(false)}
+        />
+      )}
+      {showFireworks && <Fireworks onDone={() => setShowFireworks(false)} />}
 
       {phase !== 'idle' && (
         <div
           style={{
             position: 'absolute',
-            top: 16,
-            left: 16,
+            top: 8,
+            left: 8,
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'flex-start',
@@ -358,15 +397,17 @@ export function App() {
               alignItems: 'center',
               justifyContent: 'center',
               padding: 0,
-              fontSize: 22,
+              fontSize: 26,
               fontWeight: 700,
               color: 'white',
-              background: 'rgba(20, 60, 110, 0.85)',
-              border: '2px solid rgba(255,255,255,0.85)',
+              // Clear, borderless toggle — just the glyph over the globe, with a
+              // shadow so it stays legible against bright map tiles.
+              background: 'transparent',
+              border: 'none',
               borderRadius: 8,
               cursor: 'pointer',
               fontFamily: 'system-ui, sans-serif',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+              textShadow: '0 1px 4px rgba(0,0,0,0.9)',
               lineHeight: 1,
             }}
           >
@@ -394,6 +435,17 @@ export function App() {
               >
                 New Game
               </button>
+              {seed && (
+                <button
+                  type="button"
+                  // Don't close the menu — keep it open so the "Copied!"
+                  // confirmation is visible after a clipboard copy.
+                  onClick={handleShareSeed}
+                  style={menuButtonStyle}
+                >
+                  {shareLabel === 'copied' ? 'Copied!' : 'Share Seed'}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -403,7 +455,9 @@ export function App() {
         <div
           style={{
             ...overlayBase,
-            top: 16,
+            // Sit below the 44px hamburger (top:16 → bottom:60) so the centred
+            // flag boxes never overlap it on narrow screens.
+            top: 64,
             left: '50%',
             transform: 'translateX(-50%)',
             display: 'flex',
@@ -412,7 +466,7 @@ export function App() {
             gap: 12,
           }}
         >
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 4 }}>
             {attempts.map((a, i) => {
               const g = guessByAttempt[i]
               return (
@@ -447,9 +501,33 @@ export function App() {
                 <span>{target}</span>
               </>
             ) : phase === 'finished' ? (
-              <span>
-                Score: {correctCount} / {ROUNDS}
-              </span>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <span>
+                  Score: {correctCount} / {ROUNDS}
+                </span>
+                {correctCount >= ROUNDS && (
+                  <span
+                    style={{
+                      fontSize: 19,
+                      fontWeight: 800,
+                      color: '#ffd93b',
+                      letterSpacing: 0.5,
+                      textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+                    }}
+                  >
+                    {perfectStreak >= 2
+                      ? `${perfectStreak}X Perfect Game Streak`
+                      : 'Perfect Game!'}
+                  </span>
+                )}
+              </div>
             ) : null}
           </div>
         </div>
@@ -529,7 +607,9 @@ export function App() {
         <div
           style={{
             ...overlayBase,
-            bottom: 22,
+            // Lifted clear of the bottom footers (the "mapoguesser" label and
+            // the map-tile attribution credits).
+            bottom: 56,
             left: '50%',
             transform: 'translateX(-50%)',
             fontSize: 20,

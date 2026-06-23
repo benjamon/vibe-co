@@ -36,6 +36,9 @@ const SAVE_KEY = 'mapoguesser:save'
 // the guess history / rolling score keyed by those IDs.
 const IDS_KEY = 'mapoguesser:countryIds'
 const STATS_KEY = 'mapoguesser:stats'
+// Count of consecutive perfect (9/9) games. Persisted so the streak survives
+// reloads; reset to 0 the moment a match ends with any miss.
+const PERFECT_STREAK_KEY = 'mapoguesser:perfectStreak'
 
 // One guess on a target. `id` is the country the player actually clicked.
 // `lat`/`lon` are the exact click position on the globe — optional only
@@ -171,6 +174,33 @@ const computeScore = (guesses: GuessRecord[], targetId: number): number => {
   return sum
 }
 
+const loadPerfectStreak = (): number => {
+  if (typeof localStorage === 'undefined') return 0
+  try {
+    const raw = localStorage.getItem(PERFECT_STREAK_KEY)
+    if (!raw) return 0
+    const n = Number(JSON.parse(raw))
+    return Number.isInteger(n) && n >= 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+// Given a finished match's attempts, return the next perfect-game streak:
+// +1 on a flawless 9/9, reset to 0 on any miss. Returns the current streak
+// unchanged if the match isn't fully resolved (defensive; callers only invoke
+// this on completion).
+const nextPerfectStreak = (
+  attempts: AttemptResult[],
+  current: number,
+): number => {
+  if (attempts.length === 0 || attempts.some((a) => a === 'pending')) {
+    return current
+  }
+  const correct = attempts.filter((a) => a === 'correct').length
+  return correct === ROUNDS && attempts.length === ROUNDS ? current + 1 : 0
+}
+
 interface GameState {
   heading: number
   setHeading: (heading: number) => void
@@ -227,6 +257,10 @@ interface GameState {
   // Last country clicked on the globe (whichever phase we're in).
   country: string | null
   setCountry: (country: string | null) => void
+
+  // Consecutive perfect (9/9) games, persisted. Incremented when a match ends
+  // flawless, reset to 0 on any miss. Drives the win-screen streak banner.
+  perfectStreak: number
 
   // Game flow.
   phase: GamePhase
@@ -406,6 +440,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   country: null,
   setCountry: (country) => set({ country }),
 
+  perfectStreak: loadPerfectStreak(),
+
   phase: 'idle',
   seed: null,
   targets: [],
@@ -465,14 +501,27 @@ export const useGameStore = create<GameState>((set, get) => ({
     }),
 
   clearReveal: () =>
-    set((state) => ({
-      revealTarget: null,
-      phase: state.attempts.every((a) => a !== 'pending')
-        ? 'finished'
-        : state.phase,
-    })),
+    set((state) => {
+      // A reveal that resolves the final round ends the match (with a miss, so
+      // the streak resets). Mid-game reveals leave phase/streak untouched.
+      const finished = state.attempts.every((a) => a !== 'pending')
+      return {
+        revealTarget: null,
+        phase: finished ? 'finished' : state.phase,
+        perfectStreak: finished
+          ? nextPerfectStreak(state.attempts, state.perfectStreak)
+          : state.perfectStreak,
+      }
+    }),
 
-  finishGame: () => set({ phase: 'finished', endingTarget: null }),
+  // Reached only after the final correct guess's celebratory pan. The match is
+  // perfect iff every round was correct.
+  finishGame: () =>
+    set((s) => ({
+      phase: 'finished',
+      endingTarget: null,
+      perfectStreak: nextPerfectStreak(s.attempts, s.perfectStreak),
+    })),
 
   handleGlobeClick: (clicked, lat, lon) => {
     set({ country: clicked })
@@ -593,4 +642,6 @@ useGameStore.subscribe((state, prev) => {
 useGameStore.subscribe((state, prev) => {
   if (state.countryIds !== prev.countryIds) writeJSON(IDS_KEY, state.countryIds)
   if (state.stats !== prev.stats) writeJSON(STATS_KEY, state.stats)
+  if (state.perfectStreak !== prev.perfectStreak)
+    writeJSON(PERFECT_STREAK_KEY, state.perfectStreak)
 })

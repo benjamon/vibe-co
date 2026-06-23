@@ -21,7 +21,7 @@ const memoryStore = new Map<string, string>()
   },
 } as Storage
 
-import { useGameStore, ROUNDS } from './store'
+import { useGameStore, ROUNDS, type AttemptResult } from './store'
 
 const POOL = Array.from({ length: 30 }, (_, i) => `Country${i}`)
 
@@ -88,6 +88,29 @@ describe('GameStore', () => {
 
     expect(useGameStore.getState().attempts).toEqual(beforeReload.attempts)
     expect(useGameStore.getState().markers).toEqual(beforeReload.markers)
+  })
+
+  it('increments the perfect-game streak on a flawless 9/9 finish', () => {
+    useGameStore.setState({
+      perfectStreak: 2,
+      attempts: Array.from({ length: ROUNDS }, () => 'correct' as AttemptResult),
+    })
+    useGameStore.getState().finishGame()
+    expect(useGameStore.getState().perfectStreak).toBe(3)
+    expect(useGameStore.getState().phase).toBe('finished')
+  })
+
+  it('resets the perfect-game streak when a match ends with a miss', () => {
+    useGameStore.setState({
+      perfectStreak: 4,
+      attempts: Array.from({ length: ROUNDS }, (_, i) =>
+        i === 0 ? 'wrong' : 'correct',
+      ) as AttemptResult[],
+    })
+    // A reveal that resolves the final round finishes the match.
+    useGameStore.getState().clearReveal()
+    expect(useGameStore.getState().phase).toBe('finished')
+    expect(useGameStore.getState().perfectStreak).toBe(0)
   })
 
   it('clears saved progress when a different seed starts', () => {

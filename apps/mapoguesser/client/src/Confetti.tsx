@@ -28,7 +28,15 @@ interface Piece {
   swayAmp: number
 }
 
-export function Confetti({ onDone }: { onDone?: () => void }) {
+export function Confetti({
+  onDone,
+  intensity = 'full',
+}: {
+  onDone?: () => void
+  // 'small' is a lighter burst (fewer pieces) for a good-but-not-great score;
+  // 'full' is the celebratory blast.
+  intensity?: 'small' | 'full'
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
@@ -54,7 +62,7 @@ export function Confetti({ onDone }: { onDone?: () => void }) {
 
     // Launch from the two bottom corners, each fountain aimed up and inward.
     const pieces: Piece[] = []
-    const PER_SIDE = 90
+    const PER_SIDE = intensity === 'small' ? 28 : 90
     const spawnSide = (originX: number, inward: number) => {
       for (let i = 0; i < PER_SIDE; i++) {
         // Speed 650–1150 px/s; angle within ~35° of straight up, biased toward
@@ -130,7 +138,7 @@ export function Confetti({ onDone }: { onDone?: () => void }) {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
     }
-  }, [])
+  }, [intensity])
 
   return (
     <canvas
