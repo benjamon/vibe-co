@@ -143,6 +143,7 @@ export function App() {
   const resetGame = useGameStore((s) => s.resetGame)
   const guess = useGameStore((s) => s.country)
   const seed = useGameStore((s) => s.seed)
+  const mode = useGameStore((s) => s.mode)
   const perfectStreak = useGameStore((s) => s.perfectStreak)
 
   const [menuOpen, setMenuOpen] = useState(false)
@@ -282,19 +283,26 @@ export function App() {
   // 'Play Again' later generates a fresh seed instead of replaying this one.
   useEffect(() => {
     if (!ready || phase !== 'idle') return
-    const urlSeed = new URLSearchParams(window.location.search).get('seed')
-    if (urlSeed) startGame(urlSeed)
+    const params = new URLSearchParams(window.location.search)
+    const urlSeed = params.get('seed')
+    // `wc=1` tags a World Cup seed; anything else is a classic match.
+    if (urlSeed) startGame(urlSeed, params.get('wc') === '1' ? 'worldcup' : 'classic')
   }, [ready, phase, startGame])
 
-  // Mirror the active match seed into the URL so a refresh / link share
-  // reproduces the same draw. replaceState avoids polluting browser history.
+  // Mirror the active match seed (and World Cup tag) into the URL so a refresh /
+  // link share reproduces the same draw. replaceState avoids polluting history.
   useEffect(() => {
     if (!seed) return
     const url = new URL(window.location.href)
-    if (url.searchParams.get('seed') === seed) return
+    const wantWc = mode === 'worldcup'
+    const seedOk = url.searchParams.get('seed') === seed
+    const wcOk = (url.searchParams.get('wc') === '1') === wantWc
+    if (seedOk && wcOk) return
     url.searchParams.set('seed', seed)
+    if (wantWc) url.searchParams.set('wc', '1')
+    else url.searchParams.delete('wc')
     window.history.replaceState(null, '', url.toString())
-  }, [seed])
+  }, [seed, mode])
 
   const correctCount = attempts.filter((a) => a === 'correct').length
 
@@ -353,12 +361,17 @@ export function App() {
     setMenuOpen(false)
     startGame()
   }
+  const handleWorldCup = () => {
+    setMenuOpen(false)
+    startGame(undefined, 'worldcup')
+  }
   // Drop ?seed= from the URL so the auto-start effect doesn't immediately
   // re-launch the just-ended match the moment resetGame() flips us to 'idle'.
   const clearSeedFromUrl = () => {
     const url = new URL(window.location.href)
-    if (url.searchParams.has('seed')) {
+    if (url.searchParams.has('seed') || url.searchParams.has('wc')) {
       url.searchParams.delete('seed')
+      url.searchParams.delete('wc')
       window.history.replaceState(null, '', url.toString())
     }
   }
@@ -460,6 +473,13 @@ export function App() {
                 style={menuButtonStyle}
               >
                 New Game
+              </button>
+              <button
+                type="button"
+                onClick={handleWorldCup}
+                style={menuButtonStyle}
+              >
+                ⚽ World Cup Edition
               </button>
               {seed && (
                 <button
@@ -598,6 +618,18 @@ export function App() {
           </button>
           <button
             type="button"
+            onClick={handleWorldCup}
+            disabled={!ready}
+            style={{
+              ...menuButtonStyle,
+              cursor: ready ? 'pointer' : 'wait',
+              opacity: ready ? 1 : 0.6,
+            }}
+          >
+            ⚽ World Cup Edition
+          </button>
+          <button
+            type="button"
             onClick={handleOpenStats}
             style={menuButtonStyle}
           >
@@ -659,7 +691,14 @@ export function App() {
           fontWeight: 700,
         }}
       >
-        mapoguesser
+        {mode === 'worldcup' ? (
+          // World Cup edition: swap the "o" in map-o-guesser for a soccer ball.
+          <>
+            map<span style={{ fontSize: '0.85em' }}>⚽</span>guesser
+          </>
+        ) : (
+          'mapoguesser'
+        )}
       </div>
 
       {statsOpen && (

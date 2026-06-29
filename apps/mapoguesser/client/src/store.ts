@@ -15,6 +15,10 @@ export type StatsMode = 'mine' | 'global'
 
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
+// Which country pool the match draws from. 'classic' = every playable country
+// in the dataset; 'worldcup' = only the 48 World Cup qualifiers (collapsed to
+// the unique map countries they belong to). Carried in the seed URL as `wc=1`.
+export type GameMode = 'classic' | 'worldcup'
 // Sprite kind drawn at the marker location: green pin for a correct guess,
 // grey pin for the wrong country the player clicked, red X for the centroid
 // reveal of a missed target.
@@ -60,6 +64,10 @@ export interface CountryStats {
 
 interface SavedMatch {
   seed: string
+  // Which pool the saved draw came from. A seed alone isn't enough to resume —
+  // the same seed yields a different draw per mode — so the resume check below
+  // requires both to match. Optional for legacy saves (default 'classic').
+  mode?: GameMode
   // Per-guess log (one entry per click), NOT one per country. See GameState.
   attempts: AttemptResult[]
   // How far through the 9-country sequence we are (advances on a correct guess
@@ -212,6 +220,12 @@ interface GameState {
   countries: string[]
   setCountries: (countries: string[]) => void
 
+  // The subset of `countries` that are World Cup qualifier nations (the unique
+  // map countries the 48 teams belong to). Populated by WorldViewer once the
+  // GeoJSON loads; drives the 'worldcup' draw pool.
+  worldCupCountries: string[]
+  setWorldCupCountries: (countries: string[]) => void
+
   // Name → ISO 3166-1 alpha-2 code (lowercase). Populated alongside countries.
   // Drives the flag icons in the HUD. Countries without a valid ISO_A2 in the
   // Natural Earth dataset are simply absent (the HUD then omits the flag).
@@ -266,6 +280,9 @@ interface GameState {
 
   // Game flow.
   phase: GamePhase
+  // Which pool the active match draws from. Mirrored to the URL as `wc=1` for
+  // 'worldcup' so a shared link reproduces the same edition.
+  mode: GameMode
   // Match seed (base36, 6 chars). Drives the deterministic target draw and is
   // mirrored to the URL so a link reproduces the same match.
   seed: string | null
@@ -299,7 +316,7 @@ interface GameState {
   // the 'finished' phase. Keeps the score-screen handoff cinematic.
   endingTarget: string | null
 
-  startGame: (seed?: string) => void
+  startGame: (seed?: string, mode?: GameMode) => void
   resetGame: () => void
   clearReveal: () => void
   finishGame: () => void
@@ -379,6 +396,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   countries: [],
   setCountries: (countries) => set({ countries }),
 
+  worldCupCountries: [],
+  setWorldCupCountries: (worldCupCountries) => set({ worldCupCountries }),
+
   countryCodes: {},
   setCountryCodes: (countryCodes) => set({ countryCodes }),
 
@@ -450,6 +470,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   perfectStreak: loadPerfectStreak(),
 
   phase: 'idle',
+  mode: 'classic',
   seed: null,
   targets: [],
   targetIndex: 0,
@@ -460,18 +481,22 @@ export const useGameStore = create<GameState>((set, get) => ({
   revealTarget: null,
   endingTarget: null,
 
-  startGame: (seed) => {
-    const pool = get().countries
+  startGame: (seed, mode = 'classic') => {
+    const pool =
+      mode === 'worldcup' ? get().worldCupCountries : get().countries
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
     const targets = drawUniqueTargets(pool, matchSeed, ROUNDS)
     if (targets.length === 0) return
 
-    // Resume only if the requested seed matches the saved match. A different
-    // seed (Play Again, or a friend's URL) starts fresh — the persistence
-    // subscriber will overwrite the save below.
+    // Resume only if BOTH the seed and the mode match the saved match — the
+    // same seed draws a different sequence per mode. A different seed/mode
+    // (Play Again, switching editions, or a friend's URL) starts fresh; the
+    // persistence subscriber will overwrite the save below.
     const saved = loadSave()
-    const restore = saved && saved.seed === matchSeed ? saved : null
+    const savedMode = saved?.mode ?? 'classic'
+    const restore =
+      saved && saved.seed === matchSeed && savedMode === mode ? saved : null
     const attempts = restore?.attempts ?? []
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
@@ -480,6 +505,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     set({
       phase: finished ? 'finished' : 'playing',
+      mode,
       seed: matchSeed,
       targets,
       targetIndex,
@@ -496,6 +522,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   resetGame: () =>
     set({
       phase: 'idle',
+      mode: 'classic',
       seed: null,
       targets: [],
       targetIndex: 0,
@@ -651,6 +678,7 @@ useGameStore.subscribe((state, prev) => {
     return
   writeSave({
     seed: state.seed,
+    mode: state.mode,
     attempts: state.attempts,
     targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,

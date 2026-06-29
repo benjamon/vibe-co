@@ -51,6 +51,30 @@ describe('GameStore', () => {
     expect(new Set(a).size).toBe(ROUNDS)
   })
 
+  it('draws only from the World Cup pool in worldcup mode', () => {
+    const WC = ['Brazil', 'France', 'Japan', 'Ghana', 'Mexico']
+    useGameStore.setState({ worldCupCountries: WC })
+    useGameStore.getState().startGame('wc-seed', 'worldcup')
+    const targets = useGameStore.getState().targets
+    expect(useGameStore.getState().mode).toBe('worldcup')
+    // Pool is smaller than ROUNDS, so the draw is capped at the pool size and
+    // every target is a qualifier — never a classic-pool country.
+    expect(targets.length).toBe(WC.length)
+    for (const t of targets) expect(WC).toContain(t)
+  })
+
+  it('keeps classic and worldcup draws independent for the same seed', () => {
+    useGameStore.setState({ worldCupCountries: POOL })
+    useGameStore.getState().startGame('shared', 'classic')
+    const classic = useGameStore.getState().targets
+    useGameStore.getState().startGame('shared', 'worldcup')
+    const worldcup = useGameStore.getState().targets
+    // Same seed, but a worldcup match must not resume the classic save.
+    expect(useGameStore.getState().mode).toBe('worldcup')
+    expect(classic).toHaveLength(ROUNDS)
+    expect(worldcup).toHaveLength(ROUNDS)
+  })
+
   it('draws different targets for different seeds', () => {
     useGameStore.getState().startGame('seed-a')
     const a = useGameStore.getState().targets
