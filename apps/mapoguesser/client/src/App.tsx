@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
-import { WorldViewer } from './WorldViewer'
+import { useEffect, useMemo, useState, lazy, Suspense } from 'react'
 import { Confetti } from './Confetti'
 import { Fireworks } from './Fireworks'
 import { sfxEndJingle, installAudioUnlock } from './sfx'
@@ -11,6 +10,14 @@ import {
   subscribeCountryGuesses,
   type CountryAgg,
 } from './stats'
+
+// Cesium (~4 MB) lives entirely inside WorldViewer, so lazy-loading it splits
+// that weight into its own chunk: the menu / start screen paints off the small
+// React bundle while the globe streams in behind it. The `ready` flag already
+// keeps the Start button showing "Loading…" until the globe has its data.
+const WorldViewer = lazy(() =>
+  import('./WorldViewer').then((m) => ({ default: m.WorldViewer })),
+)
 
 const overlayBase = {
   position: 'absolute',
@@ -402,7 +409,9 @@ export function App() {
 
   return (
     <>
-      <WorldViewer />
+      <Suspense fallback={null}>
+        <WorldViewer />
+      </Suspense>
 
       {showConfetti && (
         <Confetti

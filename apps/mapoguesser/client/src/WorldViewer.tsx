@@ -4,6 +4,7 @@ import {
   Cartesian3,
   Cartographic,
   Color,
+  ColorMaterialProperty,
   ConstantProperty,
   CustomDataSource,
   GeoJsonDataSource,
@@ -15,7 +16,7 @@ import {
   LabelStyle,
   Math as CesiumMath,
   Matrix4,
-  PolylineOutlineMaterialProperty,
+  PerspectiveFrustum,
   UrlTemplateImageryProvider,
   VerticalOrigin,
   Viewer,
@@ -36,6 +37,43 @@ const MAX_RANGE = 24_000_000
 // Streamed imagery LOD cap. z12 is ~9 km/pixel at the equator — plenty of
 // detail for a globe view without ballooning tile fetches.
 const MAX_TILE_LEVEL = 12
+
+// --- Rendering performance knobs -------------------------------------------
+// These trade visual fidelity for GPU / bandwidth savings that matter most on
+// phones, so the quality-reducing ones are gated to mobile via IS_MOBILE:
+// desktop renders at full quality, mobile takes the cheaper path. Each knob is
+// consumed in exactly one place (see the viewer setup), so retuning — or
+// flipping any of these back to a flat global value — is a one-line edit.
+const IS_MOBILE =
+  typeof navigator !== 'undefined' &&
+  /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(
+    navigator.userAgent,
+  )
+// Multisample anti-aliasing. 4 is crisp but a heavy fillrate tax on mobile
+// GPUs, so desktop gets 4 while mobile drops to 1 (off) and leans on FXAA.
+const MSAA_SAMPLES = IS_MOBILE ? 1 : 3
+// FXAA: a cheap screen-space AA post-pass. Left on everywhere — it's nearly
+// free, smooths the black border lines and label text, and is what carries
+// edge quality on mobile where MSAA is off.
+const USE_FXAA = true
+// Render resolution relative to CSS pixels. Left at 1 on every device: the big
+// high-DPR-phone saving already comes from useBrowserRecommendedResolution
+// (default true, ignoring devicePixelRatio), and going below 1 here subsamples
+// the whole framebuffer and makes thin high-contrast lines crawl / pixelate.
+const RESOLUTION_SCALE = 1
+// Globe screen-space error tolerance. Higher = coarser tiles, so fewer tile
+// fetches and draw calls. Desktop uses Cesium's default (2); mobile relaxes
+// to 4 to cut bandwidth and draw calls.
+const MAX_SCREEN_SPACE_ERROR = IS_MOBILE ? 4 : 3
+// Atmosphere + fog are fillrate cosmetics: on for desktop (nicer limb glow),
+// off on mobile to save fill.
+const SHOW_ATMOSPHERE = !IS_MOBILE
+// Base-imagery brightness multiplier. 1.0 is the raw satellite tiles; 1.3
+// lightens the whole globe by 30%.
+const GLOBE_BRIGHTNESS = 1.15
+// Base-imagery contrast multiplier. 1.0 is the raw tiles; 0.9 softens contrast
+// by 10% (flatter highs/lows, gentler look behind the black border lines).
+const GLOBE_CONTRAST = 0.9
 
 // Natural Earth 50m admin-0 datasets. Borders for visible lines, polygons for
 // CPU point-in-polygon hit-testing. Served via jsDelivr's GitHub mirror.
@@ -77,9 +115,10 @@ const WORLD_CUP_ISO = new Set<string>([
 // Reveal animation duration when the player misses twice on the same target.
 const REVEAL_MS = 1200
 
-// Fallback radians-per-pixel for drags that started off-globe (no anchor to
-// pin to). Anchored drags use a true 1:1 inverse projection instead.
-const FALLBACK_SENSITIVITY = 0.005
+// Multiplier on the (physically-calibrated) drag sensitivity. 1.0 tracks the
+// cursor ~1:1 at screen centre; raise for a faster spin, lower for finer
+// control. See surfaceRadiansPerPixel for the per-pixel calibration itself.
+const DRAG_SENSITIVITY = 1.0
 
 // Asymmetric pitch limits: 17.5° from the north pole, 30° from the south pole.
 // Negative pitch sends the camera over the north (looking south); positive
@@ -90,9 +129,14 @@ const PITCH_MIN = -CesiumMath.toRadians(72.5)
 const PITCH_MAX = CesiumMath.toRadians(60)
 
 // Exponential decay rate for spin momentum (1/s). Higher = stops faster.
-const FRICTION = 3.0
+const FRICTION = 4.0
 // Velocity below this threshold (rad/s) is treated as stopped.
 const MIN_VELOCITY = 0.002
+// Cap on release ("flick") angular velocity (rad/s), per axis. Without it a
+// fast drag flings the globe into a wild multi-rotation spin. Total coast ≈
+// cap / FRICTION radians, so 6 rad/s here ≈ a third of a turn on the hardest
+// flick. Raise for a looser, spinnier feel; lower to tighten it further.
+const MAX_FLICK_VELOCITY = 6.0
 // Pointer travel (px) above which a press is treated as a drag, not a tap.
 const TAP_THRESHOLD = 5
 // Wheel deltaY → range scale factor.
@@ -223,7 +267,7 @@ export function WorldViewer() {
         credit: 'Tiles © Esri — World Imagery',
         maximumLevel: MAX_TILE_LEVEL,
       }),
-      {},
+      { brightness: GLOBE_BRIGHTNESS, contrast: GLOBE_CONTRAST },
     )
 
     const viewer = new Viewer(container, {
@@ -240,8 +284,17 @@ export function WorldViewer() {
       timeline: false,
       scene3DOnly: true,
       shouldAnimate: false,
-      msaaSamples: 4,
+      msaaSamples: MSAA_SAMPLES,
     })
+
+    // Render-quality knobs (see the constants block up top). Centralised here
+    // so each is set in exactly one spot and stays trivial to gate to mobile.
+    viewer.resolutionScale = RESOLUTION_SCALE
+    viewer.scene.postProcessStages.fxaa.enabled = USE_FXAA
+    viewer.scene.globe.maximumScreenSpaceError = MAX_SCREEN_SPACE_ERROR
+    viewer.scene.skyAtmosphere.show = SHOW_ATMOSPHERE
+    viewer.scene.globe.showGroundAtmosphere = SHOW_ATMOSPHERE
+    viewer.scene.fog.enabled = SHOW_ATMOSPHERE
 
     let destroyed = false
 
@@ -551,23 +604,18 @@ export function WorldViewer() {
         // CDN unreachable / blocked — clicks won't resolve to country names.
       })
 
-    // Country border lines: white core wrapped in a dark halo so the lines
-    // stay readable over bright basemap features (deserts, ice, sun glare).
-    const borderMat = new PolylineOutlineMaterialProperty({
-      color: Color.BLACK.withAlpha(0.55),
-      outlineColor: Color.WHITE.withAlpha(0.9),
-      outlineWidth: 1.5,
-    })
+    // Country border lines: solid pure-black, no halo.
+    const borderMat = new ColorMaterialProperty(new Color(0.0,0.0,0.0,0.8))
     GeoJsonDataSource.load(COUNTRY_BORDERS_URL, {
-      stroke: Color.NAVY,
-      strokeWidth: 5.0,
+      stroke: Color.BLACK,
+      strokeWidth: 1.5,
     })
       .then((ds) => {
         if (destroyed || viewer.isDestroyed()) return
         for (const entity of ds.entities.values) {
           if (entity.polyline) {
             entity.polyline.material = borderMat
-            entity.polyline.width = new ConstantProperty(5.0)
+            entity.polyline.width = new ConstantProperty(2.25)
           }
         }
         viewer.dataSources.add(ds)
@@ -675,15 +723,33 @@ export function WorldViewer() {
       return Math.hypot(a.x - b.x, a.y - b.y)
     }
 
-    // ECEF point under the cursor at drag-start. Anchored drag tries to keep
-    // this point pinned beneath the cursor at all times.
-    let dragAnchor: Cartesian3 | null = null
     const ellipsoid = viewer.scene.globe.ellipsoid
 
+    // Raycast the ellipsoid under a client-space point. Used only to gate the
+    // start of a gesture (a press must land on the globe) and to resolve taps
+    // into lat/lon — dragging itself no longer raycasts.
     const pickAnchor = (clientX: number, clientY: number): Cartesian3 | null => {
       const rect = canvas.getBoundingClientRect()
       const screen = new Cartesian2(clientX - rect.left, clientY - rect.top)
       return viewer.scene.camera.pickEllipsoid(screen, ellipsoid) ?? null
+    }
+
+    // Globe-surface rotation (radians) per screen pixel at the centre of the
+    // view. Derived from the camera's apparent scale there, so a drag tracks the
+    // cursor ~1:1 at screen centre at any zoom. Applied per-axis — heading for
+    // horizontal pixels, pitch for vertical — which keeps a horizontal drag
+    // purely horizontal out to the limb, unlike the old anchored solve that
+    // coupled the axes and went unstable near the edge.
+    const surfaceRadiansPerPixel = (): number => {
+      const Re = ellipsoid.maximumRadius
+      const frustum = viewer.camera.frustum
+      const fovy =
+        frustum instanceof PerspectiveFrustum ? frustum.fovy : Math.PI / 3
+      const h = canvas.clientHeight || 1
+      // range − Re ≈ camera-to-surface distance at the sub-camera point; floored
+      // so a fully zoomed-in view can still pan.
+      const dist = Math.max(range - Re, Re * 0.05)
+      return (dist / Re) * ((2 * Math.tan(fovy / 2)) / h)
     }
 
     const lookupCountryName = (lat: number, lon: number): string | null => {
@@ -814,94 +880,6 @@ export function WorldViewer() {
       revealRaf = requestAnimationFrame(step)
     }
 
-    // Reusable buffers — cartesianToCanvasCoordinates writes into its result
-    // arg, so the three projections in one Newton step need separate buffers.
-    const _projCur = new Cartesian2()
-    const _projH = new Cartesian2()
-    const _projP = new Cartesian2()
-
-    // Solve for (heading, pitch) such that anchor projects onto target. One
-    // iteration of damped Newton is usually enough for a single frame's
-    // cursor delta; we run two for safety. Returns true if the projection
-    // converged to within ~1px, false if the Jacobian was degenerate or the
-    // anchor projects behind the camera.
-    const NEWTON_EPS = 1e-3
-    const NEWTON_MAX_STEP = 0.1
-    // Jacobian determinant magnitude below this means the anchor sits near
-    // the limb where small heading/pitch nudges barely move its projection.
-    // Solving there explodes — bail to the proportional fallback instead.
-    const NEWTON_MIN_DET = 1e-3
-    const solveAnchor = (anchor: Cartesian3, target: Cartesian2): boolean => {
-      for (let iter = 0; iter < 2; iter++) {
-        applyCamera()
-        const cur = viewer.scene.cartesianToCanvasCoordinates(anchor, _projCur)
-        if (!cur) return false
-        const errX = target.x - cur.x
-        const errY = target.y - cur.y
-        if (Math.abs(errX) < 0.5 && Math.abs(errY) < 0.5) return true
-
-        const hSave = heading
-        const pSave = pitch
-
-        heading = hSave + NEWTON_EPS
-        pitch = pSave
-        applyCamera()
-        const ph = viewer.scene.cartesianToCanvasCoordinates(anchor, _projH)
-
-        heading = hSave
-        pitch = pSave + NEWTON_EPS
-        applyCamera()
-        const pp = viewer.scene.cartesianToCanvasCoordinates(anchor, _projP)
-
-        heading = hSave
-        pitch = pSave
-
-        if (!ph || !pp) {
-          applyCamera()
-          return false
-        }
-
-        const dxH = (ph.x - cur.x) / NEWTON_EPS
-        const dyH = (ph.y - cur.y) / NEWTON_EPS
-        const dxP = (pp.x - cur.x) / NEWTON_EPS
-        const dyP = (pp.y - cur.y) / NEWTON_EPS
-
-        const det = dxH * dyP - dxP * dyH
-        if (Math.abs(det) < NEWTON_MIN_DET) {
-          applyCamera()
-          return false
-        }
-
-        const dh = clamp(
-          (dyP * errX - dxP * errY) / det,
-          -NEWTON_MAX_STEP,
-          NEWTON_MAX_STEP,
-        )
-        const dp = clamp(
-          (-dyH * errX + dxH * errY) / det,
-          -NEWTON_MAX_STEP,
-          NEWTON_MAX_STEP,
-        )
-
-        heading = CesiumMath.zeroToTwoPi(hSave + dh)
-        pitch = clamp(pSave + dp, PITCH_MIN, PITCH_MAX)
-      }
-      // Convergence check after the iteration cap — if Newton bounced around
-      // without landing close to target (off-limb cursor, ill-conditioned
-      // Jacobian), report failure so the caller falls back to proportional
-      // drag instead of accepting the half-converged camera state.
-      applyCamera()
-      const finalProj = viewer.scene.cartesianToCanvasCoordinates(
-        anchor,
-        _projCur,
-      )
-      if (!finalProj) return false
-      return (
-        Math.abs(finalProj.x - target.x) < 4 &&
-        Math.abs(finalProj.y - target.y) < 4
-      )
-    }
-
     // Shortest signed angular delta in (-π, π], for unwrapping heading
     // velocity across the 0/2π seam.
     const angleDelta = (a: number, b: number) => {
@@ -942,12 +920,9 @@ export function WorldViewer() {
       stopMomentum()
 
       // First contact must hit the globe — clicks on empty space beyond the
-      // limb don't start a gesture at all (no drag, no tap).
-      let firstAnchor: Cartesian3 | null = null
-      if (pointers.size === 0) {
-        firstAnchor = pickAnchor(e.clientX, e.clientY)
-        if (!firstAnchor) return
-      }
+      // limb don't start a gesture at all (no drag, no tap). The press point is
+      // only a gate here; it never becomes a drag pivot.
+      if (pointers.size === 0 && !pickAnchor(e.clientX, e.clientY)) return
 
       pointers.set(e.pointerId, {
         x: e.clientX,
@@ -961,11 +936,8 @@ export function WorldViewer() {
       } catch {
         // already captured / not capturable
       }
-      if (pointers.size === 1) {
-        dragAnchor = firstAnchor
-      } else if (pointers.size === 2) {
+      if (pointers.size === 2) {
         pinchDistance = computePinchDistance()
-        dragAnchor = null
       }
       lastMoveTime = performance.now()
     }
@@ -994,38 +966,28 @@ export function WorldViewer() {
         const hBefore = heading
         const pBefore = pitch
 
-        let anchored = false
-        if (dragAnchor) {
-          const rect = canvas.getBoundingClientRect()
-          const target = new Cartesian2(
-            e.clientX - rect.left,
-            e.clientY - rect.top,
-          )
-          // If the cursor is off the globe (out past the limb, in space),
-          // there's no on-ellipsoid solution — Newton diverges and snaps the
-          // camera. Fall back to proportional drag in that region.
-          const targetOnGlobe = viewer.scene.camera.pickEllipsoid(
-            target,
-            ellipsoid,
-          )
-          if (targetOnGlobe) {
-            anchored = solveAnchor(dragAnchor, target)
-          }
-        }
+        // Decoupled "turntable" drag: horizontal pixels rotate heading,
+        // vertical pixels rotate pitch — never cross-coupled, so a horizontal
+        // drag stays horizontal and a vertical one stays vertical everywhere
+        // (including the limb). Sensitivity is the globe's apparent surface
+        // scale at screen centre, so it tracks the cursor ~1:1 there.
+        const s = surfaceRadiansPerPixel() * DRAG_SENSITIVITY
+        heading = CesiumMath.zeroToTwoPi(heading + dx * s)
+        pitch = clamp(pitch - dy * s, PITCH_MIN, PITCH_MAX)
+        applyCamera()
 
-        if (!anchored) {
-          // No anchor (drag started in space) or solve failed: fall back to
-          // proportional drag, keeping the original sign convention.
-          const sensitivity = FALLBACK_SENSITIVITY * (range / initialRange)
-          const dHeading = dx * sensitivity
-          const dPitch = -dy * sensitivity
-          heading = CesiumMath.zeroToTwoPi(heading + dHeading)
-          pitch = clamp(pitch + dPitch, PITCH_MIN, PITCH_MAX)
-          applyCamera()
-        }
-
-        velHeading = angleDelta(heading, hBefore) / dt
-        velPitch = (pitch - pBefore) / dt
+        // Clamp the flick velocity so a fast drag can't fling the globe into a
+        // runaway spin (see MAX_FLICK_VELOCITY).
+        velHeading = clamp(
+          angleDelta(heading, hBefore) / dt,
+          -MAX_FLICK_VELOCITY,
+          MAX_FLICK_VELOCITY,
+        )
+        velPitch = clamp(
+          (pitch - pBefore) / dt,
+          -MAX_FLICK_VELOCITY,
+          MAX_FLICK_VELOCITY,
+        )
         useGameStore.getState().setHeading(heading)
       } else if (pointers.size === 2) {
         const newDist = computePinchDistance()
@@ -1043,18 +1005,6 @@ export function WorldViewer() {
       }
     }
 
-    // Wheel-zoom changes range, which would shift the anchor's projection.
-    // Re-pick under the cursor so the next drag is still 1:1.
-    const refreshAnchorIfActive = (clientX: number, clientY: number) => {
-      if (pointers.size !== 1) return
-      const remaining = pointers.values().next().value
-      if (!remaining) return
-      // Use the most recent cursor for in-flight drags, else the wheel event's.
-      const x = remaining.x ?? clientX
-      const y = remaining.y ?? clientY
-      dragAnchor = pickAnchor(x, y)
-    }
-
     const endDrag = (e: PointerEvent) => {
       const p = pointers.get(e.pointerId)
       if (!p) return
@@ -1066,7 +1016,6 @@ export function WorldViewer() {
       }
 
       if (pointers.size === 0) {
-        dragAnchor = null
         if (!p.moved) {
           emitLatLon(p.x, p.y)
         } else if (
@@ -1076,16 +1025,13 @@ export function WorldViewer() {
           startMomentum()
         }
       } else if (pointers.size === 1) {
-        // Coming out of pinch: don't carry pinch state into rotation, and
-        // re-anchor on the remaining finger so 1:1 drag resumes cleanly.
+        // Coming out of pinch: don't carry pinch state into rotation. The
+        // remaining finger's last position is already tracked, so the next
+        // move's delta is measured from there with no jump.
         pinchDistance = 0
         velHeading = 0
         velPitch = 0
         lastMoveTime = performance.now()
-        const remaining = pointers.values().next().value
-        dragAnchor = remaining
-          ? pickAnchor(remaining.x, remaining.y)
-          : null
       }
     }
 
@@ -1096,7 +1042,6 @@ export function WorldViewer() {
       const factor = Math.exp(e.deltaY * WHEEL_ZOOM_RATE)
       range = clamp(range * factor, MIN_RANGE, maxRange)
       updateCamera()
-      refreshAnchorIfActive(e.clientX, e.clientY)
     }
 
     // Drive markers + reveal animation off store changes.
