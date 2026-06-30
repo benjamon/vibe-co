@@ -6,7 +6,21 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AdvanceQuestionReducer from "../advance_question_reducer";
+import CreatePartyReducer from "../create_party_reducer";
+import JoinPartyReducer from "../join_party_reducer";
+import LeavePartyReducer from "../leave_party_reducer";
 import RecordGuessReducer from "../record_guess_reducer";
+import RestartPartyReducer from "../restart_party_reducer";
+import SetReadyReducer from "../set_ready_reducer";
+import SubmitPartyGuessReducer from "../submit_party_guess_reducer";
 
+export type AdvanceQuestionParams = __Infer<typeof AdvanceQuestionReducer>;
+export type CreatePartyParams = __Infer<typeof CreatePartyReducer>;
+export type JoinPartyParams = __Infer<typeof JoinPartyReducer>;
+export type LeavePartyParams = __Infer<typeof LeavePartyReducer>;
 export type RecordGuessParams = __Infer<typeof RecordGuessReducer>;
+export type RestartPartyParams = __Infer<typeof RestartPartyReducer>;
+export type SetReadyParams = __Infer<typeof SetReadyReducer>;
+export type SubmitPartyGuessParams = __Infer<typeof SubmitPartyGuessReducer>;
 

@@ -77,7 +77,96 @@ const user_country_stat = table(
   },
 )
 
-const spacetimedb = schema({ guess, country_stat, user_country_stat })
+// ---------------------------------------------------------------------------
+// Multiplayer "Play With Friends" party mode.
+//
+// A party is a short-lived room identified by a 4-char code. Players join the
+// lobby, ready up, and then race through the same ROUNDS-question match. The
+// match draw is deterministic from `seed` (the client runs the identical
+// mulberry32 shuffle), so the server never needs to know the countries — it
+// only owns the room lifecycle: who's in it, whose turn it is to answer, and
+// the per-question deadline.
+//
+// Round advancement is client-driven but idempotent: any client whose 30s
+// timer expires (or the reducer that records the final outstanding guess) calls
+// advance_question, which is guarded by `current_question` so duplicate/raced
+// calls are no-ops. No scheduled reducers needed.
+// ---------------------------------------------------------------------------
+
+// Match length and per-question time budget. ROUNDS MUST match the client's
+// store.ROUNDS so both sides agree on when the match ends.
+const PARTY_ROUNDS = 9
+const QUESTION_MS = 30_000
+const MAX_PLAYER_NAME_LEN = 10
+const PARTY_CODE_LEN = 4
+
+// Phases: 'lobby' (gathering + readying), 'playing' (answering questions),
+// 'finished' (results). Stored as a string so the bindings stay simple.
+const party = table(
+  { name: 'party', public: true },
+  {
+    code: t.string().primaryKey(),
+    host_id: t.string(),
+    seed: t.string(),
+    phase: t.string(),
+    current_question: t.i32(),
+    // Epoch ms when the current question stops accepting guesses. 0 in lobby.
+    question_deadline: t.u64(),
+    created_at: t.u64(),
+  },
+)
+
+// One row per player per party. Primary key is `${code}-${user_id}` so a player
+// can rejoin idempotently. `score` is the running count of correct guesses.
+const party_player = table(
+  {
+    name: 'party_player',
+    public: true,
+    indexes: [
+      { accessor: 'byCode', algorithm: 'btree', columns: ['code'] as const },
+    ] as const,
+  },
+  {
+    key: t.string().primaryKey(),
+    code: t.string(),
+    user_id: t.string(),
+    name: t.string(),
+    ready: t.bool(),
+    score: t.i32(),
+    joined_at: t.u64(),
+  },
+)
+
+// One row per (party, question, player) guess. Drives both the live "username
+// ✓/✗" toast feed (clients subscribe and render new rows) and the all-guessed
+// early-advance check. Primary key enforces one guess per question per player.
+const party_guess = table(
+  {
+    name: 'party_guess',
+    public: true,
+    indexes: [
+      { accessor: 'byCode', algorithm: 'btree', columns: ['code'] as const },
+    ] as const,
+  },
+  {
+    key: t.string().primaryKey(),
+    code: t.string(),
+    question: t.i32(),
+    user_id: t.string(),
+    name: t.string(),
+    correct: t.bool(),
+    timestamp: t.u64(),
+  },
+)
+
+const spacetimedb = schema({
+  guess,
+  country_stat,
+  user_country_stat,
+  party,
+  party_player,
+  party_guess,
+})
 
 export const record_guess = spacetimedb.reducer(
   {
@@ -158,6 +247,247 @@ export const record_guess = spacetimedb.reducer(
         total: 1,
       })
     }
+  },
+)
+
+// ---------------------------------------------------------------------------
+// Party reducers
+// ---------------------------------------------------------------------------
+
+const playerKey = (code: string, userId: string): string => `${code}-${userId}`
+const guessKey = (code: string, question: number, userId: string): string =>
+  `${code}-${question}-${userId}`
+
+// A trimmed, length-bounded display name. Empty/oversized names are rejected by
+// the callers; this just normalises whitespace.
+const cleanName = (name: string): string =>
+  name.trim().slice(0, MAX_PLAYER_NAME_LEN)
+
+const isValidCode = (code: string): boolean =>
+  typeof code === 'string' && code.length === PARTY_CODE_LEN
+
+// Advance the room past `fromQuestion`. Guarded by current_question so racing
+// callers (multiple expired timers, or a timer racing the last guess) collapse
+// to a single advance. Past the final question the room flips to 'finished'.
+const advanceParty = (
+  ctx: Parameters<Parameters<typeof spacetimedb.reducer>[1]>[0],
+  code: string,
+  fromQuestion: number,
+): void => {
+  const room = ctx.db.party.code.find(code)
+  if (!room || room.phase !== 'playing') return
+  if (room.current_question !== fromQuestion) return // already advanced
+
+  const next = room.current_question + 1
+  if (next >= PARTY_ROUNDS) {
+    ctx.db.party.code.update({ ...room, phase: 'finished', question_deadline: 0n })
+    return
+  }
+  ctx.db.party.code.update({
+    ...room,
+    current_question: next,
+    question_deadline: BigInt(Date.now() + QUESTION_MS),
+  })
+}
+
+// Create a room. The client generates the 4-char code and retries on collision
+// (this no-ops if the code is taken, so two creators never clobber each other).
+export const create_party = spacetimedb.reducer(
+  {
+    user_id: t.string(),
+    name: t.string(),
+    code: t.string(),
+    seed: t.string(),
+  },
+  (ctx, { user_id, name, code, seed }) => {
+    if (!user_id || user_id.length > MAX_USER_ID_LEN) return
+    if (!isValidCode(code)) return
+    if (ctx.db.party.code.find(code)) return // collision — client retries
+    const display = cleanName(name)
+    if (!display) return
+
+    const now = BigInt(Date.now())
+    ctx.db.party.insert({
+      code,
+      host_id: user_id,
+      seed: seed.slice(0, 32),
+      phase: 'lobby',
+      current_question: 0,
+      question_deadline: 0n,
+      created_at: now,
+    })
+    ctx.db.party_player.insert({
+      key: playerKey(code, user_id),
+      code,
+      user_id,
+      name: display,
+      ready: false,
+      score: 0,
+      joined_at: now,
+    })
+  },
+)
+
+// Join an existing lobby. Idempotent: rejoining updates the stored name. Only
+// allowed while the room is still gathering (phase 'lobby').
+export const join_party = spacetimedb.reducer(
+  { user_id: t.string(), name: t.string(), code: t.string() },
+  (ctx, { user_id, name, code }) => {
+    if (!user_id || user_id.length > MAX_USER_ID_LEN) return
+    if (!isValidCode(code)) return
+    const room = ctx.db.party.code.find(code)
+    if (!room || room.phase !== 'lobby') return
+    const display = cleanName(name)
+    if (!display) return
+
+    const key = playerKey(code, user_id)
+    const existing = ctx.db.party_player.key.find(key)
+    if (existing) {
+      ctx.db.party_player.key.update({ ...existing, name: display })
+      return
+    }
+    ctx.db.party_player.insert({
+      key,
+      code,
+      user_id,
+      name: display,
+      ready: false,
+      score: 0,
+      joined_at: BigInt(Date.now()),
+    })
+  },
+)
+
+// Toggle a player's ready flag. When every player is ready and there are at
+// least two of them, the match auto-starts on question 0.
+export const set_ready = spacetimedb.reducer(
+  { user_id: t.string(), code: t.string(), ready: t.bool() },
+  (ctx, { user_id, code, ready }) => {
+    const room = ctx.db.party.code.find(code)
+    if (!room || room.phase !== 'lobby') return
+    const key = playerKey(code, user_id)
+    const player = ctx.db.party_player.key.find(key)
+    if (!player) return
+    ctx.db.party_player.key.update({ ...player, ready })
+
+    const players = Array.from(ctx.db.party_player.byCode.filter(code))
+    if (players.length >= 2 && players.every((p) => (p.key === key ? ready : p.ready))) {
+      ctx.db.party.code.update({
+        ...room,
+        phase: 'playing',
+        current_question: 0,
+        question_deadline: BigInt(Date.now() + QUESTION_MS),
+      })
+    }
+  },
+)
+
+// Leave a room. Removes the player; if the room empties it's deleted, and if the
+// host leaves the earliest remaining player inherits the host role.
+export const leave_party = spacetimedb.reducer(
+  { user_id: t.string(), code: t.string() },
+  (ctx, { user_id, code }) => {
+    const key = playerKey(code, user_id)
+    if (ctx.db.party_player.key.find(key)) ctx.db.party_player.key.delete(key)
+
+    const remaining = Array.from(ctx.db.party_player.byCode.filter(code))
+    const room = ctx.db.party.code.find(code)
+    if (!room) return
+    if (remaining.length === 0) {
+      ctx.db.party.code.delete(code)
+      return
+    }
+    if (room.host_id === user_id) {
+      remaining.sort((a, b) => (a.joined_at < b.joined_at ? -1 : 1))
+      ctx.db.party.code.update({ ...room, host_id: remaining[0].user_id })
+    }
+  },
+)
+
+// Record one guess for the current question. Rejected if the player already
+// answered this question or the deadline passed. When the final outstanding
+// player answers, the question advances immediately (no need to wait out the
+// clock).
+export const submit_party_guess = spacetimedb.reducer(
+  {
+    user_id: t.string(),
+    code: t.string(),
+    question: t.i32(),
+    correct: t.bool(),
+  },
+  (ctx, { user_id, code, question, correct }) => {
+    const room = ctx.db.party.code.find(code)
+    if (!room || room.phase !== 'playing') return
+    if (room.current_question !== question) return // stale round
+    if (Date.now() > Number(room.question_deadline)) return // too late
+
+    const player = ctx.db.party_player.key.find(playerKey(code, user_id))
+    if (!player) return
+    const gKey = guessKey(code, question, user_id)
+    if (ctx.db.party_guess.key.find(gKey)) return // one guess per question
+
+    ctx.db.party_guess.insert({
+      key: gKey,
+      code,
+      question,
+      user_id,
+      name: player.name,
+      correct,
+      timestamp: BigInt(Date.now()),
+    })
+    if (correct) {
+      ctx.db.party_player.key.update({ ...player, score: player.score + 1 })
+    }
+
+    // Early-advance once everyone in the room has answered this question.
+    const players = Array.from(ctx.db.party_player.byCode.filter(code))
+    let answered = 0
+    for (const g of ctx.db.party_guess.byCode.filter(code)) {
+      if (g.question === question) answered++
+    }
+    if (answered >= players.length) advanceParty(ctx, code, question)
+  },
+)
+
+// "Play again": send a finished room back to the lobby with a fresh seed,
+// reset scores/ready, and clear the old guesses. Guarded on phase 'finished'
+// so racing clicks collapse — the first caller's seed wins, the rest no-op.
+export const restart_party = spacetimedb.reducer(
+  { user_id: t.string(), code: t.string(), seed: t.string() },
+  (ctx, { code, seed }) => {
+    const room = ctx.db.party.code.find(code)
+    const allCodes = Array.from(ctx.db.party.iter()).map((r) => r.code)
+    console.log(
+      `restart_party code=[${code}] len=${code.length} seed=${seed} found=${!!room} phase=${room?.phase} allCodes=${JSON.stringify(allCodes)}`,
+    )
+    if (!room || room.phase !== 'finished') return
+
+    ctx.db.party.code.update({
+      ...room,
+      seed: seed.slice(0, 32),
+      phase: 'lobby',
+      current_question: 0,
+      question_deadline: 0n,
+    })
+    for (const p of Array.from(ctx.db.party_player.byCode.filter(code))) {
+      ctx.db.party_player.key.update({ ...p, score: 0, ready: false })
+    }
+    for (const g of Array.from(ctx.db.party_guess.byCode.filter(code))) {
+      ctx.db.party_guess.key.delete(g.key)
+    }
+  },
+)
+
+// Called by any client whose local 30s timer has expired. The deadline guard
+// plus advanceParty's current_question guard make duplicate calls harmless.
+export const advance_question = spacetimedb.reducer(
+  { code: t.string(), question: t.i32() },
+  (ctx, { code, question }) => {
+    const room = ctx.db.party.code.find(code)
+    if (!room || room.phase !== 'playing') return
+    if (room.current_question !== question) return
+    if (Date.now() < Number(room.question_deadline)) return // not expired yet
+    advanceParty(ctx, code, question)
   },
 )
 

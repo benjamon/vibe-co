@@ -34,13 +34,23 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AdvanceQuestionReducer from "./advance_question_reducer";
+import CreatePartyReducer from "./create_party_reducer";
+import JoinPartyReducer from "./join_party_reducer";
+import LeavePartyReducer from "./leave_party_reducer";
 import RecordGuessReducer from "./record_guess_reducer";
+import RestartPartyReducer from "./restart_party_reducer";
+import SetReadyReducer from "./set_ready_reducer";
+import SubmitPartyGuessReducer from "./submit_party_guess_reducer";
 
 // Import all procedure arg schemas
 
 // Import all table schema definitions
 import CountryStatRow from "./country_stat_table";
 import GuessRow from "./guess_table";
+import PartyRow from "./party_table";
+import PartyGuessRow from "./party_guess_table";
+import PartyPlayerRow from "./party_player_table";
 import UserCountryStatRow from "./user_country_stat_table";
 
 /** Type-only namespace exports for generated type groups. */
@@ -75,6 +85,45 @@ const tablesSchema = __schema({
       { name: 'guess_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, GuessRow),
+  party: __table({
+    name: 'party',
+    indexes: [
+      { accessor: 'code', name: 'party_code_idx_btree', algorithm: 'btree', columns: [
+        'code',
+      ] },
+    ],
+    constraints: [
+      { name: 'party_code_key', constraint: 'unique', columns: ['code'] },
+    ],
+  }, PartyRow),
+  party_guess: __table({
+    name: 'party_guess',
+    indexes: [
+      { accessor: 'byCode', name: 'party_guess_code_idx_btree', algorithm: 'btree', columns: [
+        'code',
+      ] },
+      { accessor: 'key', name: 'party_guess_key_idx_btree', algorithm: 'btree', columns: [
+        'key',
+      ] },
+    ],
+    constraints: [
+      { name: 'party_guess_key_key', constraint: 'unique', columns: ['key'] },
+    ],
+  }, PartyGuessRow),
+  party_player: __table({
+    name: 'party_player',
+    indexes: [
+      { accessor: 'byCode', name: 'party_player_code_idx_btree', algorithm: 'btree', columns: [
+        'code',
+      ] },
+      { accessor: 'key', name: 'party_player_key_idx_btree', algorithm: 'btree', columns: [
+        'key',
+      ] },
+    ],
+    constraints: [
+      { name: 'party_player_key_key', constraint: 'unique', columns: ['key'] },
+    ],
+  }, PartyPlayerRow),
   user_country_stat: __table({
     name: 'user_country_stat',
     indexes: [
@@ -93,7 +142,14 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("advance_question", AdvanceQuestionReducer),
+  __reducerSchema("create_party", CreatePartyReducer),
+  __reducerSchema("join_party", JoinPartyReducer),
+  __reducerSchema("leave_party", LeavePartyReducer),
   __reducerSchema("record_guess", RecordGuessReducer),
+  __reducerSchema("restart_party", RestartPartyReducer),
+  __reducerSchema("set_ready", SetReadyReducer),
+  __reducerSchema("submit_party_guess", SubmitPartyGuessReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

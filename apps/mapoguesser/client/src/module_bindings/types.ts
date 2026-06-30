@@ -29,6 +29,39 @@ export const Guess = __t.object("Guess", {
 });
 export type Guess = __Infer<typeof Guess>;
 
+export const Party = __t.object("Party", {
+  code: __t.string(),
+  hostId: __t.string(),
+  seed: __t.string(),
+  phase: __t.string(),
+  currentQuestion: __t.i32(),
+  questionDeadline: __t.u64(),
+  createdAt: __t.u64(),
+});
+export type Party = __Infer<typeof Party>;
+
+export const PartyGuess = __t.object("PartyGuess", {
+  key: __t.string(),
+  code: __t.string(),
+  question: __t.i32(),
+  userId: __t.string(),
+  name: __t.string(),
+  correct: __t.bool(),
+  timestamp: __t.u64(),
+});
+export type PartyGuess = __Infer<typeof PartyGuess>;
+
+export const PartyPlayer = __t.object("PartyPlayer", {
+  key: __t.string(),
+  code: __t.string(),
+  userId: __t.string(),
+  name: __t.string(),
+  ready: __t.bool(),
+  score: __t.i32(),
+  joinedAt: __t.u64(),
+});
+export type PartyPlayer = __Infer<typeof PartyPlayer>;
+
 export const UserCountryStat = __t.object("UserCountryStat", {
   key: __t.string(),
   userId: __t.string(),

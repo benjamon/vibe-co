@@ -7,6 +7,7 @@ import {
   type CountryAgg,
   type GuessDot,
 } from './stats'
+import { submitGuess as submitPartyGuess, type PartyPhase } from './party'
 
 // Which dataset the stats sidebar shows. 'mine' = this player's local history
 // (also mirrored to the server); 'global' = aggregate totals across all users
@@ -187,6 +188,31 @@ const computeScore = (guesses: GuessRecord[], targetId: number): number => {
   return sum
 }
 
+// Record one guess (target vs clicked) into the server stats and return the
+// updated local per-country stats map — or null if the names lack IDs yet.
+// Shared by the single-player and multiplayer guess paths so both feed stats.
+const applyGuessStats = (
+  s: GameState,
+  target: string,
+  clicked: string,
+  lat?: number,
+  lon?: number,
+): Record<number, CountryStats> | null => {
+  recordGuess(target, clicked, lat as number, lon as number)
+  const targetId = s.countryIds[target]
+  const guessId = s.countryIds[clicked]
+  if (targetId === undefined || guessId === undefined) return null
+  const existing = s.stats[targetId] ?? { guesses: [], score: 0 }
+  const record: GuessRecord = { id: guessId }
+  if (typeof lat === 'number' && Number.isFinite(lat)) record.lat = lat
+  if (typeof lon === 'number' && Number.isFinite(lon)) record.lon = lon
+  const guesses = [...existing.guesses, record]
+  return {
+    ...s.stats,
+    [targetId]: { guesses, score: computeScore(guesses, targetId) },
+  }
+}
+
 const loadPerfectStreak = (): number => {
   if (typeof localStorage === 'undefined') return 0
   try {
@@ -315,6 +341,27 @@ interface GameState {
   // pans to this country, holds 2 s, then calls finishGame() to transition to
   // the 'finished' phase. Keeps the score-screen handoff cinematic.
   endingTarget: string | null
+
+  // True while a "Play With Friends" party match is driving the globe. In this
+  // mode handleGlobeClick submits one server guess per question (no local
+  // budget/reveal logic) and the question pointer is driven by the server via
+  // syncPartyMatch rather than by local guesses.
+  multiplayer: boolean
+  // Whether the local player has already guessed the *current* party question.
+  // Locks the globe until the server advances to the next question.
+  partyAnswered: boolean
+
+  // Drive the local match from a party snapshot. Draws the deterministic
+  // targets from the room seed, serves the server's current question, and
+  // resets the answered-lock whenever the question changes. Called by the App's
+  // party→store bridge on every snapshot.
+  syncPartyMatch: (opts: {
+    seed: string
+    phase: PartyPhase
+    currentQuestion: number
+  }) => void
+  // Tear down the multiplayer match (leave / back to menu) and return to idle.
+  endPartyMatch: () => void
 
   startGame: (seed?: string, mode?: GameMode) => void
   resetGame: () => void
@@ -480,6 +527,64 @@ export const useGameStore = create<GameState>((set, get) => ({
   consecutiveWrong: 0,
   revealTarget: null,
   endingTarget: null,
+  multiplayer: false,
+  partyAnswered: false,
+
+  syncPartyMatch: ({ seed, phase, currentQuestion }) => {
+    const s = get()
+
+    if (phase === 'finished') {
+      set({ multiplayer: true, phase: 'finished', target: null })
+      return
+    }
+    if (phase !== 'playing') return
+
+    // Draw the deterministic sequence the first time (or if the seed changed).
+    // Party matches always draw from the classic pool.
+    const needDraw = !s.multiplayer || s.seed !== seed || s.targets.length === 0
+    const targets = needDraw
+      ? drawUniqueTargets(get().countries, seed, ROUNDS)
+      : s.targets
+    if (targets.length === 0) return
+
+    const idx = Math.min(currentQuestion, targets.length)
+    const questionChanged = needDraw || idx !== s.targetIndex
+    set({
+      multiplayer: true,
+      mode: 'classic',
+      phase: 'playing',
+      seed,
+      targets,
+      targetIndex: idx,
+      target: targetAt(targets, idx),
+      // New question (or fresh match) clears the answered-lock and last guess.
+      partyAnswered: questionChanged ? false : s.partyAnswered,
+      country: questionChanged ? null : s.country,
+      markers: needDraw ? [] : s.markers,
+      attempts: needDraw ? [] : s.attempts,
+      revealTarget: null,
+      endingTarget: null,
+    })
+  },
+
+  endPartyMatch: () => {
+    set({
+      multiplayer: false,
+      partyAnswered: false,
+      phase: 'idle',
+      mode: 'classic',
+      seed: null,
+      targets: [],
+      targetIndex: 0,
+      target: null,
+      attempts: [],
+      markers: [],
+      country: null,
+      consecutiveWrong: 0,
+      revealTarget: null,
+      endingTarget: null,
+    })
+  },
 
   startGame: (seed, mode = 'classic') => {
     const pool =
@@ -516,6 +621,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       consecutiveWrong,
       revealTarget: null,
       endingTarget: null,
+      multiplayer: false,
+      partyAnswered: false,
     })
   },
 
@@ -533,6 +640,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       consecutiveWrong: 0,
       revealTarget: null,
       endingTarget: null,
+      multiplayer: false,
+      partyAnswered: false,
     }),
 
   clearReveal: () =>
@@ -562,6 +671,26 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ country: clicked })
 
     const s = get()
+
+    // ---- Multiplayer party path ----
+    // One server guess per question, no local budget/reveal logic. The question
+    // pointer advances only when the server does (via syncPartyMatch), so a
+    // second click is ignored until then.
+    if (s.multiplayer) {
+      if (s.phase !== 'playing' || clicked === null || s.target === null) return
+      if (s.partyAnswered) return
+      const correct = clicked === s.target
+      if (correct) sfxCorrect()
+      else sfxWrong()
+      const nextStats = applyGuessStats(s, s.target, clicked, lat, lon)
+      submitPartyGuess(s.targetIndex, correct)
+      set({
+        partyAnswered: true,
+        ...(nextStats ? { stats: nextStats } : {}),
+      })
+      return
+    }
+
     // Ignore clicks during reveal/ending animations; the viewer is repositioning.
     if (
       s.phase !== 'playing' ||
@@ -578,30 +707,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     // before we mutate any game state. Skipped if either name lacks an ID
     // (registerCountries hasn't run yet — shouldn't happen in practice).
     if (s.target) {
-      // Mirror the guess to the server, keyed by country NAME (stable across
-      // clients) and the player's random user id. lat/lon may be undefined for
-      // guesses made outside the globe viewer (e.g. unit tests); recordGuess
-      // guards on finite coordinates and no-ops in that case.
-      recordGuess(s.target, clicked, lat as number, lon as number)
-
-      const targetId = s.countryIds[s.target]
-      const guessId = s.countryIds[clicked]
-      if (targetId !== undefined && guessId !== undefined) {
-        const existing = s.stats[targetId] ?? { guesses: [], score: 0 }
-        const record: GuessRecord = { id: guessId }
-        if (typeof lat === 'number' && Number.isFinite(lat)) record.lat = lat
-        if (typeof lon === 'number' && Number.isFinite(lon)) record.lon = lon
-        const guesses = [...existing.guesses, record]
-        set({
-          stats: {
-            ...s.stats,
-            [targetId]: {
-              guesses,
-              score: computeScore(guesses, targetId),
-            },
-          },
-        })
-      }
+      const nextStats = applyGuessStats(s, s.target, clicked, lat, lon)
+      if (nextStats) set({ stats: nextStats })
     }
 
     const correct = clicked === s.target
@@ -668,6 +775,8 @@ export const useGameStore = create<GameState>((set, get) => ({
 // satisfying the "clear data when a new seed is started" requirement.
 useGameStore.subscribe((state, prev) => {
   if (!state.seed) return
+  // Party matches are server-authoritative and never resumed from localStorage.
+  if (state.multiplayer) return
   if (
     state.seed === prev.seed &&
     state.attempts === prev.attempts &&

@@ -10,6 +10,7 @@ import {
   subscribeCountryGuesses,
   type CountryAgg,
 } from './stats'
+import { PartyOverlay, useParty } from './PartyUI'
 
 // Cesium (~4 MB) lives entirely inside WorldViewer, so lazy-loading it splits
 // that weight into its own chunk: the menu / start screen paints off the small
@@ -152,6 +153,14 @@ export function App() {
   const seed = useGameStore((s) => s.seed)
   const mode = useGameStore((s) => s.mode)
   const perfectStreak = useGameStore((s) => s.perfectStreak)
+  const multiplayer = useGameStore((s) => s.multiplayer)
+
+  // True whenever a party (lobby/in-game/results) owns the screen — used to
+  // suppress all the single-player overlays while Party.tsx drives the UI.
+  const { active: partyActive } = useParty()
+  const [friendsOpen, setFriendsOpen] = useState(false)
+  // Either of these means the single-player menu/HUD should step aside.
+  const partyUI = partyActive || multiplayer
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
@@ -320,7 +329,8 @@ export function App() {
   //   8/9 → full confetti
   //   9/9 → full confetti + fireworks
   useEffect(() => {
-    if (phase !== 'finished') {
+    // Multiplayer runs its own celebration on the party results screen.
+    if (phase !== 'finished' || multiplayer) {
       setShowConfetti(false)
       setShowFireworks(false)
       return
@@ -413,6 +423,11 @@ export function App() {
         <WorldViewer />
       </Suspense>
 
+      <PartyOverlay
+        friendsOpen={friendsOpen}
+        onClose={() => setFriendsOpen(false)}
+      />
+
       {showConfetti && (
         <Confetti
           intensity={confettiIntensity}
@@ -421,7 +436,7 @@ export function App() {
       )}
       {showFireworks && <Fireworks onDone={() => setShowFireworks(false)} />}
 
-      {phase !== 'idle' && (
+      {phase !== 'idle' && !partyUI && (
         <div
           style={{
             position: 'absolute',
@@ -506,7 +521,7 @@ export function App() {
         </div>
       )}
 
-      {phase !== 'idle' && (
+      {phase !== 'idle' && !partyUI && (
         <div
           style={{
             ...overlayBase,
@@ -586,7 +601,7 @@ export function App() {
         </div>
       )}
 
-      {!statsOpen && (phase === 'idle' || phase === 'finished') && (
+      {!statsOpen && !partyUI && !friendsOpen && (phase === 'idle' || phase === 'finished') && (
         <div
           style={{
             position: 'absolute',
@@ -639,6 +654,17 @@ export function App() {
           </button>
           <button
             type="button"
+            onClick={() => {
+              clearSeedFromUrl()
+              resetGame()
+              setFriendsOpen(true)
+            }}
+            style={menuButtonStyle}
+          >
+            👥 Play With Friends
+          </button>
+          <button
+            type="button"
             onClick={handleOpenStats}
             style={menuButtonStyle}
           >
@@ -668,7 +694,7 @@ export function App() {
         </div>
       )}
 
-      {phase !== 'idle' && guess && (
+      {phase !== 'idle' && !partyUI && guess && (
         <div
           style={{
             ...overlayBase,
