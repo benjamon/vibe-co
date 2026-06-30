@@ -292,7 +292,9 @@ export function WorldViewer() {
     viewer.resolutionScale = RESOLUTION_SCALE
     viewer.scene.postProcessStages.fxaa.enabled = USE_FXAA
     viewer.scene.globe.maximumScreenSpaceError = MAX_SCREEN_SPACE_ERROR
-    viewer.scene.skyAtmosphere.show = SHOW_ATMOSPHERE
+    if (viewer.scene.skyAtmosphere) {
+      viewer.scene.skyAtmosphere.show = SHOW_ATMOSPHERE
+    }
     viewer.scene.globe.showGroundAtmosphere = SHOW_ATMOSPHERE
     viewer.scene.fog.enabled = SHOW_ATMOSPHERE
 
@@ -605,17 +607,50 @@ export function WorldViewer() {
       })
 
     // Country border lines: solid pure-black, no halo.
-    const borderMat = new ColorMaterialProperty(new Color(0.0,0.0,0.0,0.8))
+    //
+    // On mobile the lines are lifted a few km off the surface instead of being
+    // ground-clamped. Ground-clamping leans on depth/classification support
+    // that's unreliable on mobile GPUs (often WebGL1): when it degrades the
+    // line collapses onto the surface and z-fights the globe, so zoomed out it
+    // gets eaten by the world geometry (fine up close, where the frustum split
+    // resolves it). A small lift keeps the near side reliably in front of the
+    // surface while the opaque globe still occludes the far side. arcType
+    // defaults to GEODESIC, so each lifted segment still hugs the curve.
+    // Desktop ground-clamps as before (no z-fighting there, zero parallax).
+    const BORDER_LIFT_METERS = 4000
+    const borderEllipsoid = viewer.scene.globe.ellipsoid
+    const liftToBorderHeight = (c: Cartesian3): Cartesian3 => {
+      const carto = Cartographic.fromCartesian(c, borderEllipsoid)
+      return Cartesian3.fromRadians(
+        carto.longitude,
+        carto.latitude,
+        BORDER_LIFT_METERS,
+        borderEllipsoid,
+      )
+    }
+    const borderMat = new ColorMaterialProperty(new Color(0.0, 0.0, 0.0, 0.8))
     GeoJsonDataSource.load(COUNTRY_BORDERS_URL, {
       stroke: Color.BLACK,
       strokeWidth: 1.5,
     })
       .then((ds) => {
         if (destroyed || viewer.isDestroyed()) return
+        const time = viewer.clock.currentTime
         for (const entity of ds.entities.values) {
-          if (entity.polyline) {
-            entity.polyline.material = borderMat
-            entity.polyline.width = new ConstantProperty(2.25)
+          const polyline = entity.polyline
+          if (!polyline) continue
+          polyline.material = borderMat
+          polyline.width = new ConstantProperty(2.25)
+          if (IS_MOBILE) {
+            polyline.clampToGround = new ConstantProperty(false)
+            const positions = polyline.positions?.getValue(time) as
+              | Cartesian3[]
+              | undefined
+            if (positions) {
+              polyline.positions = new ConstantProperty(
+                positions.map(liftToBorderHeight),
+              )
+            }
           }
         }
         viewer.dataSources.add(ds)
@@ -744,7 +779,8 @@ export function WorldViewer() {
       const Re = ellipsoid.maximumRadius
       const frustum = viewer.camera.frustum
       const fovy =
-        frustum instanceof PerspectiveFrustum ? frustum.fovy : Math.PI / 3
+        (frustum instanceof PerspectiveFrustum ? frustum.fovy : undefined) ??
+        Math.PI / 3
       const h = canvas.clientHeight || 1
       // range − Re ≈ camera-to-surface distance at the sub-camera point; floored
       // so a fully zoomed-in view can still pan.
