@@ -79,6 +79,12 @@ const GLOBE_CONTRAST = 0.9
 // CPU point-in-polygon hit-testing. Served via jsDelivr's GitHub mirror.
 const COUNTRY_BORDERS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_boundary_lines_land.geojson'
+// Coastlines: the land/water outline of every landmass and island. Borders only
+// cover lines *between* countries, so island nations (Åland, Trinidad & Tobago)
+// and territories (French Polynesia, …) — which border no one — get no outline
+// without this. Drawn with the same style as borders.
+const COASTLINE_URL =
+  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_coastline.geojson'
 const COUNTRY_POLYGONS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson'
 // Capital cities (small 110m set, ~240 points) — used to place a country's flag
@@ -606,7 +612,9 @@ export function WorldViewer() {
         // CDN unreachable / blocked — clicks won't resolve to country names.
       })
 
-    // Country border lines: solid pure-black, no halo.
+    // Country borders + coastlines: solid pure-black lines, no halo. Same style
+    // for both — borders give the political divisions, coastlines outline every
+    // landmass and island (including ones that border no one).
     //
     // On mobile the lines are lifted a few km off the surface instead of being
     // ground-clamped. Ground-clamping leans on depth/classification support
@@ -629,35 +637,39 @@ export function WorldViewer() {
       )
     }
     const borderMat = new ColorMaterialProperty(new Color(0.0, 0.0, 0.0, 0.8))
-    GeoJsonDataSource.load(COUNTRY_BORDERS_URL, {
-      stroke: Color.BLACK,
-      strokeWidth: 1.5,
-    })
-      .then((ds) => {
-        if (destroyed || viewer.isDestroyed()) return
-        const time = viewer.clock.currentTime
-        for (const entity of ds.entities.values) {
-          const polyline = entity.polyline
-          if (!polyline) continue
-          polyline.material = borderMat
-          polyline.width = new ConstantProperty(2.25)
-          if (IS_MOBILE) {
-            polyline.clampToGround = new ConstantProperty(false)
-            const positions = polyline.positions?.getValue(time) as
-              | Cartesian3[]
-              | undefined
-            if (positions) {
-              polyline.positions = new ConstantProperty(
-                positions.map(liftToBorderHeight),
-              )
+    const loadLineLayer = (url: string): void => {
+      GeoJsonDataSource.load(url, {
+        stroke: Color.BLACK,
+        strokeWidth: 1.5,
+      })
+        .then((ds) => {
+          if (destroyed || viewer.isDestroyed()) return
+          const time = viewer.clock.currentTime
+          for (const entity of ds.entities.values) {
+            const polyline = entity.polyline
+            if (!polyline) continue
+            polyline.material = borderMat
+            polyline.width = new ConstantProperty(2.25)
+            if (IS_MOBILE) {
+              polyline.clampToGround = new ConstantProperty(false)
+              const positions = polyline.positions?.getValue(time) as
+                | Cartesian3[]
+                | undefined
+              if (positions) {
+                polyline.positions = new ConstantProperty(
+                  positions.map(liftToBorderHeight),
+                )
+              }
             }
           }
-        }
-        viewer.dataSources.add(ds)
-      })
-      .catch(() => {
-        // Borders are a nice-to-have; basemap still shows coastlines.
-      })
+          viewer.dataSources.add(ds)
+        })
+        .catch(() => {
+          // Lines are a nice-to-have; the basemap still shows coastlines.
+        })
+    }
+    loadLineLayer(COUNTRY_BORDERS_URL)
+    loadLineLayer(COASTLINE_URL)
 
     // Disable Cesium's built-in camera controls; we drive the camera ourselves.
     const ssc = viewer.scene.screenSpaceCameraController
