@@ -49,6 +49,11 @@ export interface Marker {
 
 export const ROUNDS = 9
 export const WRONG_GUESSES_BEFORE_REVEAL = 2
+// Capitals mode is shorter and scored golf-style: 5 capitals, two guesses each
+// (the closer guess scores). Kept separate from ROUNDS, which is the guess
+// budget for classic/worldcup.
+export const CAPITAL_ROUNDS = 5
+export const CAPITAL_GUESSES_PER_ROUND = 2
 
 // Single-slot save: a returning player can resume one in-progress match.
 // Starting a different seed overwrites it.
@@ -95,6 +100,9 @@ interface SavedMatch {
   // Capitals mode only: the great-circle miles for each completed round, in
   // order. Absent for classic/worldcup saves (which score by `attempts`).
   distances?: number[]
+  // Capitals mode only: the in-progress first guess of the current capital (the
+  // player has one guess left), or null/absent when between rounds.
+  roundGuess?: RoundGuess | null
 }
 
 const isSavedMatch = (v: unknown): v is SavedMatch => {
@@ -370,6 +378,10 @@ interface GameState {
   // Line from the player's last dropped pin to the true capital. Cleared when
   // the next guess is made (only the current round's line is ever shown).
   guessLine: GuessLine | null
+  // Capitals mode: the first of the round's two guesses, or null before the
+  // player has guessed this capital. On the second guess the closer of the two
+  // scores and the answer is revealed; null again once the round advances.
+  roundGuess: RoundGuess | null
   // Bumped whenever the game markers are fully replaced (rather than appended),
   // so the viewer knows to wipe + redraw instead of appending. Capitals mode
   // replaces its two markers each guess; classic/worldcup only ever appends.
@@ -556,6 +568,15 @@ export interface GuessLine {
   toLon: number
 }
 
+// Capitals mode: the player's first of two guesses on the current capital.
+// Held so the second guess can pick the closer of the two for scoring, and so a
+// mid-round refresh resumes with the first guess intact.
+export interface RoundGuess {
+  lat: number
+  lon: number
+  distance: number
+}
+
 export const useGameStore = create<GameState>((set, get) => ({
   heading: 0,
   setHeading: (heading) => set({ heading }),
@@ -652,6 +673,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   revealFlag: false,
   hintCircle: null,
   guessLine: null,
+  roundGuess: null,
   markerEpoch: 0,
   markers: [],
   consecutiveWrong: 0,
@@ -714,6 +736,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       revealFlag: false,
       hintCircle: null,
       guessLine: null,
+      roundGuess: null,
       markers: [],
       country: null,
       consecutiveWrong: 0,
@@ -731,7 +754,9 @@ export const useGameStore = create<GameState>((set, get) => ({
           : get().countries
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
-    const targets = drawUniqueTargets(pool, matchSeed, ROUNDS)
+    // Capitals mode is a shorter, 5-capital match; classic/worldcup use ROUNDS.
+    const roundCount = mode === 'capitals' ? CAPITAL_ROUNDS : ROUNDS
+    const targets = drawUniqueTargets(pool, matchSeed, roundCount)
     if (targets.length === 0) return
 
     // Resume only if BOTH the seed and the mode match the saved match — the
@@ -747,10 +772,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
     const targetIndex = restore?.targetIndex ?? 0
-    // Capitals mode is one guess per round, so it finishes once every round has
-    // a recorded distance; classic/worldcup finish on the guess budget.
+    const roundGuess = restore?.roundGuess ?? null
+    // Capitals mode records one distance per completed capital, so it finishes
+    // once every capital has a recorded distance; classic/worldcup finish on the
+    // guess budget.
     const finished =
-      mode === 'capitals' ? distances.length >= ROUNDS : targetIndex >= ROUNDS
+      mode === 'capitals'
+        ? distances.length >= CAPITAL_ROUNDS
+        : targetIndex >= ROUNDS
 
     set({
       phase: finished ? 'finished' : 'playing',
@@ -766,6 +795,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       revealFlag: false,
       hintCircle: null,
       guessLine: null,
+      roundGuess,
       markers,
       country: null,
       consecutiveWrong,
@@ -791,6 +821,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       revealFlag: false,
       hintCircle: null,
       guessLine: null,
+      roundGuess: null,
       markers: [],
       country: null,
       consecutiveWrong: 0,
@@ -926,42 +957,76 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get()
     if (s.mode !== 'capitals') return
     if (s.phase !== 'playing' || s.target === null) return
-    if (s.distances.length >= ROUNDS) return
+    if (s.distances.length >= CAPITAL_ROUNDS) return
     const cap = s.capitals[s.target]
     if (!cap) return
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
 
-    const distance = haversineMiles(lat, lon, cap.lat, cap.lon)
-
-    // Drop the guess pin (green when it's a near-perfect drop, otherwise grey)
-    // and a red X revealing the true capital so the player sees the gap.
     const NEAR_MI = 50
+    const distance = haversineMiles(lat, lon, cap.lat, cap.lon)
     const near = distance <= NEAR_MI
+    // A guess pin labelled with its own miss distance, coloured green when it's a
+    // near-perfect drop, otherwise grey.
+    const pinFor = (
+      gLat: number,
+      gLon: number,
+      dist: number,
+    ): Marker => ({
+      lat: gLat,
+      lon: gLon,
+      kind: dist <= NEAR_MI ? 'correct' : 'wrong',
+      label: `${Math.round(dist).toLocaleString()} mi`,
+    })
+
     if (near) sfxCorrect()
     else sfxWrong()
 
-    // Persist the pin, the answer, and the distance to SpacetimeDB.
+    // ---- First of two guesses: show the pin + distance, hide the answer. ----
+    // The round doesn't advance and nothing is scored yet — the player gets a
+    // second attempt, and only the closer of the two counts.
+    if (s.roundGuess === null) {
+      set({
+        roundGuess: { lat, lon, distance },
+        // Replace the previous round's markers with just this guess pin. The
+        // hint circle / name / flag reveals persist into the second guess.
+        markers: [pinFor(lat, lon, distance)],
+        markerEpoch: s.markerEpoch + 1,
+        // No line yet — that would reveal where the answer is.
+        guessLine: null,
+      })
+      return
+    }
+
+    // ---- Second guess: score the closer of the two, reveal, advance. ----
+    const first = s.roundGuess
+    const best = Math.min(first.distance, distance)
+    // The scoring (closer) guess — its pin is the one the answer line connects to.
+    const scoring =
+      distance <= first.distance
+        ? { lat, lon }
+        : { lat: first.lat, lon: first.lon }
+
+    // Persist the scoring guess + the answer + the (best) distance to SpacetimeDB.
     recordCapitalGuess({
       country: s.target,
-      guessLat: lat,
-      guessLon: lon,
+      guessLat: scoring.lat,
+      guessLon: scoring.lon,
       targetLat: cap.lat,
       targetLon: cap.lon,
-      distanceMi: distance,
+      distanceMi: best,
     })
 
-    const distances = [...s.distances, distance]
+    const distances = [...s.distances, best]
     const targetIndex = s.targetIndex + 1
-    const finished = distances.length >= ROUNDS
+    const finished = distances.length >= CAPITAL_ROUNDS
     set({
       distances,
-      // Replace (not append) — only the current round's pin + answer are shown,
-      // clearing the previous round's. The guess pin is unlabelled; the reveal
-      // pin shows the country's flag with a two-line "City,\nCountry" label above
-      // it (the flag is looked up from the explicit `code`, since the label text
-      // isn't a plain country name).
+      // Both guess pins (each with its own distance) plus the reveal pin: the
+      // country's flag with a two-line "City,\nCountry" label above it (flag from
+      // the explicit `code`, since the label text isn't a plain country name).
       markers: [
-        { lat, lon, kind: near ? 'correct' : 'wrong', label: '' },
+        pinFor(first.lat, first.lon, first.distance),
+        pinFor(lat, lon, distance),
         {
           lat: cap.lat,
           lon: cap.lon,
@@ -971,16 +1036,17 @@ export const useGameStore = create<GameState>((set, get) => ({
         },
       ],
       markerEpoch: s.markerEpoch + 1,
-      // Draw the pin→answer line; drop the round's hint circle and reveals.
+      // Line from the scoring (closer) guess to the answer.
       guessLine: {
-        fromLat: lat,
-        fromLon: lon,
+        fromLat: scoring.lat,
+        fromLon: scoring.lon,
         toLat: cap.lat,
         toLon: cap.lon,
       },
       hintCircle: null,
       revealName: false,
       revealFlag: false,
+      roundGuess: null,
       targetIndex,
       target: finished ? null : targetAt(s.targets, targetIndex),
       phase: finished ? 'finished' : 'playing',
@@ -1028,7 +1094,8 @@ useGameStore.subscribe((state, prev) => {
     state.distances === prev.distances &&
     state.targetIndex === prev.targetIndex &&
     state.markers === prev.markers &&
-    state.consecutiveWrong === prev.consecutiveWrong
+    state.consecutiveWrong === prev.consecutiveWrong &&
+    state.roundGuess === prev.roundGuess
   )
     return
   writeSave({
@@ -1039,6 +1106,7 @@ useGameStore.subscribe((state, prev) => {
     targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,
+    roundGuess: state.roundGuess,
   })
 })
 

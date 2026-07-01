@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, lazy, Suspense } from 'react'
 import { Confetti } from './Confetti'
 import { Fireworks } from './Fireworks'
 import { sfxEndJingle, installAudioUnlock } from './sfx'
-import { useGameStore, ROUNDS, type AttemptResult } from './store'
+import { useGameStore, ROUNDS, CAPITAL_ROUNDS, type AttemptResult } from './store'
 import {
   fetchStats,
   releaseStats,
@@ -158,10 +158,11 @@ export function App() {
   const revealName = useGameStore((s) => s.revealName)
   const revealFlag = useGameStore((s) => s.revealFlag)
   const useLifeline = useGameStore((s) => s.useLifeline)
+  const roundGuess = useGameStore((s) => s.roundGuess)
   // Capitals mode needs its own dataset (populated-places GeoJSON) on top of the
   // country polygons before it can draw a pool.
   const capitalsReady = useGameStore(
-    (s) => Object.keys(s.capitals).length >= ROUNDS,
+    (s) => Object.keys(s.capitals).length >= CAPITAL_ROUNDS,
   )
   const perfectStreak = useGameStore((s) => s.perfectStreak)
   const multiplayer = useGameStore((s) => s.multiplayer)
@@ -660,9 +661,9 @@ export function App() {
               <span style={{ opacity: 0.75 }}>
                 Round{' '}
                 {phase === 'playing'
-                  ? Math.min(distances.length + 1, ROUNDS)
-                  : ROUNDS}{' '}
-                / {ROUNDS}
+                  ? Math.min(distances.length + 1, CAPITAL_ROUNDS)
+                  : CAPITAL_ROUNDS}{' '}
+                / {CAPITAL_ROUNDS}
               </span>
               <span>Total: {milesFmt(totalMiles)}</span>
             </div>
@@ -702,6 +703,11 @@ export function App() {
                       hidden behind the "show country name/flag" lifelines. */}
                   <span style={{ fontSize: 30, fontWeight: 800 }}>
                     {capitals[target]?.city ?? '…'}
+                  </span>
+                  <span style={{ fontSize: 14, opacity: 0.8 }}>
+                    {roundGuess
+                      ? 'Guess 2 of 2'
+                      : 'Guess 1 of 2'}
                   </span>
                   {(revealFlag || revealName) && (
                     <div
