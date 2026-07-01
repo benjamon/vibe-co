@@ -175,7 +175,6 @@ export function App() {
   const partyUI = partyActive || multiplayer
 
   const [menuOpen, setMenuOpen] = useState(false)
-  const [phoneOpen, setPhoneOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
   const [statsSort, setStatsSort] = useState<'name' | 'sum'>('name')
   const [showConfetti, setShowConfetti] = useState(false)
@@ -552,7 +551,8 @@ export function App() {
         </div>
       )}
 
-      {/* Capitals lifelines "phone" (top-right): three once-per-game helpers. */}
+      {/* Capitals lifelines (top-right): three once-per-game helpers, always
+          shown as buttons (no submenu). */}
       {isCapitals && phase === 'playing' && !partyUI && (
         <div
           style={{
@@ -567,69 +567,32 @@ export function App() {
             zIndex: 1000,
           }}
         >
-          <button
-            type="button"
-            aria-label={phoneOpen ? 'Close lifelines' : 'Lifelines'}
-            onClick={() => setPhoneOpen((v) => !v)}
-            style={{
-              width: 44,
-              height: 44,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 0,
-              fontSize: 26,
-              color: 'white',
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: 'system-ui, sans-serif',
-              textShadow: '0 1px 4px rgba(0,0,0,0.9)',
-              lineHeight: 1,
-            }}
-          >
-            {phoneOpen ? '×' : '📱'}
-          </button>
-          {phoneOpen && (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-                alignItems: 'flex-end',
-              }}
-            >
-              {(
-                [
-                  { key: 'name', label: '🏳️ Show country name' },
-                  { key: 'flag', label: '🚩 Show country flag' },
-                  { key: 'circle', label: '⭕ Draw circle' },
-                ] as const
-              ).map((l) => {
-                const used = lifelinesUsed[l.key]
-                return (
-                  <button
-                    key={l.key}
-                    type="button"
-                    disabled={used}
-                    onClick={() => {
-                      useLifeline(l.key)
-                      setPhoneOpen(false)
-                    }}
-                    style={{
-                      ...menuButtonStyle,
-                      whiteSpace: 'nowrap',
-                      cursor: used ? 'not-allowed' : 'pointer',
-                      opacity: used ? 0.45 : 1,
-                      textDecoration: used ? 'line-through' : 'none',
-                    }}
-                  >
-                    {l.label}
-                  </button>
-                )
-              })}
-            </div>
-          )}
+          {(
+            [
+              { key: 'name', label: '🏳️ Show country name' },
+              { key: 'flag', label: '🚩 Show country flag' },
+              { key: 'circle', label: '⭕ Draw circle' },
+            ] as const
+          ).map((l) => {
+            const used = lifelinesUsed[l.key]
+            return (
+              <button
+                key={l.key}
+                type="button"
+                disabled={used}
+                onClick={() => useLifeline(l.key)}
+                style={{
+                  ...menuButtonStyle,
+                  whiteSpace: 'nowrap',
+                  cursor: used ? 'not-allowed' : 'pointer',
+                  opacity: used ? 0.45 : 1,
+                  textDecoration: used ? 'line-through' : 'none',
+                }}
+              >
+                {l.label}
+              </button>
+            )
+          })}
         </div>
       )}
 
