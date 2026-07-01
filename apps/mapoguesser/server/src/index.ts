@@ -122,9 +122,34 @@ const user_country_stat = table(
 // Match length and per-question time budget. ROUNDS MUST match the client's
 // store.ROUNDS so both sides agree on when the match ends.
 const PARTY_ROUNDS = 9
+// Capitals mode is a shorter, golf-scored match (mirrors client CAPITAL_ROUNDS).
+const CAPITAL_PARTY_ROUNDS = 5
 const QUESTION_MS = 30_000
+// Once every player has answered, the question's deadline is pulled in to this
+// many ms from now — a brief window to see the result before advancing.
+const ALL_ANSWERED_GRACE_MS = 3_000
 const MAX_PLAYER_NAME_LEN = 10
 const PARTY_CODE_LEN = 4
+
+// The game modes a party can play. The lobby offers two of these to vote on;
+// extend this list to add more modes (voting + round-count logic pick them up
+// automatically). Keep the strings in lockstep with the client GameMode type.
+const PARTY_MODES = ['classic', 'worldcup', 'capitals'] as const
+
+// How many questions a given mode runs for. Capitals is the short golf match.
+const roundsForMode = (mode: string): number =>
+  mode === 'capitals' ? CAPITAL_PARTY_ROUNDS : PARTY_ROUNDS
+
+// Pick two distinct modes for a lobby to vote on. Derived from the wall clock
+// (reducers already use Date.now); good enough spread for a mode shuffle.
+const pickTwoModes = (): [string, string] => {
+  const n = PARTY_MODES.length
+  const t = Date.now()
+  const i = t % n
+  // i+1 .. i+n-1 (mod n) never lands on i, so the two picks are always distinct.
+  const j = (i + 1 + (Math.floor(t / n) % (n - 1))) % n
+  return [PARTY_MODES[i], PARTY_MODES[j]]
+}
 
 // Phases: 'lobby' (gathering + readying), 'playing' (answering questions),
 // 'finished' (results). Stored as a string so the bindings stay simple.
@@ -185,6 +210,82 @@ const party_guess = table(
   },
 )
 
+// Per-room mode voting config. `mode_a`/`mode_b` are the two candidates offered
+// in the lobby; `mode` is the winner, set when the match starts ('' in lobby).
+// Kept in its own table (rather than columns on `party`) so it's an additive
+// schema change.
+const party_config = table(
+  { name: 'party_config', public: true },
+  {
+    code: t.string().primaryKey(),
+    mode_a: t.string(),
+    mode_b: t.string(),
+    mode: t.string(),
+  },
+)
+
+// One row per player's lobby vote. Primary key `${code}-${user_id}` → one vote
+// per player, re-votable.
+const party_vote = table(
+  {
+    name: 'party_vote',
+    public: true,
+    indexes: [
+      { accessor: 'byCode', algorithm: 'btree', columns: ['code'] as const },
+    ] as const,
+  },
+  {
+    key: t.string().primaryKey(),
+    code: t.string(),
+    user_id: t.string(),
+    mode: t.string(),
+  },
+)
+
+// Broadcast feed of in-match events (currently capitals lifeline usage). Clients
+// subscribe and render a toast per new row. `kind` + `detail` keep it generic so
+// new event types don't need a schema change.
+const party_event = table(
+  {
+    name: 'party_event',
+    public: true,
+    indexes: [
+      { accessor: 'byCode', algorithm: 'btree', columns: ['code'] as const },
+    ] as const,
+  },
+  {
+    key: t.string().primaryKey(),
+    code: t.string(),
+    user_id: t.string(),
+    name: t.string(),
+    kind: t.string(),
+    detail: t.string(),
+    timestamp: t.u64(),
+  },
+)
+
+// One row per (party, question, player) capitals guess, carrying the golf
+// distance. Separate from party_guess (which stays a simple correct/wrong feed)
+// so the classic path is untouched; clients sum these for the capitals
+// scoreboard (lowest total distance wins).
+const party_capital = table(
+  {
+    name: 'party_capital',
+    public: true,
+    indexes: [
+      { accessor: 'byCode', algorithm: 'btree', columns: ['code'] as const },
+    ] as const,
+  },
+  {
+    key: t.string().primaryKey(),
+    code: t.string(),
+    user_id: t.string(),
+    question: t.i32(),
+    distance_mi: t.f64(),
+    timestamp: t.u64(),
+  },
+)
+
 const spacetimedb = schema({
   guess,
   capital_guess,
@@ -193,6 +294,10 @@ const spacetimedb = schema({
   party,
   party_player,
   party_guess,
+  party_config,
+  party_vote,
+  party_event,
+  party_capital,
 })
 
 export const record_guess = spacetimedb.reducer(
@@ -356,8 +461,10 @@ const advanceParty = (
   if (!room || room.phase !== 'playing') return
   if (room.current_question !== fromQuestion) return // already advanced
 
+  const cfg = ctx.db.party_config.code.find(code)
+  const rounds = roundsForMode(cfg?.mode ?? '')
   const next = room.current_question + 1
-  if (next >= PARTY_ROUNDS) {
+  if (next >= rounds) {
     ctx.db.party.code.update({ ...room, phase: 'finished', question_deadline: 0n })
     return
   }
@@ -403,6 +510,30 @@ export const create_party = spacetimedb.reducer(
       score: 0,
       joined_at: now,
     })
+    const [modeA, modeB] = pickTwoModes()
+    ctx.db.party_config.insert({
+      code,
+      mode_a: modeA,
+      mode_b: modeB,
+      mode: '',
+    })
+  },
+)
+
+// Cast (or change) a lobby vote for one of the room's two candidate modes.
+export const set_vote = spacetimedb.reducer(
+  { user_id: t.string(), code: t.string(), mode: t.string() },
+  (ctx, { user_id, code, mode }) => {
+    const room = ctx.db.party.code.find(code)
+    if (!room || room.phase !== 'lobby') return
+    const cfg = ctx.db.party_config.code.find(code)
+    if (!cfg) return
+    if (mode !== cfg.mode_a && mode !== cfg.mode_b) return
+    const key = playerKey(code, user_id)
+    if (!ctx.db.party_player.key.find(key)) return
+    const existing = ctx.db.party_vote.key.find(key)
+    if (existing) ctx.db.party_vote.key.update({ ...existing, mode })
+    else ctx.db.party_vote.insert({ key, code, user_id, mode })
   },
 )
 
@@ -450,6 +581,26 @@ export const set_ready = spacetimedb.reducer(
 
     const players = Array.from(ctx.db.party_player.byCode.filter(code))
     if (players.length >= 2 && players.every((p) => (p.key === key ? ready : p.ready))) {
+      // Resolve the mode vote: whichever candidate has more votes wins; a tie
+      // (or no votes at all) is broken by a coin flip on the wall clock.
+      const cfg = ctx.db.party_config.code.find(code)
+      if (cfg) {
+        let a = 0
+        let b = 0
+        for (const v of ctx.db.party_vote.byCode.filter(code)) {
+          if (v.mode === cfg.mode_a) a++
+          else if (v.mode === cfg.mode_b) b++
+        }
+        const winner =
+          a > b
+            ? cfg.mode_a
+            : b > a
+              ? cfg.mode_b
+              : Date.now() % 2 === 0
+                ? cfg.mode_a
+                : cfg.mode_b
+        ctx.db.party_config.code.update({ ...cfg, mode: winner })
+      }
       ctx.db.party.code.update({
         ...room,
         phase: 'playing',
@@ -460,6 +611,30 @@ export const set_ready = spacetimedb.reducer(
   },
 )
 
+// Broadcast that a player spent a capitals lifeline, so every client can toast
+// it. Once per (player, lifeline) per match — the primary key blocks repeats.
+export const use_party_lifeline = spacetimedb.reducer(
+  { user_id: t.string(), code: t.string(), lifeline: t.string() },
+  (ctx, { user_id, code, lifeline }) => {
+    const room = ctx.db.party.code.find(code)
+    if (!room || room.phase !== 'playing') return
+    if (lifeline !== 'name' && lifeline !== 'flag' && lifeline !== 'circle') return
+    const player = ctx.db.party_player.key.find(playerKey(code, user_id))
+    if (!player) return
+    const key = `${code}-${user_id}-lifeline-${lifeline}`
+    if (ctx.db.party_event.key.find(key)) return
+    ctx.db.party_event.insert({
+      key,
+      code,
+      user_id,
+      name: player.name,
+      kind: 'lifeline',
+      detail: lifeline,
+      timestamp: BigInt(Date.now()),
+    })
+  },
+)
+
 // Leave a room. Removes the player; if the room empties it's deleted, and if the
 // host leaves the earliest remaining player inherits the host role.
 export const leave_party = spacetimedb.reducer(
@@ -467,12 +642,22 @@ export const leave_party = spacetimedb.reducer(
   (ctx, { user_id, code }) => {
     const key = playerKey(code, user_id)
     if (ctx.db.party_player.key.find(key)) ctx.db.party_player.key.delete(key)
+    // Drop this player's vote too (their slot is gone).
+    if (ctx.db.party_vote.key.find(key)) ctx.db.party_vote.key.delete(key)
 
     const remaining = Array.from(ctx.db.party_player.byCode.filter(code))
     const room = ctx.db.party.code.find(code)
     if (!room) return
     if (remaining.length === 0) {
       ctx.db.party.code.delete(code)
+      // Tear down the room's side tables so nothing leaks after it empties.
+      if (ctx.db.party_config.code.find(code)) ctx.db.party_config.code.delete(code)
+      for (const v of Array.from(ctx.db.party_vote.byCode.filter(code)))
+        ctx.db.party_vote.key.delete(v.key)
+      for (const e of Array.from(ctx.db.party_event.byCode.filter(code)))
+        ctx.db.party_event.key.delete(e.key)
+      for (const c of Array.from(ctx.db.party_capital.byCode.filter(code)))
+        ctx.db.party_capital.key.delete(c.key)
       return
     }
     if (room.host_id === user_id) {
@@ -492,8 +677,11 @@ export const submit_party_guess = spacetimedb.reducer(
     code: t.string(),
     question: t.i32(),
     correct: t.bool(),
+    // Capitals mode only: great-circle miles from the dropped pin to the true
+    // capital (the golf score). 0 / ignored for classic + worldcup.
+    distance_mi: t.f64(),
   },
-  (ctx, { user_id, code, question, correct }) => {
+  (ctx, { user_id, code, question, correct, distance_mi }) => {
     const room = ctx.db.party.code.find(code)
     if (!room || room.phase !== 'playing') return
     if (room.current_question !== question) return // stale round
@@ -513,17 +701,45 @@ export const submit_party_guess = spacetimedb.reducer(
       correct,
       timestamp: BigInt(Date.now()),
     })
-    if (correct) {
+
+    const cfg = ctx.db.party_config.code.find(code)
+    if (cfg?.mode === 'capitals') {
+      // Golf scoring: record the distance; the correct-count score is unused for
+      // capitals (the scoreboard sums these distances, lowest wins).
+      const dist = Number.isFinite(distance_mi) && distance_mi >= 0 ? distance_mi : 0
+      ctx.db.party_capital.insert({
+        key: gKey,
+        code,
+        user_id,
+        question,
+        distance_mi: dist,
+        timestamp: BigInt(Date.now()),
+      })
+    } else if (correct) {
       ctx.db.party_player.key.update({ ...player, score: player.score + 1 })
     }
 
-    // Early-advance once everyone in the room has answered this question.
+    // Once everyone has answered, don't jump straight to the next question —
+    // shorten the deadline to a short grace window so players can see the
+    // result (the reveal / everyone's guesses), then the normal deadline-driven
+    // advance takes over.
     const players = Array.from(ctx.db.party_player.byCode.filter(code))
     let answered = 0
     for (const g of ctx.db.party_guess.byCode.filter(code)) {
       if (g.question === question) answered++
     }
-    if (answered >= players.length) advanceParty(ctx, code, question)
+    if (answered >= players.length) {
+      const grace = BigInt(Date.now() + ALL_ANSWERED_GRACE_MS)
+      const current = ctx.db.party.code.find(code)
+      if (
+        current &&
+        current.phase === 'playing' &&
+        current.current_question === question &&
+        grace < current.question_deadline
+      ) {
+        ctx.db.party.code.update({ ...current, question_deadline: grace })
+      }
+    }
   },
 )
 
@@ -552,6 +768,24 @@ export const restart_party = spacetimedb.reducer(
     }
     for (const g of Array.from(ctx.db.party_guess.byCode.filter(code))) {
       ctx.db.party_guess.key.delete(g.key)
+    }
+    // Fresh mode vote for the next match: new candidates, cleared votes, and a
+    // clean event/capital feed.
+    const [modeA, modeB] = pickTwoModes()
+    const cfg = ctx.db.party_config.code.find(code)
+    if (cfg) {
+      ctx.db.party_config.code.update({ ...cfg, mode_a: modeA, mode_b: modeB, mode: '' })
+    } else {
+      ctx.db.party_config.insert({ code, mode_a: modeA, mode_b: modeB, mode: '' })
+    }
+    for (const v of Array.from(ctx.db.party_vote.byCode.filter(code))) {
+      ctx.db.party_vote.key.delete(v.key)
+    }
+    for (const e of Array.from(ctx.db.party_event.byCode.filter(code))) {
+      ctx.db.party_event.key.delete(e.key)
+    }
+    for (const c of Array.from(ctx.db.party_capital.byCode.filter(code))) {
+      ctx.db.party_capital.key.delete(c.key)
     }
   },
 )

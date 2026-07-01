@@ -13,7 +13,5 @@ import {
 export default {
   userId: __t.string(),
   code: __t.string(),
-  question: __t.i32(),
-  correct: __t.bool(),
-  distanceMi: __t.f64(),
+  mode: __t.string(),
 };

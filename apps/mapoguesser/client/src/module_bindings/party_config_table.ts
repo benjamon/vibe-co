@@ -10,10 +10,9 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  userId: __t.string(),
-  code: __t.string(),
-  question: __t.i32(),
-  correct: __t.bool(),
-  distanceMi: __t.f64(),
-};
+export default __t.row({
+  code: __t.string().primaryKey(),
+  modeA: __t.string().name("mode_a"),
+  modeB: __t.string().name("mode_b"),
+  mode: __t.string(),
+});

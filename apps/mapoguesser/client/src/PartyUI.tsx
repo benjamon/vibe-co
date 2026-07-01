@@ -9,14 +9,16 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Confetti } from './Confetti'
-import { useGameStore, ROUNDS } from './store'
+import { useGameStore, roundsForMode, type GameMode } from './store'
 import {
   subscribeParty,
   subscribePartyGuesses,
+  subscribePartyEvents,
   createParty,
   joinParty,
   checkCodeExists,
   setReady,
+  setVote,
   leaveParty,
   advanceQuestion,
   restartParty,
@@ -26,7 +28,39 @@ import {
   PARTY_CODE_LEN,
   type PartySnapshot,
   type PartyPlayer,
+  type PartyEvent,
 } from './party'
+
+// Presentation for each game mode: shown on the lobby vote cards and the in-game
+// HUD. Add an entry here when a new mode is added to the server's PARTY_MODES.
+const MODE_META: Record<
+  string,
+  { label: string; icon: string; blurb: string }
+> = {
+  classic: { label: 'Classic', icon: '🌍', blurb: 'Find the country on the globe' },
+  worldcup: { label: 'World Cup', icon: '⚽', blurb: 'Find the 2026 qualifiers' },
+  capitals: { label: 'Capitals', icon: '📍', blurb: 'Drop a pin on the capital — closest wins' },
+}
+const modeMeta = (mode: string) =>
+  MODE_META[mode] ?? { label: mode || '—', icon: '❓', blurb: '' }
+
+// Capitals scoreboard: an un-answered round is penalised by this many miles so
+// skipping a question can't beat actually guessing. Bigger than any real
+// great-circle miss (max ~12,450 mi antipodal).
+const CAPITAL_MISS_PENALTY = 13_000
+
+// A player's effective capitals golf score: summed miss distance plus a penalty
+// for every round they didn't answer. Lower is better.
+const capitalScore = (
+  userId: string,
+  snap: PartySnapshot,
+  rounds: number,
+): number => {
+  const total = snap.capitalTotals[userId] ?? 0
+  const answered = snap.capitalAnswered[userId] ?? 0
+  return total + CAPITAL_MISS_PENALTY * Math.max(0, rounds - answered)
+}
+const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
 
 // ---------- shared styles ----------
 
@@ -77,6 +111,8 @@ export function useParty(): { snap: PartySnapshot; active: boolean } {
     room: null,
     players: [],
     myUserId: '',
+    capitalTotals: {},
+    capitalAnswered: {},
   })
   useEffect(
     () =>
@@ -153,25 +189,40 @@ function ToastFeed({ myUserId }: { myUserId: string }) {
 // ---------- scoreboard ----------
 
 function Scoreboard({
-  players,
-  myUserId,
+  snap,
   hostId,
   emphasizeTop,
 }: {
-  players: PartyPlayer[]
-  myUserId: string
+  snap: PartySnapshot
   hostId?: string
   emphasizeTop?: boolean
 }) {
-  const ranked = useMemo(
-    () => [...players].sort((a, b) => b.score - a.score || a.joinedAt - b.joinedAt),
-    [players],
-  )
-  const topScore = ranked.length ? ranked[0].score : 0
+  const { players, myUserId, room } = snap
+  const isCapitals = room?.mode === 'capitals'
+  const rounds = roundsForMode((room?.mode as GameMode) ?? 'classic')
+
+  // Capitals ranks by lowest golf score (miles + skip penalty); the other modes
+  // rank by highest correct-count. `metric` is the per-player number the row
+  // shows; `best` is the leading value for the crown/highlight.
+  const scored = useMemo(() => {
+    const rows = players.map((p) => ({
+      p,
+      metric: isCapitals ? capitalScore(p.userId, snap, rounds) : p.score,
+    }))
+    rows.sort((a, b) =>
+      isCapitals
+        ? a.metric - b.metric || a.p.joinedAt - b.p.joinedAt
+        : b.metric - a.metric || a.p.joinedAt - b.p.joinedAt,
+    )
+    return rows
+  }, [players, snap, isCapitals, rounds])
+
+  const best = scored.length ? scored[0].metric : 0
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
-      {ranked.map((p, i) => {
-        const isTop = emphasizeTop && p.score === topScore && topScore > 0
+      {scored.map(({ p, metric }, i) => {
+        const isTop = emphasizeTop && metric === best && (isCapitals ? true : metric > 0)
         return (
           <div
             key={p.userId}
@@ -212,7 +263,7 @@ function Scoreboard({
                 color: isTop ? '#ffd23b' : '#7eff8e',
               }}
             >
-              {p.score}
+              {isCapitals ? milesFmt(snap.capitalTotals[p.userId] ?? 0) : p.score}
             </span>
           </div>
         )
@@ -238,7 +289,7 @@ function FriendsPanel({
 
   if (step === 'choose') {
     return (
-      <PanelShell title="Play With Friends" onClose={onCancel}>
+      <PanelShell title="Play With Friends">
         <button
           type="button"
           onClick={() => setStep('create')}
@@ -488,6 +539,85 @@ function LobbyRoster({
   )
 }
 
+// Two candidate modes shown side by side; tap to vote. The winner (most votes,
+// random on a tie) is chosen server-side when everyone readies up.
+function VoteCards({ snap }: { snap: PartySnapshot }) {
+  const { room, players, myUserId } = snap
+  const myVote = players.find((p) => p.userId === myUserId)?.vote ?? ''
+  const candidates = [room?.modeA, room?.modeB].filter(
+    (m): m is string => !!m,
+  )
+  if (candidates.length < 2) return null
+  const tally = (mode: string) => players.filter((p) => p.vote === mode).length
+
+  return (
+    <div style={{ width: '100%' }}>
+      <div
+        style={{
+          fontSize: 13,
+          opacity: 0.8,
+          textAlign: 'center',
+          marginBottom: 8,
+          letterSpacing: 0.3,
+        }}
+      >
+        Vote for the mode
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {candidates.map((mode) => {
+          const meta = modeMeta(mode)
+          const selected = myVote === mode
+          const votes = tally(mode)
+          return (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setVote(mode)}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 4,
+                padding: '12px 8px',
+                borderRadius: 12,
+                cursor: 'pointer',
+                fontFamily: 'system-ui, sans-serif',
+                color: 'white',
+                background: selected
+                  ? 'rgba(40, 120, 70, 0.9)'
+                  : 'rgba(255,255,255,0.06)',
+                border: selected
+                  ? '2px solid #7eff8e'
+                  : '2px solid rgba(255,255,255,0.18)',
+                boxShadow: selected ? '0 0 12px rgba(126,255,142,0.35)' : 'none',
+              }}
+            >
+              <span style={{ fontSize: 30, lineHeight: 1 }}>{meta.icon}</span>
+              <span style={{ fontSize: 16, fontWeight: 800 }}>{meta.label}</span>
+              <span style={{ fontSize: 11, opacity: 0.8, textAlign: 'center', minHeight: 28 }}>
+                {meta.blurb}
+              </span>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  marginTop: 2,
+                  padding: '2px 10px',
+                  borderRadius: 999,
+                  background: 'rgba(0,0,0,0.35)',
+                }}
+              >
+                {votes} vote{votes === 1 ? '' : 's'}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function Lobby({ snap }: { snap: PartySnapshot }) {
   const { room, players, myUserId } = snap
   const me = players.find((p) => p.userId === myUserId)
@@ -517,6 +647,8 @@ function Lobby({ snap }: { snap: PartySnapshot }) {
 
       <PanelShell title="Lobby" anchor="bottom">
         <LobbyRoster players={players} myUserId={myUserId} hostId={room?.hostId} />
+        {/* Mode vote, side by side, above the ready-up controls. */}
+        <VoteCards snap={snap} />
         <div style={{ fontSize: 13, opacity: 0.75, textAlign: 'center' }}>
           {canReady
             ? ready
@@ -554,12 +686,22 @@ function Lobby({ snap }: { snap: PartySnapshot }) {
 // ---------- in-game HUD ----------
 
 function GameHud({ snap }: { snap: PartySnapshot }) {
-  const { room, players, myUserId } = snap
+  const { room } = snap
+  const mode = (room?.mode as GameMode) ?? 'classic'
+  const isCapitals = mode === 'capitals'
+  const rounds = roundsForMode(mode)
+
   const target = useGameStore((s) => s.target)
-  const targetIndex = useGameStore((s) => s.targetIndex)
   const partyAnswered = useGameStore((s) => s.partyAnswered)
+  const roundGuess = useGameStore((s) => s.roundGuess)
   const guess = useGameStore((s) => s.country)
   const countryCodes = useGameStore((s) => s.countryCodes)
+  const capitals = useGameStore((s) => s.capitals)
+  const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
+  const revealName = useGameStore((s) => s.revealName)
+  const revealFlag = useGameStore((s) => s.revealFlag)
+  const useLifeline = useGameStore((s) => s.useLifeline)
+  const markers = useGameStore((s) => s.markers)
 
   // Local clock, synced to the server deadline. Drives the countdown and the
   // idempotent advance call when the deadline passes.
@@ -586,6 +728,11 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   }, [now, deadline, question, room?.phase])
 
   const lowTime = secondsLeft <= 5
+  // Capitals: this round's own guess distance (the non-reveal marker's label).
+  const myDistanceLabel =
+    isCapitals && partyAnswered
+      ? markers.find((m) => m.kind !== 'reveal')?.label ?? null
+      : null
 
   return (
     <>
@@ -609,7 +756,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 14, opacity: 0.75 }}>
-            {Math.min(question + 1, ROUNDS)} / {ROUNDS}
+            {Math.min(question + 1, rounds)} / {rounds}
           </span>
           <span
             style={{
@@ -625,11 +772,37 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
             {secondsLeft}s
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 26, fontWeight: 700 }}>
-          <span style={{ opacity: 0.7 }}>Find:</span>
-          <Flag code={target ? countryCodes[target] : undefined} height={22} />
-          <span>{target ?? '…'}</span>
-        </div>
+        {isCapitals ? (
+          // Capitals: show only the capital city; country name/flag stay hidden
+          // behind the lifelines.
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ opacity: 0.7, fontSize: 18 }}>Capital:</span>
+              <span style={{ fontSize: 28, fontWeight: 800 }}>
+                {target ? capitals[target]?.city ?? '…' : '…'}
+              </span>
+            </div>
+            {(revealFlag || revealName) && target && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16, opacity: 0.9 }}>
+                {revealFlag && <Flag code={countryCodes[target]} height={16} />}
+                {revealName && <span>{target}</span>}
+              </div>
+            )}
+            {!partyAnswered && (
+              <span style={{ fontSize: 13, opacity: 0.85, fontWeight: 600 }}>
+                {roundGuess === null
+                  ? 'Guess 1 of 2'
+                  : 'Guess 2 of 2 — closer one counts'}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 26, fontWeight: 700 }}>
+            <span style={{ opacity: 0.7 }}>Find:</span>
+            <Flag code={target ? countryCodes[target] : undefined} height={22} />
+            <span>{target ?? '…'}</span>
+          </div>
+        )}
         {partyAnswered && (
           <div
             style={{
@@ -641,10 +814,58 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
               border: '1px solid rgba(255,255,255,0.4)',
             }}
           >
-            Locked in — waiting for the round to end…
+            {myDistanceLabel
+              ? `Your guess: ${myDistanceLabel} — waiting for the round to end…`
+              : 'Locked in — waiting for the round to end…'}
           </div>
         )}
       </div>
+
+      {/* Capitals lifelines (top-right), one-per-match, until you've answered. */}
+      {isCapitals && !partyAnswered && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: 8,
+            pointerEvents: 'auto',
+            zIndex: 25,
+          }}
+        >
+          {(
+            [
+              { key: 'name', label: '🏳️ Show country name' },
+              { key: 'flag', label: '🚩 Show country flag' },
+              { key: 'circle', label: '⭕ Draw circle' },
+            ] as const
+          ).map((l) => {
+            const used = lifelinesUsed[l.key]
+            return (
+              <button
+                key={l.key}
+                type="button"
+                disabled={used}
+                onClick={() => useLifeline(l.key)}
+                style={{
+                  ...panelButton,
+                  padding: '8px 14px',
+                  fontSize: 14,
+                  whiteSpace: 'nowrap',
+                  cursor: used ? 'not-allowed' : 'pointer',
+                  opacity: used ? 0.45 : 1,
+                  textDecoration: used ? 'line-through' : 'none',
+                }}
+              >
+                {l.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* Live scoreboard, bottom-left, out of the way of the globe. */}
       <div
@@ -661,11 +882,12 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
           zIndex: 20,
         }}
       >
-        <Scoreboard players={players} myUserId={myUserId} />
+        <Scoreboard snap={snap} />
       </div>
 
-      {/* Last guess, bottom centre (mirrors the single-player label). */}
-      {guess && (
+      {/* Last guess, bottom centre (classic/worldcup only — capitals shows its
+          distance in the status pill above). */}
+      {!isCapitals && guess && (
         <div
           style={{
             position: 'absolute',
@@ -697,14 +919,32 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
 
 function Results({ snap, onExit }: { snap: PartySnapshot; onExit: () => void }) {
   const { room, players, myUserId } = snap
-  const topScore = players.reduce((m, p) => Math.max(m, p.score), 0)
-  const winners = players.filter((p) => p.score === topScore && topScore > 0)
+  const isCapitals = room?.mode === 'capitals'
+  const rounds = roundsForMode((room?.mode as GameMode) ?? 'classic')
+
+  // Capitals wins on the lowest golf score; the other modes on the highest
+  // correct-count. A capitals room always has a winner (someone is closest);
+  // classic needs at least one point on the board.
+  const metricOf = (p: PartyPlayer) =>
+    isCapitals ? capitalScore(p.userId, snap, rounds) : p.score
+  const best = players.length
+    ? players.reduce(
+        (m, p) => (isCapitals ? Math.min(m, metricOf(p)) : Math.max(m, metricOf(p))),
+        isCapitals ? Infinity : 0,
+      )
+    : 0
+  const winners = players.filter((p) =>
+    isCapitals ? metricOf(p) === best : metricOf(p) === best && best > 0,
+  )
   const iWon = winners.some((w) => w.userId === myUserId)
   const [celebrate, setCelebrate] = useState(iWon)
 
   return (
     <PanelShell title="Final Scores" anchor="center">
       {celebrate && <Confetti intensity="full" onDone={() => setCelebrate(false)} />}
+      <div style={{ fontSize: 13, opacity: 0.75, letterSpacing: 0.3 }}>
+        {modeMeta(room?.mode ?? '').icon} {modeMeta(room?.mode ?? '').label}
+      </div>
       <div
         style={{
           fontSize: 22,
@@ -720,7 +960,7 @@ function Results({ snap, onExit }: { snap: PartySnapshot; onExit: () => void }) 
             ? `${iWon ? 'You win! 🎉' : `${winners[0].name} wins! 🏆`}`
             : `It's a tie! 🤝`}
       </div>
-      <Scoreboard players={players} myUserId={myUserId} hostId={room?.hostId} emphasizeTop />
+      <Scoreboard snap={snap} hostId={room?.hostId} emphasizeTop />
       {/* Play Again sends everyone back to the ready-up lobby (same code, fresh
           seed). Any player can trigger it; the reducer is idempotent. */}
       <button
@@ -808,6 +1048,77 @@ function PanelShell({
   )
 }
 
+// ---------- lifeline notification feed ----------
+
+// Toasts a line whenever any player spends a capitals lifeline, e.g.
+// "Ada used the Show country flag lifeline". Sits just below the guess toasts.
+const LIFELINE_LABEL: Record<string, string> = {
+  name: 'Show country name',
+  flag: 'Show country flag',
+  circle: 'Draw circle',
+}
+
+interface LifelineToast {
+  id: number
+  text: string
+}
+
+function LifelineFeed() {
+  const [toasts, setToasts] = useState<LifelineToast[]>([])
+  const nextId = useRef(1)
+  useEffect(() => {
+    return subscribePartyEvents((e) => {
+      if (e.kind !== 'lifeline') return
+      const label = LIFELINE_LABEL[e.detail] ?? e.detail
+      const id = nextId.current++
+      const text = `${e.name} used the ${label} lifeline`
+      setToasts((prev) => [{ id, text }, ...prev])
+      setTimeout(
+        () => setToasts((prev) => prev.filter((t) => t.id !== id)),
+        4000,
+      )
+    })
+  }, [])
+
+  if (toasts.length === 0) return null
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 8,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 6,
+        pointerEvents: 'none',
+        zIndex: 31,
+      }}
+    >
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          style={{
+            padding: '8px 16px',
+            borderRadius: 999,
+            fontFamily: 'system-ui, sans-serif',
+            fontWeight: 700,
+            fontSize: 15,
+            color: 'white',
+            background: 'rgba(120, 80, 190, 0.95)',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+            whiteSpace: 'nowrap',
+            animation: 'mpToastLife 4s ease forwards',
+          }}
+        >
+          📱 {t.text}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ---------- overlay root ----------
 
 export function PartyOverlay({
@@ -833,6 +1144,7 @@ export function PartyOverlay({
         seed: room.seed,
         phase: room.phase,
         currentQuestion: room.currentQuestion,
+        mode: room.mode,
       })
     }
   }, [room, syncPartyMatch])
@@ -859,6 +1171,7 @@ export function PartyOverlay({
       `}</style>
 
       {room && <ToastFeed myUserId={snap.myUserId} />}
+      {room && <LifelineFeed />}
 
       {room?.phase === 'lobby' && <Lobby snap={snap} />}
       {room?.phase === 'playing' && <GameHud snap={snap} />}

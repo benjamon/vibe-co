@@ -1005,6 +1005,11 @@ export function WorldViewer() {
       const name = lookupCountryName(lat, lon)
       const state = useGameStore.getState()
 
+      // Brief input lock right after the target changes: swallow the click so a
+      // release/double-tap meant for the previous target doesn't guess the new
+      // one. Enforced here (input layer) rather than in the store handlers.
+      if (Date.now() < state.inputLockUntil) return
+
       // Capitals mode: the pin can land anywhere (including open ocean), and the
       // store owns both the guess pin and the reveal marker, so route the raw
       // lat/lon straight through and skip the country-name path entirely.

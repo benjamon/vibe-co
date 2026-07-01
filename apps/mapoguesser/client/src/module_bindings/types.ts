@@ -53,6 +53,35 @@ export const Party = __t.object("Party", {
 });
 export type Party = __Infer<typeof Party>;
 
+export const PartyCapital = __t.object("PartyCapital", {
+  key: __t.string(),
+  code: __t.string(),
+  userId: __t.string(),
+  question: __t.i32(),
+  distanceMi: __t.f64(),
+  timestamp: __t.u64(),
+});
+export type PartyCapital = __Infer<typeof PartyCapital>;
+
+export const PartyConfig = __t.object("PartyConfig", {
+  code: __t.string(),
+  modeA: __t.string(),
+  modeB: __t.string(),
+  mode: __t.string(),
+});
+export type PartyConfig = __Infer<typeof PartyConfig>;
+
+export const PartyEvent = __t.object("PartyEvent", {
+  key: __t.string(),
+  code: __t.string(),
+  userId: __t.string(),
+  name: __t.string(),
+  kind: __t.string(),
+  detail: __t.string(),
+  timestamp: __t.u64(),
+});
+export type PartyEvent = __Infer<typeof PartyEvent>;
+
 export const PartyGuess = __t.object("PartyGuess", {
   key: __t.string(),
   code: __t.string(),
@@ -74,6 +103,14 @@ export const PartyPlayer = __t.object("PartyPlayer", {
   joinedAt: __t.u64(),
 });
 export type PartyPlayer = __Infer<typeof PartyPlayer>;
+
+export const PartyVote = __t.object("PartyVote", {
+  key: __t.string(),
+  code: __t.string(),
+  userId: __t.string(),
+  mode: __t.string(),
+});
+export type PartyVote = __Infer<typeof PartyVote>;
 
 export const UserCountryStat = __t.object("UserCountryStat", {
   key: __t.string(),

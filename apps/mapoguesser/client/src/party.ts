@@ -118,6 +118,8 @@ export interface PartyPlayer {
   ready: boolean
   score: number
   joinedAt: number
+  // Lobby vote for one of the room's two candidate modes ('' = not voted yet).
+  vote: string
 }
 
 export interface PartyRoom {
@@ -128,12 +130,23 @@ export interface PartyRoom {
   currentQuestion: number
   // Epoch ms when the active question stops accepting guesses (0 in lobby).
   questionDeadline: number
+  // Mode voting: the two candidates offered in the lobby, and the winner (''
+  // until the match starts). Sourced from the party_config table.
+  modeA: string
+  modeB: string
+  mode: string
 }
 
 export interface PartySnapshot {
   room: PartyRoom | null
   players: PartyPlayer[]
   myUserId: string
+  // Capitals mode: total golf distance (miles) per userId, summed across the
+  // rounds answered so far. Empty for classic/worldcup.
+  capitalTotals: Record<string, number>
+  // Capitals mode: how many rounds each userId has answered (so the UI can
+  // penalise skipped rounds instead of rewarding them with a low total).
+  capitalAnswered: Record<string, number>
 }
 
 // Emitted once per newly-observed guess row, for the toast feed.
@@ -144,20 +157,40 @@ export interface PartyGuessEvent {
   correct: boolean
 }
 
+// Emitted once per newly-observed party_event row (e.g. a capitals lifeline).
+export interface PartyEvent {
+  userId: string
+  name: string
+  kind: string
+  detail: string
+}
+
 // ---------- listeners ----------
 
 type SnapshotListener = (snap: PartySnapshot) => void
 const snapshotListeners = new Set<SnapshotListener>()
 type GuessListener = (e: PartyGuessEvent) => void
 const guessListeners = new Set<GuessListener>()
+type EventListener = (e: PartyEvent) => void
+const eventListeners = new Set<EventListener>()
 
 let room: PartyRoom | null = null
 let players: PartyPlayer[] = []
+let capitalTotals: Record<string, number> = {}
+let capitalAnswered: Record<string, number> = {}
 // Guess keys already turned into toasts, so a re-iteration doesn't double-toast.
 const seenGuessKeys = new Set<string>()
+// Same, for the generic party_event feed (lifeline notifications).
+const seenEventKeys = new Set<string>()
 
 function snapshot(): PartySnapshot {
-  return { room, players, myUserId: getPartyUserId() }
+  return {
+    room,
+    players,
+    myUserId: getPartyUserId(),
+    capitalTotals,
+    capitalAnswered,
+  }
 }
 
 function notify(): void {
@@ -177,6 +210,13 @@ export function subscribePartyGuesses(fn: GuessListener): () => void {
   guessListeners.add(fn)
   return () => {
     guessListeners.delete(fn)
+  }
+}
+
+export function subscribePartyEvents(fn: EventListener): () => void {
+  eventListeners.add(fn)
+  return () => {
+    eventListeners.delete(fn)
   }
 }
 
@@ -200,6 +240,10 @@ function dbTable(conn: AnyConn, names: string[]): AnyConn {
 const partyTable = (c: AnyConn) => dbTable(c, ['party'])
 const playerTable = (c: AnyConn) => dbTable(c, ['partyPlayer', 'party_player'])
 const guessTable = (c: AnyConn) => dbTable(c, ['partyGuess', 'party_guess'])
+const configTable = (c: AnyConn) => dbTable(c, ['partyConfig', 'party_config'])
+const voteTable = (c: AnyConn) => dbTable(c, ['partyVote', 'party_vote'])
+const eventTable = (c: AnyConn) => dbTable(c, ['partyEvent', 'party_event'])
+const capitalTable = (c: AnyConn) => dbTable(c, ['partyCapital', 'party_capital'])
 
 function invokeReducer(r: AnyConn, names: string[], args: Record<string, unknown>): boolean {
   for (const n of names) {
@@ -246,6 +290,10 @@ function roomFromRow(rw: AnyConn): PartyRoom | null {
     phase,
     currentQuestion: num(rw.currentQuestion ?? rw.current_question),
     questionDeadline: num(rw.questionDeadline ?? rw.question_deadline),
+    // Filled in by rebuild() from the party_config row.
+    modeA: '',
+    modeB: '',
+    mode: '',
   }
 }
 
@@ -258,6 +306,8 @@ function playerFromRow(rw: AnyConn): PartyPlayer | null {
     ready: Boolean(rw.ready),
     score: num(rw.score),
     joinedAt: num(rw.joinedAt ?? rw.joined_at),
+    // Filled in by rebuild() from the party_vote rows.
+    vote: '',
   }
 }
 
@@ -267,6 +317,8 @@ function rebuild(): void {
   if (!conn || !activeCode) {
     room = null
     players = []
+    capitalTotals = {}
+    capitalAnswered = {}
     notify()
     return
   }
@@ -279,18 +331,60 @@ function rebuild(): void {
       break
     }
   }
+  // Overlay the mode-voting config onto the room.
+  if (nextRoom) {
+    const cTbl = configTable(conn)
+    if (cTbl) {
+      for (const rw of cTbl.iter()) {
+        if (rw.code !== activeCode) continue
+        nextRoom.modeA = String(rw.modeA ?? rw.mode_a ?? '')
+        nextRoom.modeB = String(rw.modeB ?? rw.mode_b ?? '')
+        nextRoom.mode = String(rw.mode ?? '')
+        break
+      }
+    }
+  }
+  // Player votes, keyed by userId.
+  const votes: Record<string, string> = {}
+  const vTbl = voteTable(conn)
+  if (vTbl) {
+    for (const rw of vTbl.iter()) {
+      if (rw.code !== activeCode) continue
+      const uid = String(rw.userId ?? rw.user_id ?? '')
+      if (uid) votes[uid] = String(rw.mode ?? '')
+    }
+  }
   const nextPlayers: PartyPlayer[] = []
   const plTbl = playerTable(conn)
   if (plTbl) {
     for (const rw of plTbl.iter()) {
       if (rw.code !== activeCode) continue
       const p = playerFromRow(rw)
-      if (p) nextPlayers.push(p)
+      if (p) {
+        p.vote = votes[p.userId] ?? ''
+        nextPlayers.push(p)
+      }
     }
   }
   nextPlayers.sort((a, b) => a.joinedAt - b.joinedAt)
+  // Capitals golf totals + answered counts: sum each player's per-question
+  // distances, and tally how many rounds they've completed.
+  const totals: Record<string, number> = {}
+  const answered: Record<string, number> = {}
+  const capTbl = capitalTable(conn)
+  if (capTbl) {
+    for (const rw of capTbl.iter()) {
+      if (rw.code !== activeCode) continue
+      const uid = String(rw.userId ?? rw.user_id ?? '')
+      if (!uid) continue
+      totals[uid] = (totals[uid] ?? 0) + num(rw.distanceMi ?? rw.distance_mi)
+      answered[uid] = (answered[uid] ?? 0) + 1
+    }
+  }
   room = nextRoom
   players = nextPlayers
+  capitalTotals = totals
+  capitalAnswered = answered
   notify()
 }
 
@@ -307,6 +401,21 @@ function emitGuess(rw: AnyConn): void {
     correct: Boolean(rw.correct),
   }
   for (const fn of guessListeners) fn(e)
+}
+
+// Turn a freshly-inserted party_event row into a notification, once.
+function emitEvent(rw: AnyConn): void {
+  if (!activeCode || rw?.code !== activeCode) return
+  const key = String(rw.key ?? '')
+  if (key && seenEventKeys.has(key)) return
+  if (key) seenEventKeys.add(key)
+  const e: PartyEvent = {
+    userId: String(rw.userId ?? rw.user_id ?? ''),
+    name: String(rw.name ?? ''),
+    kind: String(rw.kind ?? ''),
+    detail: String(rw.detail ?? ''),
+  }
+  for (const fn of eventListeners) fn(e)
 }
 
 // Wall-clock cap on a single connect attempt. If the WS handshake stalls past
@@ -404,11 +513,16 @@ let tableEventsWired = false
 function wireTableEvents(conn: AnyConn): void {
   if (tableEventsWired) return
   tableEventsWired = true
-  const pTbl = partyTable(conn)
-  const plTbl = playerTable(conn)
   const gTbl = guessTable(conn)
-  // Any room/player change re-derives the scoped snapshot.
-  for (const tbl of [pTbl, plTbl]) {
+  const eTbl = eventTable(conn)
+  // Any room/player/config/vote/capital change re-derives the scoped snapshot.
+  for (const tbl of [
+    partyTable(conn),
+    playerTable(conn),
+    configTable(conn),
+    voteTable(conn),
+    capitalTable(conn),
+  ]) {
     if (!tbl) continue
     tbl.onInsert?.(() => rebuild())
     tbl.onUpdate?.(() => rebuild())
@@ -416,6 +530,9 @@ function wireTableEvents(conn: AnyConn): void {
   }
   if (gTbl) {
     gTbl.onInsert?.((_ctx: unknown, rw: AnyConn) => emitGuess(rw))
+  }
+  if (eTbl) {
+    eTbl.onInsert?.((_ctx: unknown, rw: AnyConn) => emitEvent(rw))
   }
 }
 
@@ -440,6 +557,10 @@ function openRoomSubscription(code: string): void {
         `SELECT * FROM party WHERE code = '${esc}'`,
         `SELECT * FROM party_player WHERE code = '${esc}'`,
         `SELECT * FROM party_guess WHERE code = '${esc}'`,
+        `SELECT * FROM party_config WHERE code = '${esc}'`,
+        `SELECT * FROM party_vote WHERE code = '${esc}'`,
+        `SELECT * FROM party_event WHERE code = '${esc}'`,
+        `SELECT * FROM party_capital WHERE code = '${esc}'`,
       ])
   } catch (e) {
     console.warn('[party] room subscribe failed:', e)
@@ -449,6 +570,7 @@ function openRoomSubscription(code: string): void {
 function setActiveCode(code: string | null): void {
   activeCode = code
   seenGuessKeys.clear()
+  seenEventKeys.clear()
   if (code) openRoomSubscription(code)
   else {
     if (roomSub) {
@@ -461,6 +583,8 @@ function setActiveCode(code: string | null): void {
     }
     room = null
     players = []
+    capitalTotals = {}
+    capitalAnswered = {}
     notify()
   }
 }
@@ -602,13 +726,39 @@ export function leaveParty(): void {
   setActiveCode(null)
 }
 
-export function submitGuess(question: number, correct: boolean): void {
+// distanceMi is the capitals golf score (miles); pass 0 for classic/worldcup.
+export function submitGuess(
+  question: number,
+  correct: boolean,
+  distanceMi = 0,
+): void {
   if (!activeCode) return
   callReducer(['submitPartyGuess', 'submit_party_guess'], {
     userId: getPartyUserId(),
     code: activeCode,
     question,
     correct,
+    distanceMi,
+  })
+}
+
+// Cast (or change) a lobby vote for one of the room's two candidate modes.
+export function setVote(mode: string): void {
+  if (!activeCode) return
+  callReducer(['setVote', 'set_vote'], {
+    userId: getPartyUserId(),
+    code: activeCode,
+    mode,
+  })
+}
+
+// Broadcast a capitals lifeline use so every client can toast it.
+export function sendLifeline(lifeline: string): void {
+  if (!activeCode) return
+  callReducer(['usePartyLifeline', 'use_party_lifeline'], {
+    userId: getPartyUserId(),
+    code: activeCode,
+    lifeline,
   })
 }
 

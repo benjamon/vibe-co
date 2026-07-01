@@ -10,10 +10,11 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  userId: __t.string(),
+export default __t.row({
+  key: __t.string().primaryKey(),
   code: __t.string(),
+  userId: __t.string().name("user_id"),
   question: __t.i32(),
-  correct: __t.bool(),
-  distanceMi: __t.f64(),
-};
+  distanceMi: __t.f64().name("distance_mi"),
+  timestamp: __t.u64(),
+});

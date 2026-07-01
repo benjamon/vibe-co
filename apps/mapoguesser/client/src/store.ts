@@ -8,7 +8,11 @@ import {
   type CountryAgg,
   type GuessDot,
 } from './stats'
-import { submitGuess as submitPartyGuess, type PartyPhase } from './party'
+import {
+  submitGuess as submitPartyGuess,
+  sendLifeline as sendPartyLifeline,
+  type PartyPhase,
+} from './party'
 
 // Which dataset the stats sidebar shows. 'mine' = this player's local history
 // (also mirrored to the server); 'global' = aggregate totals across all users
@@ -54,6 +58,16 @@ export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // budget for classic/worldcup.
 export const CAPITAL_ROUNDS = 5
 export const CAPITAL_GUESSES_PER_ROUND = 2
+
+// After the target changes, guess input is ignored for this long so a click
+// queued/double-fired for the previous target doesn't land on the new one.
+export const GUESS_LOCK_MS = 2000
+const lockUntil = (): number => Date.now() + GUESS_LOCK_MS
+
+// How many rounds a given mode runs for. Must match the server's roundsForMode
+// so single-player and party matches agree on when the match ends.
+export const roundsForMode = (mode: GameMode): number =>
+  mode === 'capitals' ? CAPITAL_ROUNDS : ROUNDS
 
 // Single-slot save: a returning player can resume one in-progress match.
 // Starting a different seed overwrites it.
@@ -408,6 +422,12 @@ interface GameState {
   // Whether the local player has already guessed the *current* party question.
   // Locks the globe until the server advances to the next question.
   partyAnswered: boolean
+  // Epoch-ms until which guess input is ignored. Bumped GUESS_LOCK_MS ahead
+  // whenever the target changes, so a click queued for the previous target
+  // doesn't accidentally register against the new one. Enforced at the input
+  // layer (WorldViewer), not in the guess handlers, so direct-call tests are
+  // unaffected.
+  inputLockUntil: number
 
   // Drive the local match from a party snapshot. Draws the deterministic
   // targets from the room seed, serves the server's current question, and
@@ -417,6 +437,8 @@ interface GameState {
     seed: string
     phase: PartyPhase
     currentQuestion: number
+    // The room's selected game mode (server-resolved from the lobby vote).
+    mode: string
   }) => void
   // Tear down the multiplayer match (leave / back to menu) and return to idle.
   endPartyMatch: () => void
@@ -681,29 +703,47 @@ export const useGameStore = create<GameState>((set, get) => ({
   endingTarget: null,
   multiplayer: false,
   partyAnswered: false,
+  inputLockUntil: 0,
 
-  syncPartyMatch: ({ seed, phase, currentQuestion }) => {
+  syncPartyMatch: ({ seed, phase, currentQuestion, mode }) => {
     const s = get()
+    // The room's mode string → a known GameMode (defensive default to classic).
+    const gameMode: GameMode =
+      mode === 'worldcup' || mode === 'capitals' ? mode : 'classic'
 
     if (phase === 'finished') {
-      set({ multiplayer: true, phase: 'finished', target: null })
+      set({ multiplayer: true, mode: gameMode, phase: 'finished', target: null })
       return
     }
     if (phase !== 'playing') return
 
-    // Draw the deterministic sequence the first time (or if the seed changed).
-    // Party matches always draw from the classic pool.
-    const needDraw = !s.multiplayer || s.seed !== seed || s.targets.length === 0
-    const targets = needDraw
-      ? drawUniqueTargets(get().countries, seed, ROUNDS)
-      : s.targets
+    // Draw the deterministic sequence the first time (or if the seed/mode
+    // changed). The pool + length follow the room's chosen mode, so all clients
+    // serve the same questions.
+    const pool =
+      gameMode === 'worldcup'
+        ? get().worldCupCountries
+        : gameMode === 'capitals'
+          ? Object.keys(get().capitals)
+          : get().countries
+    const rounds = roundsForMode(gameMode)
+    const needDraw =
+      !s.multiplayer ||
+      s.seed !== seed ||
+      s.mode !== gameMode ||
+      s.targets.length === 0
+    const targets = needDraw ? drawUniqueTargets(pool, seed, rounds) : s.targets
     if (targets.length === 0) return
 
     const idx = Math.min(currentQuestion, targets.length)
     const questionChanged = needDraw || idx !== s.targetIndex
+    // Capitals shows one guess + answer per round, so wipe the board when the
+    // question changes; classic/worldcup accumulate their guess pins.
+    const isCapitals = gameMode === 'capitals'
+    const wipeMarkers = needDraw || (isCapitals && questionChanged)
     set({
       multiplayer: true,
-      mode: 'classic',
+      mode: gameMode,
       phase: 'playing',
       seed,
       targets,
@@ -711,9 +751,26 @@ export const useGameStore = create<GameState>((set, get) => ({
       target: targetAt(targets, idx),
       // New question (or fresh match) clears the answered-lock and last guess.
       partyAnswered: questionChanged ? false : s.partyAnswered,
+      // Brief input lock so a click meant for the previous capital/country
+      // doesn't register against the freshly-served one.
+      inputLockUntil: questionChanged ? lockUntil() : s.inputLockUntil,
       country: questionChanged ? null : s.country,
-      markers: needDraw ? [] : s.markers,
+      markers: wipeMarkers ? [] : s.markers,
+      markerEpoch: wipeMarkers ? s.markerEpoch + 1 : s.markerEpoch,
       attempts: needDraw ? [] : s.attempts,
+      distances: needDraw ? [] : s.distances,
+      // Lifelines are once-per-match; the per-round reveals reset each question.
+      lifelinesUsed: needDraw
+        ? { name: false, flag: false, circle: false }
+        : s.lifelinesUsed,
+      revealName: questionChanged ? false : s.revealName,
+      revealFlag: questionChanged ? false : s.revealFlag,
+      hintCircle: questionChanged ? null : s.hintCircle,
+      guessLine: questionChanged ? null : s.guessLine,
+      // Preserve an in-progress first guess (capitals gets two tries per round);
+      // only a new question clears it, so a mid-round snapshot update from another
+      // player doesn't reset our pending guess.
+      roundGuess: questionChanged ? null : s.roundGuess,
       revealTarget: null,
       endingTarget: null,
     })
@@ -803,6 +860,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       endingTarget: null,
       multiplayer: false,
       partyAnswered: false,
+      // Settle the intro camera before the first click can land.
+      inputLockUntil: finished ? 0 : lockUntil(),
     })
   },
 
@@ -838,6 +897,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       const finished = state.attempts.length >= ROUNDS
       return {
         revealTarget: null,
+        // Guessing was blocked through the reveal; now the next target is live,
+        // so hold input briefly to avoid a click meant for the revealed answer.
+        inputLockUntil: finished ? state.inputLockUntil : lockUntil(),
         phase: finished ? 'finished' : state.phase,
         perfectStreak: finished
           ? nextPerfectStreak(state.attempts, state.perfectStreak)
@@ -925,6 +987,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         consecutiveWrong: 0,
         target: finished ? null : targetAt(s.targets, targetIndex),
         endingTarget: finished ? clicked : null,
+        // New target next — brief lock so a double-click doesn't burn a guess.
+        inputLockUntil: finished ? s.inputLockUntil : lockUntil(),
       })
       return
     }
@@ -957,7 +1021,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get()
     if (s.mode !== 'capitals') return
     if (s.phase !== 'playing' || s.target === null) return
-    if (s.distances.length >= CAPITAL_ROUNDS) return
     const cap = s.capitals[s.target]
     if (!cap) return
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
@@ -965,18 +1028,72 @@ export const useGameStore = create<GameState>((set, get) => ({
     const NEAR_MI = 50
     const distance = haversineMiles(lat, lon, cap.lat, cap.lon)
     const near = distance <= NEAR_MI
-    // A guess pin labelled with its own miss distance, coloured green when it's a
-    // near-perfect drop, otherwise grey.
-    const pinFor = (
-      gLat: number,
-      gLon: number,
-      dist: number,
-    ): Marker => ({
+
+    // A guess pin labelled with its own miss distance, green for a near-perfect
+    // drop, otherwise grey. Shared by the multiplayer and single-player paths.
+    const pinFor = (gLat: number, gLon: number, dist: number): Marker => ({
       lat: gLat,
       lon: gLon,
       kind: dist <= NEAR_MI ? 'correct' : 'wrong',
       label: `${Math.round(dist).toLocaleString()} mi`,
     })
+
+    // ---- Multiplayer party path: two guesses per capital, closer one counts. ----
+    // Like single-player, the first drop only shows a pin + distance (no reveal,
+    // nothing scored). The second drop submits the best distance to the server
+    // (golf-scored) and reveals the answer, locking the round.
+    if (s.multiplayer) {
+      if (s.partyAnswered) return
+      if (near) sfxCorrect()
+      else sfxWrong()
+
+      // First of two guesses: show the pin + distance only, no answer, no submit.
+      if (s.roundGuess === null) {
+        set({
+          roundGuess: { lat, lon, distance },
+          markers: [pinFor(lat, lon, distance)],
+          markerEpoch: s.markerEpoch + 1,
+          guessLine: null,
+        })
+        return
+      }
+
+      // Second guess: score the closer of the two, submit once, reveal, lock.
+      const first = s.roundGuess
+      const best = Math.min(first.distance, distance)
+      const scoring =
+        distance <= first.distance
+          ? { lat, lon }
+          : { lat: first.lat, lon: first.lon }
+      submitPartyGuess(s.targetIndex, best <= NEAR_MI, best)
+      set({
+        partyAnswered: true,
+        roundGuess: null,
+        markers: [
+          pinFor(first.lat, first.lon, first.distance),
+          pinFor(lat, lon, distance),
+          {
+            lat: cap.lat,
+            lon: cap.lon,
+            kind: 'reveal',
+            label: `${cap.city},\n${s.target}`,
+            code: s.countryCodes[s.target],
+          },
+        ],
+        markerEpoch: s.markerEpoch + 1,
+        guessLine: {
+          fromLat: scoring.lat,
+          fromLon: scoring.lon,
+          toLat: cap.lat,
+          toLon: cap.lon,
+        },
+        hintCircle: null,
+      })
+      return
+    }
+
+    // ---- Single-player path ----
+    if (s.distances.length >= CAPITAL_ROUNDS) return
 
     if (near) sfxCorrect()
     else sfxWrong()
@@ -1050,6 +1167,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetIndex,
       target: finished ? null : targetAt(s.targets, targetIndex),
       phase: finished ? 'finished' : 'playing',
+      // Next capital served — hold input so a stray click doesn't guess it.
+      inputLockUntil: finished ? s.inputLockUntil : lockUntil(),
     })
   },
 
@@ -1059,6 +1178,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       return
     if (s.lifelinesUsed[which]) return
     const lifelinesUsed = { ...s.lifelinesUsed, [which]: true }
+    // In a party match, broadcast the lifeline so every client toasts it.
+    if (s.multiplayer) sendPartyLifeline(which)
     if (which === 'name') {
       set({ lifelinesUsed, revealName: true })
     } else if (which === 'flag') {

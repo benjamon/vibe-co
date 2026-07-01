@@ -14,7 +14,9 @@ import RecordCapitalGuessReducer from "../record_capital_guess_reducer";
 import RecordGuessReducer from "../record_guess_reducer";
 import RestartPartyReducer from "../restart_party_reducer";
 import SetReadyReducer from "../set_ready_reducer";
+import SetVoteReducer from "../set_vote_reducer";
 import SubmitPartyGuessReducer from "../submit_party_guess_reducer";
+import UsePartyLifelineReducer from "../use_party_lifeline_reducer";
 
 export type AdvanceQuestionParams = __Infer<typeof AdvanceQuestionReducer>;
 export type CreatePartyParams = __Infer<typeof CreatePartyReducer>;
@@ -24,5 +26,7 @@ export type RecordCapitalGuessParams = __Infer<typeof RecordCapitalGuessReducer>
 export type RecordGuessParams = __Infer<typeof RecordGuessReducer>;
 export type RestartPartyParams = __Infer<typeof RestartPartyReducer>;
 export type SetReadyParams = __Infer<typeof SetReadyReducer>;
+export type SetVoteParams = __Infer<typeof SetVoteReducer>;
 export type SubmitPartyGuessParams = __Infer<typeof SubmitPartyGuessReducer>;
+export type UsePartyLifelineParams = __Infer<typeof UsePartyLifelineReducer>;
 
