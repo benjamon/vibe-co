@@ -17,6 +17,7 @@ import {
   Math as CesiumMath,
   Matrix4,
   PerspectiveFrustum,
+  PolylineOutlineMaterialProperty,
   UrlTemplateImageryProvider,
   VerticalOrigin,
   Viewer,
@@ -321,6 +322,12 @@ export function WorldViewer() {
     const statsDots = new CustomDataSource('statsDots')
     viewer.dataSources.add(statsDots)
 
+    // Capitals-mode overlays: the "draw circle" hint and the pin→answer line.
+    // Its own data source so it can be cleared/redrawn each round independently
+    // of the game markers.
+    const overlays = new CustomDataSource('overlays')
+    viewer.dataSources.add(overlays)
+
     // Flag-on-a-pole pin sprites. Composed on demand per (kind, code) because
     // flag images load asynchronously from flagcdn.com; cached so a re-render
     // of the same marker is free. The pole colour carries the meaning (green
@@ -437,7 +444,12 @@ export function WorldViewer() {
 
     // Capital cities keyed by normalised country name. Loaded from CAPITALS_URL;
     // empty until then (placement just falls back to centroid/label meanwhile).
-    const capitalByName = new Map<string, LatLonPt>()
+    // Carries the city name too, for the capitals game mode.
+    type CapitalPt = LatLonPt & { city: string }
+    const capitalByName = new Map<string, CapitalPt>()
+    // Flips true once the capitals dataset has been parsed. The country→capital
+    // map for capitals mode can only be built once both fetches have landed.
+    let capitalsLoaded = false
     const normName = (s: string): string =>
       s.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
@@ -463,24 +475,62 @@ export function WorldViewer() {
       return entry.centroid
     }
 
+    // Join the loaded country polygons with the capitals dataset into a
+    // NAME → {city, lat, lon} map for the store (capitals game mode). Runs once
+    // both fetches have landed, in whichever order they complete. Matches via
+    // the entry's aliases (ISO code first, then name variants) — the same keys
+    // capitalByName is indexed by.
+    const publishCapitals = () => {
+      if (!countryEntries || !capitalsLoaded) return
+      const out: Record<string, CapitalPt> = {}
+      for (const entry of countryEntries) {
+        // Same playability floor as classic/worldcup: drop city-states and
+        // pinprick island nations that are effectively unclickable on the globe
+        // (Vatican, Monaco, Tuvalu, Nauru, …) so their capitals aren't served.
+        if (entry.area < MIN_TARGET_AREA) continue
+        for (const alias of entry.aliases) {
+          const cap = capitalByName.get(alias)
+          // Require the matched capital to actually lie inside this country.
+          // Dependent territories (Falkland Is., …) carry their parent's
+          // SOVEREIGNT as an alias and would otherwise inherit the parent's
+          // capital (e.g. London) — but that point isn't inside the territory,
+          // so this rejects it and the territory is left capital-less (dropped).
+          if (cap && insideCountry(entry, cap.lat, cap.lon)) {
+            out[entry.name] = cap
+            break
+          }
+        }
+      }
+      useGameStore.getState().setCapitals(out)
+    }
+
     fetch(CAPITALS_URL)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('capitals'))))
       .then((geo: { features?: Array<Record<string, any>> }) => {
         if (destroyed || viewer.isDestroyed()) return
         for (const f of geo.features ?? []) {
           const p = f.properties ?? {}
+          // National (Admin-0) capitals only. adm0cap flags the sovereign
+          // capital; the featurecla check is limited to "Admin-0 capital"
+          // so sub-national capitals (US state capitals, other countries'
+          // regional capitals) are excluded — this is a country-capitals game.
+          const fcla = String(p.featurecla ?? p.FEATURECLA ?? '').toLowerCase()
           const isCapital =
             p.adm0cap === 1 ||
             p.ADM0CAP === 1 ||
-            String(p.featurecla ?? p.FEATURECLA ?? '')
-              .toLowerCase()
-              .includes('capital')
+            fcla === 'admin-0 capital' ||
+            fcla === 'admin-0 capital alt'
           if (!isCapital) continue
           const coords = f.geometry?.coordinates
           if (!Array.isArray(coords) || coords.length < 2) continue
           const lon = Number(coords[0])
           const lat = Number(coords[1])
           if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
+          // The capital city's own name (for the capitals mode prompt/markers).
+          const city = String(
+            p.name ?? p.NAME ?? p.nameascii ?? p.NAMEASCII ?? '',
+          )
+          const value: CapitalPt = { lat, lon, city }
           // Key by country name variants and, when present, the ISO-A2 code
           // (the most reliable match — names vary in spelling/abbreviation).
           const iso = p.iso_a2 ?? p.ISO_A2
@@ -491,12 +541,15 @@ export function WorldViewer() {
           for (const key of keys) {
             if (typeof key !== 'string') continue
             const n = key.startsWith('iso:') ? key : normName(key)
-            if (n && !capitalByName.has(n)) capitalByName.set(n, { lat, lon })
+            if (n && !capitalByName.has(n)) capitalByName.set(n, value)
           }
         }
+        capitalsLoaded = true
+        publishCapitals()
       })
       .catch(() => {
-        // No capitals → flag placement falls back to label/centroid.
+        // No capitals → flag placement falls back to label/centroid, and the
+        // capitals game mode stays unavailable (empty pool).
       })
     // Min total polygon area (deg²) for a country to be eligible as a target.
     // Excludes city-states and pinprick island nations that are effectively
@@ -581,6 +634,9 @@ export function WorldViewer() {
             })
           }
           countryEntries = list
+          // Capitals mode pool: join with the capitals dataset (no-op until it
+          // has also loaded — publishCapitals guards on capitalsLoaded).
+          publishCapitals()
           useGameStore.getState().setCountryCodes(codes)
           // Register every country (not just playable targets) so guess
           // markers, which can land on any country, always resolve to an ID.
@@ -825,7 +881,7 @@ export function WorldViewer() {
     // resolved, so we don't leak stale entities into the next game.
     let renderGen = 0
     const renderMarker = (m: Marker, gen: number): void => {
-      const code = useGameStore.getState().countryCodes[m.label]
+      const code = m.code ?? useGameStore.getState().countryCodes[m.label]
       buildFlagPin(code, m.kind).then((image) => {
         if (gen !== renderGen || destroyed || viewer.isDestroyed()) return
         if (!image) return
@@ -947,10 +1003,21 @@ export function WorldViewer() {
       const lon = CesiumMath.toDegrees(carto.longitude)
       console.log(`lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`)
       const name = lookupCountryName(lat, lon)
+      const state = useGameStore.getState()
+
+      // Capitals mode: the pin can land anywhere (including open ocean), and the
+      // store owns both the guess pin and the reveal marker, so route the raw
+      // lat/lon straight through and skip the country-name path entirely.
+      if (state.mode === 'capitals') {
+        if (state.phase === 'playing' && state.target !== null) {
+          state.handleCapitalGuess(lat, lon)
+        }
+        return
+      }
+
       // Drop a guess pin at the click location during play. Snapshot target
       // BEFORE handleGlobeClick — that call may advance to a new target,
       // which would corrupt the right/wrong determination.
-      const state = useGameStore.getState()
       if (state.phase === 'playing' && name !== null && state.revealTarget === null) {
         const correct = state.target === name
         state.addMarker({
@@ -1096,6 +1163,9 @@ export function WorldViewer() {
     let prevReveal = useGameStore.getState().revealTarget
     let prevEnding = useGameStore.getState().endingTarget
     let prevMarkers = useGameStore.getState().markers
+    let prevMarkerEpoch = useGameStore.getState().markerEpoch
+    let prevCircle = useGameStore.getState().hintCircle
+    let prevGuessLine = useGameStore.getState().guessLine
     let prevStatsSelection = useGameStore.getState().selectedStatsCountryId
     let prevStatsMode = useGameStore.getState().statsMode
     let prevGlobalGuesses = useGameStore.getState().globalGuesses
@@ -1227,6 +1297,16 @@ export function WorldViewer() {
     renderedMarkerCount = prevMarkers.length
 
     const unsub = useGameStore.subscribe((state) => {
+      // A bumped epoch means the markers were fully replaced (capitals mode
+      // swaps its two markers each guess) rather than appended — wipe first so
+      // the previous round's pins don't linger, then the block below redraws.
+      if (state.markerEpoch !== prevMarkerEpoch) {
+        renderGen++
+        gameMarkers.entities.removeAll()
+        renderedMarkerCount = 0
+        prevMarkerEpoch = state.markerEpoch
+      }
+
       // Reconcile the Cesium data source against `markers`. A shorter array
       // (or replaced reference with fewer items) means a new match started —
       // wipe and re-render. Otherwise render any newly appended markers.
@@ -1243,6 +1323,54 @@ export function WorldViewer() {
           renderedMarkerCount++
         }
         prevMarkers = state.markers
+      }
+
+      // Capitals overlays: redraw the hint circle + guess line whenever either
+      // changes. Both live in `overlays`, so one removeAll() clears the prior
+      // round before the current one is drawn.
+      if (
+        state.hintCircle !== prevCircle ||
+        state.guessLine !== prevGuessLine
+      ) {
+        overlays.entities.removeAll()
+        const MI_TO_M = 1609.344
+        if (state.hintCircle) {
+          const c = state.hintCircle
+          overlays.entities.add({
+            position: Cartesian3.fromDegrees(c.lon, c.lat),
+            ellipse: {
+              semiMajorAxis: c.radiusMi * MI_TO_M,
+              semiMinorAxis: c.radiusMi * MI_TO_M,
+              material: new ColorMaterialProperty(
+                Color.YELLOW.withAlpha(0.12),
+              ),
+              outline: true,
+              outlineColor: Color.YELLOW.withAlpha(0.9),
+              outlineWidth: 2,
+              height: 0,
+            },
+          })
+        }
+        if (state.guessLine) {
+          const g = state.guessLine
+          overlays.entities.add({
+            polyline: {
+              positions: [
+                Cartesian3.fromDegrees(g.fromLon, g.fromLat),
+                Cartesian3.fromDegrees(g.toLon, g.toLat),
+              ],
+              width: 3.9,
+              material: new PolylineOutlineMaterialProperty({
+                color: Color.YELLOW,
+                outlineColor: Color.BLACK,
+                outlineWidth: 2,
+              }),
+              clampToGround: true,
+            },
+          })
+        }
+        prevCircle = state.hintCircle
+        prevGuessLine = state.guessLine
       }
 
       if (state.revealTarget && state.revealTarget !== prevReveal) {

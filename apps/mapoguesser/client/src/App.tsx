@@ -152,6 +152,17 @@ export function App() {
   const guess = useGameStore((s) => s.country)
   const seed = useGameStore((s) => s.seed)
   const mode = useGameStore((s) => s.mode)
+  const distances = useGameStore((s) => s.distances)
+  const capitals = useGameStore((s) => s.capitals)
+  const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
+  const revealName = useGameStore((s) => s.revealName)
+  const revealFlag = useGameStore((s) => s.revealFlag)
+  const useLifeline = useGameStore((s) => s.useLifeline)
+  // Capitals mode needs its own dataset (populated-places GeoJSON) on top of the
+  // country polygons before it can draw a pool.
+  const capitalsReady = useGameStore(
+    (s) => Object.keys(s.capitals).length >= ROUNDS,
+  )
   const perfectStreak = useGameStore((s) => s.perfectStreak)
   const multiplayer = useGameStore((s) => s.multiplayer)
 
@@ -163,6 +174,7 @@ export function App() {
   const partyUI = partyActive || multiplayer
 
   const [menuOpen, setMenuOpen] = useState(false)
+  const [phoneOpen, setPhoneOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
   const [statsSort, setStatsSort] = useState<'name' | 'sum'>('name')
   const [showConfetti, setShowConfetti] = useState(false)
@@ -301,26 +313,41 @@ export function App() {
     if (!ready || phase !== 'idle') return
     const params = new URLSearchParams(window.location.search)
     const urlSeed = params.get('seed')
-    // `wc=1` tags a World Cup seed; anything else is a classic match.
-    if (urlSeed) startGame(urlSeed, params.get('wc') === '1' ? 'worldcup' : 'classic')
-  }, [ready, phase, startGame])
+    if (!urlSeed) return
+    // `cap=1` tags a capitals seed; `wc=1` a World Cup seed; else classic.
+    if (params.get('cap') === '1') {
+      // Wait for the capitals dataset before replaying a shared capitals seed.
+      if (capitalsReady) startGame(urlSeed, 'capitals')
+    } else {
+      startGame(urlSeed, params.get('wc') === '1' ? 'worldcup' : 'classic')
+    }
+  }, [ready, capitalsReady, phase, startGame])
 
-  // Mirror the active match seed (and World Cup tag) into the URL so a refresh /
+  // Mirror the active match seed (and its mode tag) into the URL so a refresh /
   // link share reproduces the same draw. replaceState avoids polluting history.
   useEffect(() => {
     if (!seed) return
     const url = new URL(window.location.href)
     const wantWc = mode === 'worldcup'
+    const wantCap = mode === 'capitals'
     const seedOk = url.searchParams.get('seed') === seed
     const wcOk = (url.searchParams.get('wc') === '1') === wantWc
-    if (seedOk && wcOk) return
+    const capOk = (url.searchParams.get('cap') === '1') === wantCap
+    if (seedOk && wcOk && capOk) return
     url.searchParams.set('seed', seed)
     if (wantWc) url.searchParams.set('wc', '1')
     else url.searchParams.delete('wc')
+    if (wantCap) url.searchParams.set('cap', '1')
+    else url.searchParams.delete('cap')
     window.history.replaceState(null, '', url.toString())
   }, [seed, mode])
 
   const correctCount = attempts.filter((a) => a === 'correct').length
+  // Capitals mode golf score: sum of the per-round great-circle miles.
+  const isCapitals = mode === 'capitals'
+  const totalMiles = distances.reduce((sum, d) => sum + d, 0)
+  const lastMiles = distances.length ? distances[distances.length - 1] : null
+  const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
 
   // When a match wraps up, play the score-appropriate jingle and fire the
   // matching visual celebration. Keyed on `phase` so it runs once per
@@ -329,8 +356,9 @@ export function App() {
   //   8/9 → full confetti
   //   9/9 → full confetti + fireworks
   useEffect(() => {
-    // Multiplayer runs its own celebration on the party results screen.
-    if (phase !== 'finished' || multiplayer) {
+    // Multiplayer runs its own celebration on the party results screen; capitals
+    // mode is scored by distance (no correct/wrong tiers) so it skips this.
+    if (phase !== 'finished' || multiplayer || isCapitals) {
       setShowConfetti(false)
       setShowFireworks(false)
       return
@@ -374,21 +402,26 @@ export function App() {
     }
   }
 
-  const handleNewGame = () => {
-    setMenuOpen(false)
-    startGame()
-  }
   const handleWorldCup = () => {
     setMenuOpen(false)
     startGame(undefined, 'worldcup')
+  }
+  const handleCapitals = () => {
+    setMenuOpen(false)
+    startGame(undefined, 'capitals')
   }
   // Drop ?seed= from the URL so the auto-start effect doesn't immediately
   // re-launch the just-ended match the moment resetGame() flips us to 'idle'.
   const clearSeedFromUrl = () => {
     const url = new URL(window.location.href)
-    if (url.searchParams.has('seed') || url.searchParams.has('wc')) {
+    if (
+      url.searchParams.has('seed') ||
+      url.searchParams.has('wc') ||
+      url.searchParams.has('cap')
+    ) {
       url.searchParams.delete('seed')
       url.searchParams.delete('wc')
+      url.searchParams.delete('cap')
       window.history.replaceState(null, '', url.toString())
     }
   }
@@ -396,6 +429,13 @@ export function App() {
     setMenuOpen(false)
     // Back to the unseeded URL + the idle main-menu screen. Without clearing the
     // seed, the auto-start effect would just replay the same match.
+    clearSeedFromUrl()
+    resetGame()
+  }
+  // Same "back to the clean main menu" path, but also dismisses the party UI so
+  // the join/create screen's Main Menu button drops you all the way out.
+  const handleFriendsMainMenu = () => {
+    setFriendsOpen(false)
     clearSeedFromUrl()
     resetGame()
   }
@@ -426,6 +466,7 @@ export function App() {
       <PartyOverlay
         friendsOpen={friendsOpen}
         onClose={() => setFriendsOpen(false)}
+        onMainMenu={handleFriendsMainMenu}
       />
 
       {showConfetti && (
@@ -447,6 +488,9 @@ export function App() {
             alignItems: 'flex-start',
             gap: 8,
             pointerEvents: 'auto',
+            // Keep the menu above every other overlay (party panels at zIndex 25,
+            // toasts at 30) so its buttons are always clickable on top.
+            zIndex: 1000,
           }}
         >
           <button
@@ -484,27 +528,6 @@ export function App() {
                 gap: 8,
               }}
             >
-              <button
-                type="button"
-                onClick={handleMainMenu}
-                style={menuButtonStyle}
-              >
-                Main Menu
-              </button>
-              <button
-                type="button"
-                onClick={handleNewGame}
-                style={menuButtonStyle}
-              >
-                New Game
-              </button>
-              <button
-                type="button"
-                onClick={handleWorldCup}
-                style={menuButtonStyle}
-              >
-                ⚽ World Cup Edition
-              </button>
               {seed && (
                 <button
                   type="button"
@@ -516,6 +539,94 @@ export function App() {
                   {shareLabel === 'copied' ? 'Copied!' : 'Share Seed'}
                 </button>
               )}
+              <button
+                type="button"
+                onClick={handleMainMenu}
+                style={menuButtonStyle}
+              >
+                Abandon
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Capitals lifelines "phone" (top-right): three once-per-game helpers. */}
+      {isCapitals && phase === 'playing' && !partyUI && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: 8,
+            pointerEvents: 'auto',
+            zIndex: 1000,
+          }}
+        >
+          <button
+            type="button"
+            aria-label={phoneOpen ? 'Close lifelines' : 'Lifelines'}
+            onClick={() => setPhoneOpen((v) => !v)}
+            style={{
+              width: 44,
+              height: 44,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0,
+              fontSize: 26,
+              color: 'white',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              fontFamily: 'system-ui, sans-serif',
+              textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+              lineHeight: 1,
+            }}
+          >
+            {phoneOpen ? '×' : '📱'}
+          </button>
+          {phoneOpen && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                alignItems: 'flex-end',
+              }}
+            >
+              {(
+                [
+                  { key: 'name', label: '🏳️ Show country name' },
+                  { key: 'flag', label: '🚩 Show country flag' },
+                  { key: 'circle', label: '⭕ Draw circle' },
+                ] as const
+              ).map((l) => {
+                const used = lifelinesUsed[l.key]
+                return (
+                  <button
+                    key={l.key}
+                    type="button"
+                    disabled={used}
+                    onClick={() => {
+                      useLifeline(l.key)
+                      setPhoneOpen(false)
+                    }}
+                    style={{
+                      ...menuButtonStyle,
+                      whiteSpace: 'nowrap',
+                      cursor: used ? 'not-allowed' : 'pointer',
+                      opacity: used ? 0.45 : 1,
+                      textDecoration: used ? 'line-through' : 'none',
+                    }}
+                  >
+                    {l.label}
+                  </button>
+                )
+              })}
             </div>
           )}
         </div>
@@ -536,16 +647,37 @@ export function App() {
             gap: 12,
           }}
         >
-          <div style={{ display: 'flex', gap: 4 }}>
-            {guessBoxes.map((b, i) => (
-              <Checkbox
-                key={i}
-                result={b.result}
-                code={b.code}
-                count={guessBoxes.length}
-              />
-            ))}
-          </div>
+          {isCapitals ? (
+            <div
+              style={{
+                display: 'flex',
+                gap: 12,
+                alignItems: 'baseline',
+                fontSize: 16,
+                fontWeight: 600,
+              }}
+            >
+              <span style={{ opacity: 0.75 }}>
+                Round{' '}
+                {phase === 'playing'
+                  ? Math.min(distances.length + 1, ROUNDS)
+                  : ROUNDS}{' '}
+                / {ROUNDS}
+              </span>
+              <span>Total: {milesFmt(totalMiles)}</span>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 4 }}>
+              {guessBoxes.map((b, i) => (
+                <Checkbox
+                  key={i}
+                  result={b.result}
+                  code={b.code}
+                  count={guessBoxes.length}
+                />
+              ))}
+            </div>
+          )}
           <div
             style={{
               fontSize: 26,
@@ -556,7 +688,62 @@ export function App() {
               gap: 10,
             }}
           >
-            {revealTarget ? (
+            {isCapitals ? (
+              phase === 'playing' && target ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  {/* Only the capital city is given; the country name + flag are
+                      hidden behind the "show country name/flag" lifelines. */}
+                  <span style={{ fontSize: 30, fontWeight: 800 }}>
+                    {capitals[target]?.city ?? '…'}
+                  </span>
+                  {(revealFlag || revealName) && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        fontSize: 18,
+                        opacity: 0.9,
+                      }}
+                    >
+                      {revealFlag && (
+                        <FlagIcon code={countryCodes[target]} height={18} />
+                      )}
+                      {revealName && <span>{target}</span>}
+                    </div>
+                  )}
+                  {lastMiles !== null && (
+                    <span style={{ fontSize: 15, opacity: 0.75 }}>
+                      Last: {milesFmt(lastMiles)}
+                    </span>
+                  )}
+                </div>
+              ) : phase === 'finished' ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <span>Total: {milesFmt(totalMiles)}</span>
+                  {distances.length > 0 && (
+                    <span style={{ fontSize: 16, opacity: 0.75 }}>
+                      {distances.length} capitals · avg{' '}
+                      {milesFmt(totalMiles / distances.length)}
+                    </span>
+                  )}
+                </div>
+              ) : null
+            ) : revealTarget ? (
               <>
                 <span style={{ opacity: 0.7 }}>Was:</span>
                 <FlagIcon code={countryCodes[revealTarget]} height={22} />
@@ -614,82 +801,107 @@ export function App() {
             gap: 12,
           }}
         >
-          <button
-            type="button"
-            onClick={() => startGame()}
-            disabled={!ready}
-            style={{
-              padding: '14px 32px',
-              fontSize: 22,
-              fontWeight: 700,
-              color: 'white',
-              background: ready
-                ? 'rgba(20, 60, 110, 0.85)'
-                : 'rgba(60, 60, 60, 0.7)',
-              border: '2px solid rgba(255,255,255,0.85)',
-              borderRadius: 10,
-              cursor: ready ? 'pointer' : 'wait',
-              fontFamily: 'system-ui, sans-serif',
-              letterSpacing: 0.4,
-              boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
-            }}
-          >
-            {phase === 'idle'
-              ? ready
-                ? 'Start Game'
-                : 'Loading…'
-              : 'Play Again'}
-          </button>
-          <button
-            type="button"
-            onClick={handleWorldCup}
-            disabled={!ready}
-            style={{
-              ...menuButtonStyle,
-              cursor: ready ? 'pointer' : 'wait',
-              opacity: ready ? 1 : 0.6,
-            }}
-          >
-            ⚽ World Cup Edition
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              clearSeedFromUrl()
-              resetGame()
-              setFriendsOpen(true)
-            }}
-            style={menuButtonStyle}
-          >
-            👥 Play With Friends
-          </button>
-          <button
-            type="button"
-            onClick={handleOpenStats}
-            style={menuButtonStyle}
-          >
-            View Stats
-          </button>
-          {phase === 'finished' && seed && (
-            <button
-              type="button"
-              onClick={handleShareSeed}
-              style={{
-                padding: '10px 22px',
-                fontSize: 16,
-                fontWeight: 600,
-                color: 'white',
-                background: 'rgba(20, 60, 110, 0.55)',
-                border: '2px solid rgba(255,255,255,0.7)',
-                borderRadius: 8,
-                cursor: 'pointer',
-                fontFamily: 'system-ui, sans-serif',
-                letterSpacing: 0.3,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-              }}
-            >
-              {shareLabel === 'copied' ? 'Copied!' : `Share seed: ${seed}`}
-            </button>
+          {phase === 'finished' ? (
+            // After-game menu: replay the mode just played, or bail to the menu.
+            <>
+              <button
+                type="button"
+                onClick={() => startGame(undefined, mode)}
+                disabled={mode === 'capitals' ? !capitalsReady : !ready}
+                style={{
+                  padding: '14px 32px',
+                  fontSize: 22,
+                  fontWeight: 700,
+                  color: 'white',
+                  background: ready
+                    ? 'rgba(20, 60, 110, 0.85)'
+                    : 'rgba(60, 60, 60, 0.7)',
+                  border: '2px solid rgba(255,255,255,0.85)',
+                  borderRadius: 10,
+                  cursor: ready ? 'pointer' : 'wait',
+                  fontFamily: 'system-ui, sans-serif',
+                  letterSpacing: 0.4,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
+                }}
+              >
+                Play Again
+              </button>
+              <button
+                type="button"
+                onClick={handleMainMenu}
+                style={menuButtonStyle}
+              >
+                Main Menu
+              </button>
+            </>
+          ) : (
+            // Idle start screen: full mode picker.
+            <>
+              <button
+                type="button"
+                onClick={() => startGame()}
+                disabled={!ready}
+                style={{
+                  padding: '14px 32px',
+                  fontSize: 22,
+                  fontWeight: 700,
+                  color: 'white',
+                  background: ready
+                    ? 'rgba(20, 60, 110, 0.85)'
+                    : 'rgba(60, 60, 60, 0.7)',
+                  border: '2px solid rgba(255,255,255,0.85)',
+                  borderRadius: 10,
+                  cursor: ready ? 'pointer' : 'wait',
+                  fontFamily: 'system-ui, sans-serif',
+                  letterSpacing: 0.4,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
+                }}
+              >
+                {ready ? 'Start Game' : 'Loading…'}
+              </button>
+              <button
+                type="button"
+                onClick={handleWorldCup}
+                disabled={!ready}
+                style={{
+                  ...menuButtonStyle,
+                  cursor: ready ? 'pointer' : 'wait',
+                  opacity: ready ? 1 : 0.6,
+                }}
+              >
+                ⚽ World Cup Edition
+              </button>
+              <button
+                type="button"
+                onClick={handleCapitals}
+                disabled={!capitalsReady}
+                style={{
+                  ...menuButtonStyle,
+                  cursor: capitalsReady ? 'pointer' : 'wait',
+                  opacity: capitalsReady ? 1 : 0.6,
+                }}
+              >
+                📍 Capitals
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearSeedFromUrl()
+                  resetGame()
+                  setFriendsOpen(true)
+                }}
+                style={menuButtonStyle}
+              >
+                👥 Play With Friends
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenStats}
+                style={menuButtonStyle}
+              >
+                View Stats
+              </button>
+            </>
           )}
         </div>
       )}
@@ -730,6 +942,11 @@ export function App() {
           // World Cup edition: swap the "o" in map-o-guesser for a soccer ball.
           <>
             map<span style={{ fontSize: '0.85em' }}>⚽</span>guesser
+          </>
+        ) : mode === 'capitals' ? (
+          // Capitals edition: swap the "o" for a map pin.
+          <>
+            map<span style={{ fontSize: '0.85em' }}>📍</span>guesser
           </>
         ) : (
           'mapoguesser'

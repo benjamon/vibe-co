@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { sfxCorrect, sfxWrong } from './sfx'
 import {
   recordGuess,
+  recordCapitalGuess,
   selectGlobalCountryGuesses,
   ALL_GUESSES,
   type CountryAgg,
@@ -18,8 +19,18 @@ export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
 // Which country pool the match draws from. 'classic' = every playable country
 // in the dataset; 'worldcup' = only the 48 World Cup qualifiers (collapsed to
-// the unique map countries they belong to). Carried in the seed URL as `wc=1`.
-export type GameMode = 'classic' | 'worldcup'
+// the unique map countries they belong to; URL `wc=1`); 'capitals' = guess the
+// capital city of a country, scored golf-style by distance (URL `cap=1`).
+export type GameMode = 'classic' | 'worldcup' | 'capitals'
+
+// A country's capital city and its coordinates. Populated by WorldViewer from
+// the Natural Earth populated-places dataset; drives the 'capitals' mode draw
+// pool and its distance scoring.
+export interface CapitalInfo {
+  city: string
+  lat: number
+  lon: number
+}
 // Sprite kind drawn at the marker location: green pin for a correct guess,
 // grey pin for the wrong country the player clicked, red X for the centroid
 // reveal of a missed target.
@@ -29,6 +40,11 @@ export interface Marker {
   lon: number
   kind: MarkerKind
   label: string
+  // Optional explicit ISO 3166-1 alpha-2 flag code. When absent the renderer
+  // derives the code from `label` (a country name). Capitals-mode reveal markers
+  // set this so the pin shows the country's flag while `label` reads
+  // "City,\nCountry" (which isn't a country name and wouldn't resolve on its own).
+  code?: string
 }
 
 export const ROUNDS = 9
@@ -76,6 +92,9 @@ interface SavedMatch {
   targetIndex: number
   consecutiveWrong: number
   markers: Marker[]
+  // Capitals mode only: the great-circle miles for each completed round, in
+  // order. Absent for classic/worldcup saves (which score by `attempts`).
+  distances?: number[]
 }
 
 const isSavedMatch = (v: unknown): v is SavedMatch => {
@@ -252,6 +271,12 @@ interface GameState {
   worldCupCountries: string[]
   setWorldCupCountries: (countries: string[]) => void
 
+  // Country NAME → capital city + coordinates. Populated by WorldViewer once the
+  // populated-places GeoJSON loads; keys are the same Natural Earth NAMEs used
+  // by `countries`/`countryCodes`. Drives the 'capitals' draw pool + scoring.
+  capitals: Record<string, CapitalInfo>
+  setCapitals: (capitals: Record<string, CapitalInfo>) => void
+
   // Name → ISO 3166-1 alpha-2 code (lowercase). Populated alongside countries.
   // Drives the flag icons in the HUD. Countries without a valid ISO_A2 in the
   // Natural Earth dataset are simply absent (the HUD then omits the flag).
@@ -329,6 +354,27 @@ interface GameState {
   // flag boxes (which pad to ROUNDS with pending boxes for unused guesses); it
   // never contains 'pending'.
   attempts: AttemptResult[]
+  // Capitals mode only: the great-circle miles for each completed round, in
+  // order. The golf scorecard — the total (sum) is the match score, lower is
+  // better. Empty in classic/worldcup (which score by `attempts`).
+  distances: number[]
+
+  // Capitals lifelines. `lifelinesUsed` tracks the three once-per-game helpers
+  // (reset each match). `revealName`/`revealFlag` show the hidden country
+  // name/flag for the *current* round; `hintCircle` is the drawn circle. All
+  // three per-round reveals reset when the round advances.
+  lifelinesUsed: Record<Lifeline, boolean>
+  revealName: boolean
+  revealFlag: boolean
+  hintCircle: HintCircle | null
+  // Line from the player's last dropped pin to the true capital. Cleared when
+  // the next guess is made (only the current round's line is ever shown).
+  guessLine: GuessLine | null
+  // Bumped whenever the game markers are fully replaced (rather than appended),
+  // so the viewer knows to wipe + redraw instead of appending. Capitals mode
+  // replaces its two markers each guess; classic/worldcup only ever appends.
+  markerEpoch: number
+
   // Markers placed on the globe. Owned by the store (rather than the viewer's
   // Cesium data source) so we can persist them and replay them on resume.
   markers: Marker[]
@@ -375,6 +421,12 @@ interface GameState {
     lat?: number,
     lon?: number,
   ) => void
+  // Capitals mode guess: the player dropped a pin at (lat, lon). Scores it by
+  // distance from the current target's capital, drops the guess + answer
+  // markers, records it to the server, and advances (or finishes) the match.
+  handleCapitalGuess: (lat: number, lon: number) => void
+  // Spend a once-per-game capitals lifeline on the current round.
+  useLifeline: (which: Lifeline) => void
   // Records a marker drop. The viewer also handles the Cesium-side render via
   // a subscription to `markers`.
   addMarker: (marker: Marker) => void
@@ -436,6 +488,74 @@ export const generateSeed = (): string =>
 const targetAt = (targets: string[], index: number): string | null =>
   targets[index] ?? null
 
+// Great-circle distance in miles between two lat/lon points (haversine). Used by
+// capitals mode to score a dropped pin against the true capital location.
+const EARTH_RADIUS_MI = 3958.8
+const toRad = (d: number) => (d * Math.PI) / 180
+const toDeg = (r: number) => (r * 180) / Math.PI
+export const haversineMiles = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number => {
+  const dLat = toRad(lat2 - lat1)
+  const dLon = toRad(lon2 - lon1)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2
+  return 2 * EARTH_RADIUS_MI * Math.asin(Math.min(1, Math.sqrt(a)))
+}
+
+// The point reached by travelling `distanceMi` from (lat, lon) along `bearingDeg`
+// (0 = north, 90 = east). Used to offset the "draw circle" hint away from the
+// true capital so the circle brackets the answer without centring on it.
+export const destinationPoint = (
+  lat: number,
+  lon: number,
+  bearingDeg: number,
+  distanceMi: number,
+): { lat: number; lon: number } => {
+  const ang = distanceMi / EARTH_RADIUS_MI
+  const brng = toRad(bearingDeg)
+  const lat1 = toRad(lat)
+  const lon1 = toRad(lon)
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(ang) +
+      Math.cos(lat1) * Math.sin(ang) * Math.cos(brng),
+  )
+  const lon2 =
+    lon1 +
+    Math.atan2(
+      Math.sin(brng) * Math.sin(ang) * Math.cos(lat1),
+      Math.cos(ang) - Math.sin(lat1) * Math.sin(lat2),
+    )
+  return { lat: toDeg(lat2), lon: ((toDeg(lon2) + 540) % 360) - 180 }
+}
+
+// Capitals-mode "draw circle" lifeline: a 750 mi circle whose centre is nudged
+// 600 mi off the true capital (so the answer sits inside it, but off-centre).
+export const CIRCLE_RADIUS_MI = 750
+export const CIRCLE_OFFSET_MI = 600
+
+// The three once-per-game capitals-mode lifelines.
+export type Lifeline = 'name' | 'flag' | 'circle'
+
+// A hint circle to draw on the globe (centre + radius in miles).
+export interface HintCircle {
+  lat: number
+  lon: number
+  radiusMi: number
+}
+
+// The line drawn from the player's dropped pin to the true capital after a guess.
+export interface GuessLine {
+  fromLat: number
+  fromLon: number
+  toLat: number
+  toLon: number
+}
+
 export const useGameStore = create<GameState>((set, get) => ({
   heading: 0,
   setHeading: (heading) => set({ heading }),
@@ -445,6 +565,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   worldCupCountries: [],
   setWorldCupCountries: (worldCupCountries) => set({ worldCupCountries }),
+
+  capitals: {},
+  setCapitals: (capitals) => set({ capitals }),
 
   countryCodes: {},
   setCountryCodes: (countryCodes) => set({ countryCodes }),
@@ -523,6 +646,13 @@ export const useGameStore = create<GameState>((set, get) => ({
   targetIndex: 0,
   target: null,
   attempts: [],
+  distances: [],
+  lifelinesUsed: { name: false, flag: false, circle: false },
+  revealName: false,
+  revealFlag: false,
+  hintCircle: null,
+  guessLine: null,
+  markerEpoch: 0,
   markers: [],
   consecutiveWrong: 0,
   revealTarget: null,
@@ -578,6 +708,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetIndex: 0,
       target: null,
       attempts: [],
+      distances: [],
+      lifelinesUsed: { name: false, flag: false, circle: false },
+      revealName: false,
+      revealFlag: false,
+      hintCircle: null,
+      guessLine: null,
       markers: [],
       country: null,
       consecutiveWrong: 0,
@@ -588,7 +724,11 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   startGame: (seed, mode = 'classic') => {
     const pool =
-      mode === 'worldcup' ? get().worldCupCountries : get().countries
+      mode === 'worldcup'
+        ? get().worldCupCountries
+        : mode === 'capitals'
+          ? Object.keys(get().capitals)
+          : get().countries
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
     const targets = drawUniqueTargets(pool, matchSeed, ROUNDS)
@@ -603,10 +743,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     const restore =
       saved && saved.seed === matchSeed && savedMode === mode ? saved : null
     const attempts = restore?.attempts ?? []
+    const distances = restore?.distances ?? []
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
     const targetIndex = restore?.targetIndex ?? 0
-    const finished = targetIndex >= ROUNDS
+    // Capitals mode is one guess per round, so it finishes once every round has
+    // a recorded distance; classic/worldcup finish on the guess budget.
+    const finished =
+      mode === 'capitals' ? distances.length >= ROUNDS : targetIndex >= ROUNDS
 
     set({
       phase: finished ? 'finished' : 'playing',
@@ -616,6 +760,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetIndex,
       target: finished ? null : targetAt(targets, targetIndex),
       attempts,
+      distances,
+      lifelinesUsed: { name: false, flag: false, circle: false },
+      revealName: false,
+      revealFlag: false,
+      hintCircle: null,
+      guessLine: null,
       markers,
       country: null,
       consecutiveWrong,
@@ -635,6 +785,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetIndex: 0,
       target: null,
       attempts: [],
+      distances: [],
+      lifelinesUsed: { name: false, flag: false, circle: false },
+      revealName: false,
+      revealFlag: false,
+      hintCircle: null,
+      guessLine: null,
       markers: [],
       country: null,
       consecutiveWrong: 0,
@@ -766,6 +922,95 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
   },
 
+  handleCapitalGuess: (lat, lon) => {
+    const s = get()
+    if (s.mode !== 'capitals') return
+    if (s.phase !== 'playing' || s.target === null) return
+    if (s.distances.length >= ROUNDS) return
+    const cap = s.capitals[s.target]
+    if (!cap) return
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
+
+    const distance = haversineMiles(lat, lon, cap.lat, cap.lon)
+
+    // Drop the guess pin (green when it's a near-perfect drop, otherwise grey)
+    // and a red X revealing the true capital so the player sees the gap.
+    const NEAR_MI = 50
+    const near = distance <= NEAR_MI
+    if (near) sfxCorrect()
+    else sfxWrong()
+
+    // Persist the pin, the answer, and the distance to SpacetimeDB.
+    recordCapitalGuess({
+      country: s.target,
+      guessLat: lat,
+      guessLon: lon,
+      targetLat: cap.lat,
+      targetLon: cap.lon,
+      distanceMi: distance,
+    })
+
+    const distances = [...s.distances, distance]
+    const targetIndex = s.targetIndex + 1
+    const finished = distances.length >= ROUNDS
+    set({
+      distances,
+      // Replace (not append) — only the current round's pin + answer are shown,
+      // clearing the previous round's. The guess pin is unlabelled; the reveal
+      // pin shows the country's flag with a two-line "City,\nCountry" label above
+      // it (the flag is looked up from the explicit `code`, since the label text
+      // isn't a plain country name).
+      markers: [
+        { lat, lon, kind: near ? 'correct' : 'wrong', label: '' },
+        {
+          lat: cap.lat,
+          lon: cap.lon,
+          kind: 'reveal',
+          label: `${cap.city},\n${s.target}`,
+          code: s.countryCodes[s.target],
+        },
+      ],
+      markerEpoch: s.markerEpoch + 1,
+      // Draw the pin→answer line; drop the round's hint circle and reveals.
+      guessLine: {
+        fromLat: lat,
+        fromLon: lon,
+        toLat: cap.lat,
+        toLon: cap.lon,
+      },
+      hintCircle: null,
+      revealName: false,
+      revealFlag: false,
+      targetIndex,
+      target: finished ? null : targetAt(s.targets, targetIndex),
+      phase: finished ? 'finished' : 'playing',
+    })
+  },
+
+  useLifeline: (which) => {
+    const s = get()
+    if (s.mode !== 'capitals' || s.phase !== 'playing' || s.target === null)
+      return
+    if (s.lifelinesUsed[which]) return
+    const lifelinesUsed = { ...s.lifelinesUsed, [which]: true }
+    if (which === 'name') {
+      set({ lifelinesUsed, revealName: true })
+    } else if (which === 'flag') {
+      set({ lifelinesUsed, revealFlag: true })
+    } else {
+      const cap = s.capitals[s.target]
+      if (!cap) return
+      // Offset the circle centre a fixed distance in a random direction so the
+      // true capital lands inside the circle but not at its centre.
+      const bearing = Math.random() * 360
+      const c = destinationPoint(cap.lat, cap.lon, bearing, CIRCLE_OFFSET_MI)
+      set({
+        lifelinesUsed,
+        hintCircle: { lat: c.lat, lon: c.lon, radiusMi: CIRCLE_RADIUS_MI },
+      })
+    }
+  },
+
   addMarker: (marker) =>
     set((state) => ({ markers: [...state.markers, marker] })),
 }))
@@ -780,6 +1025,7 @@ useGameStore.subscribe((state, prev) => {
   if (
     state.seed === prev.seed &&
     state.attempts === prev.attempts &&
+    state.distances === prev.distances &&
     state.targetIndex === prev.targetIndex &&
     state.markers === prev.markers &&
     state.consecutiveWrong === prev.consecutiveWrong
@@ -789,6 +1035,7 @@ useGameStore.subscribe((state, prev) => {
     seed: state.seed,
     mode: state.mode,
     attempts: state.attempts,
+    distances: state.distances,
     targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,

@@ -47,6 +47,32 @@ const guess = table(
   },
 )
 
+// One row per capitals-mode guess (golf scoring). `country` is the country whose
+// capital the player was asked to find. `guess_lat`/`guess_lon` are where they
+// dropped the pin; `target_lat`/`target_lon` are the true capital; `distance_mi`
+// is the great-circle miles between them (the round's golf score — lower better).
+const capital_guess = table(
+  {
+    name: 'capital_guess',
+    public: true,
+    indexes: [
+      { accessor: 'byCountry', algorithm: 'btree', columns: ['country'] as const },
+      { accessor: 'byUser', algorithm: 'btree', columns: ['user_id'] as const },
+    ] as const,
+  },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    user_id: t.string(),
+    country: t.string(),
+    guess_lat: t.f64(),
+    guess_lon: t.f64(),
+    target_lat: t.f64(),
+    target_lon: t.f64(),
+    distance_mi: t.f64(),
+    timestamp: t.u64(),
+  },
+)
+
 // Global per-country aggregate across every user. `correct` counts guesses that
 // matched the target; `total` counts all guesses. score = 2*correct - total.
 const country_stat = table(
@@ -161,6 +187,7 @@ const party_guess = table(
 
 const spacetimedb = schema({
   guess,
+  capital_guess,
   country_stat,
   user_country_stat,
   party,
@@ -246,6 +273,57 @@ export const record_guess = spacetimedb.reducer(
         correct: correct ? 1 : 0,
         total: 1,
       })
+    }
+  },
+)
+
+// Record one capitals-mode guess (golf). Stores both the dropped pin and the
+// true capital plus the great-circle distance. Kept in its own table so it never
+// pollutes the classic country_stat / user_country_stat aggregates.
+export const record_capital_guess = spacetimedb.reducer(
+  {
+    user_id: t.string(),
+    country: t.string(),
+    guess_lat: t.f64(),
+    guess_lon: t.f64(),
+    target_lat: t.f64(),
+    target_lon: t.f64(),
+    distance_mi: t.f64(),
+  },
+  (
+    ctx,
+    { user_id, country, guess_lat, guess_lon, target_lat, target_lon, distance_mi },
+  ) => {
+    if (!user_id || user_id.length > MAX_USER_ID_LEN) return
+    if (!country || country.length > MAX_NAME_LEN) return
+    const nums = [guess_lat, guess_lon, target_lat, target_lon, distance_mi]
+    if (nums.some((n) => !Number.isFinite(n))) return
+    if (guess_lat < -90 || guess_lat > 90 || guess_lon < -180 || guess_lon > 180)
+      return
+    if (target_lat < -90 || target_lat > 90 || target_lon < -180 || target_lon > 180)
+      return
+    if (distance_mi < 0) return
+
+    ctx.db.capital_guess.insert({
+      id: 0n, // ignored — autoInc fills it
+      user_id,
+      country,
+      guess_lat,
+      guess_lon,
+      target_lat,
+      target_lon,
+      distance_mi,
+      timestamp: BigInt(Date.now()),
+    })
+
+    // Same per-country cap as `guess`: keep at most the most-recent rows.
+    const rows = Array.from(ctx.db.capital_guess.byCountry.filter(country))
+    if (rows.length > GUESS_CAP_PER_TARGET) {
+      rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      const excess = rows.length - GUESS_CAP_PER_TARGET
+      for (let i = 0; i < excess; i++) {
+        ctx.db.capital_guess.id.delete(rows[i].id)
+      }
     }
   },
 )

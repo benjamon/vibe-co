@@ -38,6 +38,7 @@ import AdvanceQuestionReducer from "./advance_question_reducer";
 import CreatePartyReducer from "./create_party_reducer";
 import JoinPartyReducer from "./join_party_reducer";
 import LeavePartyReducer from "./leave_party_reducer";
+import RecordCapitalGuessReducer from "./record_capital_guess_reducer";
 import RecordGuessReducer from "./record_guess_reducer";
 import RestartPartyReducer from "./restart_party_reducer";
 import SetReadyReducer from "./set_ready_reducer";
@@ -46,6 +47,7 @@ import SubmitPartyGuessReducer from "./submit_party_guess_reducer";
 // Import all procedure arg schemas
 
 // Import all table schema definitions
+import CapitalGuessRow from "./capital_guess_table";
 import CountryStatRow from "./country_stat_table";
 import GuessRow from "./guess_table";
 import PartyRow from "./party_table";
@@ -57,6 +59,23 @@ import UserCountryStatRow from "./user_country_stat_table";
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
+  capital_guess: __table({
+    name: 'capital_guess',
+    indexes: [
+      { accessor: 'byCountry', name: 'capital_guess_country_idx_btree', algorithm: 'btree', columns: [
+        'country',
+      ] },
+      { accessor: 'id', name: 'capital_guess_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+      { accessor: 'byUser', name: 'capital_guess_user_id_idx_btree', algorithm: 'btree', columns: [
+        'userId',
+      ] },
+    ],
+    constraints: [
+      { name: 'capital_guess_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, CapitalGuessRow),
   country_stat: __table({
     name: 'country_stat',
     indexes: [
@@ -146,6 +165,7 @@ const reducersSchema = __reducers(
   __reducerSchema("create_party", CreatePartyReducer),
   __reducerSchema("join_party", JoinPartyReducer),
   __reducerSchema("leave_party", LeavePartyReducer),
+  __reducerSchema("record_capital_guess", RecordCapitalGuessReducer),
   __reducerSchema("record_guess", RecordGuessReducer),
   __reducerSchema("restart_party", RestartPartyReducer),
   __reducerSchema("set_ready", SetReadyReducer),

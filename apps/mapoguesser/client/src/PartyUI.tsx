@@ -227,7 +227,13 @@ function Scoreboard({
 // joining). Keeps the entry screen to a single clear decision.
 type FriendsStep = 'choose' | 'create' | 'join'
 
-function FriendsPanel({ onCancel }: { onCancel: () => void }) {
+function FriendsPanel({
+  onCancel,
+  onMainMenu,
+}: {
+  onCancel: () => void
+  onMainMenu: () => void
+}) {
   const [step, setStep] = useState<FriendsStep>('choose')
 
   if (step === 'choose') {
@@ -251,6 +257,13 @@ function FriendsPanel({ onCancel }: { onCancel: () => void }) {
           style={{ ...panelButton, width: '100%' }}
         >
           Join Party
+        </button>
+        <button
+          type="button"
+          onClick={onMainMenu}
+          style={{ ...panelButton, width: '100%', background: 'rgba(255,255,255,0.08)' }}
+        >
+          ← Main Menu
         </button>
       </PanelShell>
     )
@@ -800,9 +813,11 @@ function PanelShell({
 export function PartyOverlay({
   friendsOpen,
   onClose,
+  onMainMenu,
 }: {
   friendsOpen: boolean
   onClose: () => void
+  onMainMenu: () => void
 }) {
   const { snap } = useParty()
   const { room } = snap
@@ -849,7 +864,9 @@ export function PartyOverlay({
       {room?.phase === 'playing' && <GameHud snap={snap} />}
       {room?.phase === 'finished' && <Results snap={snap} onExit={onClose} />}
 
-      {!room && friendsOpen && <FriendsPanel onCancel={onClose} />}
+      {!room && friendsOpen && (
+        <FriendsPanel onCancel={onClose} onMainMenu={onMainMenu} />
+      )}
     </>
   )
 }
