@@ -23,7 +23,8 @@ import {
   Viewer,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
-import { useGameStore, type Marker } from './store'
+import { useGameStore, type Marker, type CityInfo } from './store'
+import { resolveSubMode } from './gameModes'
 import { ALL_GUESSES } from './stats'
 
 // Cesium would otherwise reach Cesium ion for default assets; blank the token
@@ -88,10 +89,15 @@ const COASTLINE_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_coastline.geojson'
 const COUNTRY_POLYGONS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson'
-// Capital cities (small 110m set, ~240 points) — used to place a country's flag
-// pin when its centroid falls outside its own borders.
-const CAPITALS_URL =
-  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_populated_places_simple.geojson'
+// Populated places (50m set, ~1250 cities with pop_max + adm0cap). Drives the
+// cities game modes (World Capitals + regional "largest cities") and doubles as
+// the source for the flag-pin fallback (a country's capital, validated inside).
+const POPULATED_PLACES_URL =
+  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson'
+// US state / province boundary lines. Fetched, filtered to the USA, and drawn as
+// a hidden layer that's only shown during the North America cities mode.
+const STATE_LINES_URL =
+  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_1_states_provinces_lines.geojson'
 
 // The 48 World Cup qualifiers, keyed by ISO 3166-1 alpha-2 (lowercase) — the
 // most reliable match against Natural Earth, whose NAME spellings vary. England
@@ -447,9 +453,6 @@ export function WorldViewer() {
     // Carries the city name too, for the capitals game mode.
     type CapitalPt = LatLonPt & { city: string }
     const capitalByName = new Map<string, CapitalPt>()
-    // Flips true once the capitals dataset has been parsed. The country→capital
-    // map for capitals mode can only be built once both fetches have landed.
-    let capitalsLoaded = false
     const normName = (s: string): string =>
       s.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
@@ -475,81 +478,111 @@ export function WorldViewer() {
       return entry.centroid
     }
 
-    // Join the loaded country polygons with the capitals dataset into a
-    // NAME → {city, lat, lon} map for the store (capitals game mode). Runs once
-    // both fetches have landed, in whichever order they complete. Matches via
-    // the entry's aliases (ISO code first, then name variants) — the same keys
-    // capitalByName is indexed by.
-    const publishCapitals = () => {
-      if (!countryEntries || !capitalsLoaded) return
-      const out: Record<string, CapitalPt> = {}
+    // Every populated place from the dataset, kept raw until the country
+    // polygons load so each can be joined to a country NAME (for the reveal flag
+    // + the region filters). `capital` mirrors Natural Earth's adm0cap.
+    type RawPlace = {
+      neId: string
+      city: string
+      lat: number
+      lon: number
+      pop: number
+      capital: boolean
+      iso: string | null
+      adm0: string
+      sov0: string
+      adm1: string
+    }
+    let rawPlaces: RawPlace[] = []
+    let placesLoaded = false
+
+    // Join every populated place to its Natural Earth country NAME (via ISO code,
+    // then adm0/sov0 name) and publish the ne_id → CityInfo map that drives the
+    // cities game modes. Runs once both the polygons and the places have landed.
+    const publishCities = () => {
+      if (!countryEntries || !placesLoaded) return
+      // Normalised alias → country NAME. Country entries carry `iso:xx` plus name
+      // variants as aliases; the first entry to claim an alias wins.
+      const aliasToCountry = new Map<string, string>()
       for (const entry of countryEntries) {
-        // Same playability floor as classic/worldcup: drop city-states and
-        // pinprick island nations that are effectively unclickable on the globe
-        // (Vatican, Monaco, Tuvalu, Nauru, …) so their capitals aren't served.
-        if (entry.area < MIN_TARGET_AREA) continue
         for (const alias of entry.aliases) {
-          const cap = capitalByName.get(alias)
-          // Require the matched capital to actually lie inside this country.
-          // Dependent territories (Falkland Is., …) carry their parent's
-          // SOVEREIGNT as an alias and would otherwise inherit the parent's
-          // capital (e.g. London) — but that point isn't inside the territory,
-          // so this rejects it and the territory is left capital-less (dropped).
-          if (cap && insideCountry(entry, cap.lat, cap.lon)) {
-            out[entry.name] = cap
-            break
-          }
+          if (!aliasToCountry.has(alias)) aliasToCountry.set(alias, entry.name)
         }
       }
-      useGameStore.getState().setCapitals(out)
+      const out: Record<string, CityInfo> = {}
+      for (const p of rawPlaces) {
+        let country: string | undefined
+        if (p.iso) country = aliasToCountry.get(`iso:${p.iso}`)
+        if (!country && p.adm0) country = aliasToCountry.get(normName(p.adm0))
+        if (!country && p.sov0) country = aliasToCountry.get(normName(p.sov0))
+        if (!country) continue
+        out[p.neId] = {
+          city: p.city,
+          country,
+          ...(p.adm1 ? { region: p.adm1 } : {}),
+          lat: p.lat,
+          lon: p.lon,
+          pop: p.pop,
+          capital: p.capital,
+        }
+      }
+      useGameStore.getState().setCities(out)
     }
 
-    fetch(CAPITALS_URL)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('capitals'))))
+    fetch(POPULATED_PLACES_URL)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('places'))))
       .then((geo: { features?: Array<Record<string, any>> }) => {
         if (destroyed || viewer.isDestroyed()) return
+        const places: RawPlace[] = []
         for (const f of geo.features ?? []) {
           const p = f.properties ?? {}
-          // National (Admin-0) capitals only. adm0cap flags the sovereign
-          // capital; the featurecla check is limited to "Admin-0 capital"
-          // so sub-national capitals (US state capitals, other countries'
-          // regional capitals) are excluded — this is a country-capitals game.
-          const fcla = String(p.featurecla ?? p.FEATURECLA ?? '').toLowerCase()
-          const isCapital =
-            p.adm0cap === 1 ||
-            p.ADM0CAP === 1 ||
-            fcla === 'admin-0 capital' ||
-            fcla === 'admin-0 capital alt'
-          if (!isCapital) continue
           const coords = f.geometry?.coordinates
           if (!Array.isArray(coords) || coords.length < 2) continue
           const lon = Number(coords[0])
           const lat = Number(coords[1])
           if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
-          // The capital city's own name (for the capitals mode prompt/markers).
           const city = String(
             p.name ?? p.NAME ?? p.nameascii ?? p.NAMEASCII ?? '',
           )
-          const value: CapitalPt = { lat, lon, city }
-          // Key by country name variants and, when present, the ISO-A2 code
-          // (the most reliable match — names vary in spelling/abbreviation).
-          const iso = p.iso_a2 ?? p.ISO_A2
-          const keys = [p.adm0name, p.ADM0NAME, p.sov0name, p.SOV0NAME]
-          if (typeof iso === 'string' && /^[A-Za-z]{2}$/.test(iso)) {
-            keys.push(`iso:${iso.toLowerCase()}`)
-          }
-          for (const key of keys) {
-            if (typeof key !== 'string') continue
-            const n = key.startsWith('iso:') ? key : normName(key)
-            if (n && !capitalByName.has(n)) capitalByName.set(n, value)
+          if (!city) continue
+          const neId = String(p.ne_id ?? p.NE_ID ?? `${city}|${lat}|${lon}`)
+          const pop = Number(p.pop_max ?? p.POP_MAX ?? 0) || 0
+          const fcla = String(p.featurecla ?? p.FEATURECLA ?? '').toLowerCase()
+          const capital =
+            p.adm0cap === 1 ||
+            p.ADM0CAP === 1 ||
+            fcla === 'admin-0 capital' ||
+            fcla === 'admin-0 capital alt'
+          const isoRaw = p.iso_a2 ?? p.ISO_A2
+          const iso =
+            typeof isoRaw === 'string' && /^[A-Za-z]{2}$/.test(isoRaw)
+              ? isoRaw.toLowerCase()
+              : null
+          const adm0 = String(p.adm0name ?? p.ADM0NAME ?? '')
+          const sov0 = String(p.sov0name ?? p.SOV0NAME ?? '')
+          const adm1 = String(p.adm1name ?? p.ADM1NAME ?? '')
+          places.push({ neId, city, lat, lon, pop, capital, iso, adm0, sov0, adm1 })
+
+          // Feed the flag-pin fallback: one capital per country, keyed by the
+          // same aliases publishCities uses. First capital to claim a key wins.
+          if (capital) {
+            const value: CapitalPt = { lat, lon, city }
+            const keys = [adm0, sov0]
+            if (iso) keys.push(`iso:${iso}`)
+            for (const key of keys) {
+              if (!key) continue
+              const n = key.startsWith('iso:') ? key : normName(key)
+              if (n && !capitalByName.has(n)) capitalByName.set(n, value)
+            }
           }
         }
-        capitalsLoaded = true
-        publishCapitals()
+        rawPlaces = places
+        placesLoaded = true
+        publishCities()
       })
       .catch(() => {
-        // No capitals → flag placement falls back to label/centroid, and the
-        // capitals game mode stays unavailable (empty pool).
+        // No places → flag placement falls back to label/centroid, and the
+        // cities game modes stay unavailable (empty pool).
       })
     // Min total polygon area (deg²) for a country to be eligible as a target.
     // Excludes city-states and pinprick island nations that are effectively
@@ -634,9 +667,9 @@ export function WorldViewer() {
             })
           }
           countryEntries = list
-          // Capitals mode pool: join with the capitals dataset (no-op until it
-          // has also loaded — publishCapitals guards on capitalsLoaded).
-          publishCapitals()
+          // Cities-mode pool: join places with countries (no-op until the places
+          // have also loaded — publishCities guards on placesLoaded).
+          publishCities()
           useGameStore.getState().setCountryCodes(codes)
           // Register every country (not just playable targets) so guess
           // markers, which can land on any country, always resolve to an ID.
@@ -726,6 +759,67 @@ export function WorldViewer() {
     }
     loadLineLayer(COUNTRY_BORDERS_URL)
     loadLineLayer(COASTLINE_URL)
+
+    // US state lines: a secondary, lighter line layer drawn only during the
+    // North America cities mode (sub-modes whose CitySpec sets usStateLines).
+    // The dataset (~880 KB) is fetched lazily the first time such a mode is
+    // entered, then toggled via the store subscription — players who never touch
+    // that mode never pay for it.
+    let stateLinesDS: GeoJsonDataSource | null = null
+    let stateLinesRequested = false
+    const stateLineMat = new ColorMaterialProperty(new Color(0.1, 0.1, 0.1, 0.5))
+    // Whether the active sub-mode wants US state lines shown.
+    const wantStateLines = (subMode: string): boolean =>
+      resolveSubMode(subMode).cities?.usStateLines === true
+    const loadStateLines = (): void => {
+      if (stateLinesRequested) return
+      stateLinesRequested = true
+      fetch(STATE_LINES_URL)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('states'))))
+        .then((geo: { features?: Array<Record<string, any>> }) => {
+          const us = {
+            type: 'FeatureCollection' as const,
+            features: (geo.features ?? []).filter((f) => {
+              const p = f.properties ?? {}
+              return (p.ADM0_A3 ?? p.adm0_a3) === 'USA'
+            }),
+          }
+          return GeoJsonDataSource.load(us, {
+            stroke: Color.BLACK,
+            strokeWidth: 1,
+          })
+        })
+        .then((ds) => {
+          if (destroyed || viewer.isDestroyed()) return
+          const time = viewer.clock.currentTime
+          for (const entity of ds.entities.values) {
+            const polyline = entity.polyline
+            if (!polyline) continue
+            polyline.material = stateLineMat
+            polyline.width = new ConstantProperty(1.4)
+            if (IS_MOBILE) {
+              polyline.clampToGround = new ConstantProperty(false)
+              const positions = polyline.positions?.getValue(time) as
+                | Cartesian3[]
+                | undefined
+              if (positions) {
+                polyline.positions = new ConstantProperty(
+                  positions.map(liftToBorderHeight),
+                )
+              }
+            }
+          }
+          // Reflect the sub-mode that may have changed while we were loading.
+          ds.show = wantStateLines(useGameStore.getState().subMode)
+          viewer.dataSources.add(ds)
+          stateLinesDS = ds
+        })
+        .catch(() => {
+          // Optional locating aid; the game still works without it.
+        })
+    }
+    // Resuming straight into a state-lines mode (e.g. a shared ?sm= link).
+    if (wantStateLines(useGameStore.getState().subMode)) loadStateLines()
 
     // Disable Cesium's built-in camera controls; we drive the camera ourselves.
     const ssc = viewer.scene.screenSpaceCameraController
@@ -1174,6 +1268,7 @@ export function WorldViewer() {
     let prevStatsSelection = useGameStore.getState().selectedStatsCountryId
     let prevStatsMode = useGameStore.getState().statsMode
     let prevGlobalGuesses = useGameStore.getState().globalGuesses
+    let prevSubMode = useGameStore.getState().subMode
     let endingHoldTimeout: number | null = null
 
     // Reverse-lookup a country name from its local integer ID.
@@ -1302,6 +1397,16 @@ export function WorldViewer() {
     renderedMarkerCount = prevMarkers.length
 
     const unsub = useGameStore.subscribe((state) => {
+      // Show/hide the US state lines when the active sub-mode changes (only the
+      // North America cities mode requests them). No-op until the layer loads;
+      // its initial visibility is set from the current sub-mode at load time.
+      if (state.subMode !== prevSubMode) {
+        prevSubMode = state.subMode
+        const want = wantStateLines(state.subMode)
+        if (want) loadStateLines() // lazy: fetch the first time it's needed
+        if (stateLinesDS) stateLinesDS.show = want
+      }
+
       // A bumped epoch means the markers were fully replaced (capitals mode
       // swaps its two markers each guess) rather than appended — wipe first so
       // the previous round's pins don't linger, then the block below redraws.

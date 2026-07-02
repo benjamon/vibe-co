@@ -13,6 +13,7 @@ import {
   sendLifeline as sendPartyLifeline,
   type PartyPhase,
 } from './party'
+import { resolveSubMode, behavioralModeOf, type SubMode } from './gameModes'
 
 // Which dataset the stats sidebar shows. 'mine' = this player's local history
 // (also mirrored to the server); 'global' = aggregate totals across all users
@@ -27,13 +28,27 @@ export type GamePhase = 'idle' | 'playing' | 'finished'
 // capital city of a country, scored golf-style by distance (URL `cap=1`).
 export type GameMode = 'classic' | 'worldcup' | 'capitals'
 
-// A country's capital city and its coordinates. Populated by WorldViewer from
-// the Natural Earth populated-places dataset; drives the 'capitals' mode draw
-// pool and its distance scoring.
-export interface CapitalInfo {
+// A city and its coordinates. Populated by WorldViewer from the Natural Earth
+// populated-places dataset (50m ≈ 1250 cities with population). Drives the
+// 'capitals' (cities) mode draw pool and its distance scoring. Keyed in the
+// store by the city's Natural Earth ne_id, so multiple cities per country and
+// duplicate names across countries all stay distinct.
+export interface CityInfo {
   city: string
+  // The Natural Earth country NAME this city sits in, for the reveal flag +
+  // label and for the region filters in the city sub-modes.
+  country: string
+  // Admin-1 name (US state / province), when the dataset carries one. Shown in
+  // place of the country when revealing US cities in a state-lines mode.
+  region?: string
   lat: number
   lon: number
+  // Max metro population (Natural Earth pop_max). Drives the "largest cities"
+  // ordering for the regional city sub-modes.
+  pop: number
+  // Whether this is the country's national capital (Natural Earth adm0cap).
+  // The "World Capitals" sub-mode draws only from these.
+  capital: boolean
 }
 // Sprite kind drawn at the marker location: green pin for a correct guess,
 // grey pin for the wrong country the player clicked, red X for the centroid
@@ -104,6 +119,10 @@ interface SavedMatch {
   // the same seed yields a different draw per mode — so the resume check below
   // requires both to match. Optional for legacy saves (default 'classic').
   mode?: GameMode
+  // Which sub-mode (region) the draw came from. Like `mode`, the same seed draws
+  // a different sequence per sub-mode, so resume requires it to match. Optional
+  // for legacy saves (default resolves from `mode`).
+  subMode?: string
   // Per-guess log (one entry per click), NOT one per country. See GameState.
   attempts: AttemptResult[]
   // How far through the 9-country sequence we are (advances on a correct guess
@@ -293,11 +312,12 @@ interface GameState {
   worldCupCountries: string[]
   setWorldCupCountries: (countries: string[]) => void
 
-  // Country NAME → capital city + coordinates. Populated by WorldViewer once the
-  // populated-places GeoJSON loads; keys are the same Natural Earth NAMEs used
-  // by `countries`/`countryCodes`. Drives the 'capitals' draw pool + scoring.
-  capitals: Record<string, CapitalInfo>
-  setCapitals: (capitals: Record<string, CapitalInfo>) => void
+  // ne_id → city. Populated by WorldViewer once the populated-places GeoJSON
+  // loads. Drives the cities-mode ('capitals' behaviour) draw pool + scoring:
+  // World Capitals draws the `capital` ones, regional modes the largest by
+  // `pop` within a set of countries.
+  cities: Record<string, CityInfo>
+  setCities: (cities: Record<string, CityInfo>) => void
 
   // Name → ISO 3166-1 alpha-2 code (lowercase). Populated alongside countries.
   // Drives the flag icons in the HUD. Countries without a valid ISO_A2 in the
@@ -353,9 +373,14 @@ interface GameState {
 
   // Game flow.
   phase: GamePhase
-  // Which pool the active match draws from. Mirrored to the URL as `wc=1` for
-  // 'worldcup' so a shared link reproduces the same edition.
+  // The behavioural mode of the active match: 'classic'/'worldcup' guess the
+  // country, 'capitals' guesses the city. Derived from the sub-mode; drives
+  // round count, scoring, HUD, and the map-corner label.
   mode: GameMode
+  // The selected sub-mode id (region). This is the real selector — it fixes both
+  // the behaviour (`mode`) and the draw pool. Mirrored to the URL as `sm=<id>`
+  // so a shared link reproduces the same match.
+  subMode: string
   // Match seed (base36, 6 chars). Drives the deterministic target draw and is
   // mirrored to the URL so a link reproduces the same match.
   seed: string | null
@@ -443,7 +468,9 @@ interface GameState {
   // Tear down the multiplayer match (leave / back to menu) and return to idle.
   endPartyMatch: () => void
 
-  startGame: (seed?: string, mode?: GameMode) => void
+  // Start a match. `sel` is a sub-mode id (see gameModes.ts); legacy GameMode
+  // strings ('classic'/'worldcup'/'capitals') are also accepted for old callers.
+  startGame: (seed?: string, sel?: string) => void
   resetGame: () => void
   clearReveal: () => void
   finishGame: () => void
@@ -516,6 +543,46 @@ export const generateSeed = (): string =>
   Math.floor(Math.random() * 36 ** 6)
     .toString(36)
     .padStart(6, '0')
+
+// Build the draw pool for a sub-mode from the currently-loaded datasets. For
+// the country family the pool is country NAMEs; for the city family it's the
+// country NAMEs that have a matched capital (the capitals map keys). Explicit
+// name lists are intersected with what actually loaded, so an entry missing
+// from the dataset is silently dropped rather than breaking the draw.
+const poolForSubMode = (s: GameState, sub: SubMode): string[] => {
+  if (sub.family === 'cities') {
+    const spec = sub.cities ?? {}
+    let entries = Object.entries(s.cities)
+    if (spec.capitalsOnly) entries = entries.filter(([, c]) => c.capital)
+    if (spec.countries) {
+      const set = new Set(spec.countries)
+      entries = entries.filter(([, c]) => set.has(c.country))
+    }
+    if (typeof spec.minPopulation === 'number') {
+      entries = entries.filter(([, c]) => c.pop >= spec.minPopulation!)
+    }
+    // Largest-first, with the ne_id key as a deterministic tiebreak so the pool
+    // (and therefore the seeded draw) is identical across clients.
+    entries.sort((a, b) => b[1].pop - a[1].pop || (a[0] < b[0] ? -1 : 1))
+    if (typeof spec.limit === 'number') entries = entries.slice(0, spec.limit)
+    return entries.map(([k]) => k)
+  }
+  if (sub.pool === 'all') return s.countries
+  if (sub.pool === 'worldcup') return s.worldCupCountries
+  const playable = new Set(s.countries)
+  return (sub.pool as string[]).filter((n) => playable.has(n))
+}
+
+const US_NAME = 'United States of America'
+
+// The place name to show when a city is revealed. In sub-modes that draw US
+// state lines (North America cities), US cities are identified by their state so
+// it matches the on-globe boundaries; every other city shows its country.
+export const cityRevealName = (city: CityInfo, subMode: string): string => {
+  const byState = resolveSubMode(subMode).cities?.usStateLines === true
+  if (byState && city.country === US_NAME && city.region) return city.region
+  return city.country
+}
 
 // The country served for a given position in the pre-drawn sequence, or null
 // once the sequence is exhausted (game over).
@@ -609,8 +676,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   worldCupCountries: [],
   setWorldCupCountries: (worldCupCountries) => set({ worldCupCountries }),
 
-  capitals: {},
-  setCapitals: (capitals) => set({ capitals }),
+  cities: {},
+  setCities: (cities) => set({ cities }),
 
   countryCodes: {},
   setCountryCodes: (countryCodes) => set({ countryCodes }),
@@ -684,6 +751,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   phase: 'idle',
   mode: 'classic',
+  subMode: 'all',
   seed: null,
   targets: [],
   targetIndex: 0,
@@ -707,25 +775,29 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   syncPartyMatch: ({ seed, phase, currentQuestion, mode }) => {
     const s = get()
-    // The room's mode string → a known GameMode (defensive default to classic).
-    const gameMode: GameMode =
-      mode === 'worldcup' || mode === 'capitals' ? mode : 'classic'
+    // The room's mode is a sub-mode id (see gameModes.ts). Resolve it to the
+    // behavioural mode + id, exactly like single-player, so party matches get
+    // the regional pools + city modes for free (defaults to All if unknown).
+    const sub = resolveSubMode(mode)
+    const gameMode = behavioralModeOf(sub)
+    const subMode = sub.id
 
     if (phase === 'finished') {
-      set({ multiplayer: true, mode: gameMode, phase: 'finished', target: null })
+      set({
+        multiplayer: true,
+        mode: gameMode,
+        subMode,
+        phase: 'finished',
+        target: null,
+      })
       return
     }
     if (phase !== 'playing') return
 
     // Draw the deterministic sequence the first time (or if the seed/mode
-    // changed). The pool + length follow the room's chosen mode, so all clients
-    // serve the same questions.
-    const pool =
-      gameMode === 'worldcup'
-        ? get().worldCupCountries
-        : gameMode === 'capitals'
-          ? Object.keys(get().capitals)
-          : get().countries
+    // changed). The pool + length follow the room's chosen sub-mode, so all
+    // clients serve identical questions from the room seed.
+    const pool = poolForSubMode(get(), sub)
     const rounds = roundsForMode(gameMode)
     const needDraw =
       !s.multiplayer ||
@@ -744,6 +816,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       multiplayer: true,
       mode: gameMode,
+      subMode,
       phase: 'playing',
       seed,
       targets,
@@ -782,6 +855,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       partyAnswered: false,
       phase: 'idle',
       mode: 'classic',
+      subMode: 'all',
       seed: null,
       targets: [],
       targetIndex: 0,
@@ -802,13 +876,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
   },
 
-  startGame: (seed, mode = 'classic') => {
-    const pool =
-      mode === 'worldcup'
-        ? get().worldCupCountries
-        : mode === 'capitals'
-          ? Object.keys(get().capitals)
-          : get().countries
+  startGame: (seed, sel) => {
+    // Resolve the selection (sub-mode id or legacy mode string) to a sub-mode,
+    // then derive the behaviour and the filtered draw pool from it.
+    const sub = resolveSubMode(sel)
+    const mode = behavioralModeOf(sub)
+    const pool = poolForSubMode(get(), sub)
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
     // Capitals mode is a shorter, 5-capital match; classic/worldcup use ROUNDS.
@@ -816,14 +889,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const targets = drawUniqueTargets(pool, matchSeed, roundCount)
     if (targets.length === 0) return
 
-    // Resume only if BOTH the seed and the mode match the saved match — the
-    // same seed draws a different sequence per mode. A different seed/mode
-    // (Play Again, switching editions, or a friend's URL) starts fresh; the
-    // persistence subscriber will overwrite the save below.
+    // Resume only if the seed AND the sub-mode match the saved match — the same
+    // seed draws a different sequence per sub-mode. A different seed/sub-mode
+    // (Play Again, switching regions, or a friend's URL) starts fresh; the
+    // persistence subscriber will overwrite the save below. Legacy saves without
+    // a `subMode` fall back to the one implied by their `mode`.
     const saved = loadSave()
-    const savedMode = saved?.mode ?? 'classic'
+    const savedSub = saved?.subMode ?? resolveSubMode(saved?.mode).id
     const restore =
-      saved && saved.seed === matchSeed && savedMode === mode ? saved : null
+      saved && saved.seed === matchSeed && savedSub === sub.id ? saved : null
     const attempts = restore?.attempts ?? []
     const distances = restore?.distances ?? []
     const markers = restore?.markers ?? []
@@ -841,6 +915,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       phase: finished ? 'finished' : 'playing',
       mode,
+      subMode: sub.id,
       seed: matchSeed,
       targets,
       targetIndex,
@@ -869,6 +944,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       phase: 'idle',
       mode: 'classic',
+      subMode: 'all',
       seed: null,
       targets: [],
       targetIndex: 0,
@@ -1021,7 +1097,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get()
     if (s.mode !== 'capitals') return
     if (s.phase !== 'playing' || s.target === null) return
-    const cap = s.capitals[s.target]
+    // The target is a city key (ne_id); look up the city being asked for.
+    const cap = s.cities[s.target]
     if (!cap) return
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
 
@@ -1076,8 +1153,8 @@ export const useGameStore = create<GameState>((set, get) => ({
             lat: cap.lat,
             lon: cap.lon,
             kind: 'reveal',
-            label: `${cap.city},\n${s.target}`,
-            code: s.countryCodes[s.target],
+            label: `${cap.city},\n${cityRevealName(cap, s.subMode)}`,
+            code: s.countryCodes[cap.country],
           },
         ],
         markerEpoch: s.markerEpoch + 1,
@@ -1125,7 +1202,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Persist the scoring guess + the answer + the (best) distance to SpacetimeDB.
     recordCapitalGuess({
-      country: s.target,
+      country: cap.country,
       guessLat: scoring.lat,
       guessLon: scoring.lon,
       targetLat: cap.lat,
@@ -1148,8 +1225,8 @@ export const useGameStore = create<GameState>((set, get) => ({
           lat: cap.lat,
           lon: cap.lon,
           kind: 'reveal',
-          label: `${cap.city},\n${s.target}`,
-          code: s.countryCodes[s.target],
+          label: `${cap.city},\n${cityRevealName(cap, s.subMode)}`,
+          code: s.countryCodes[cap.country],
         },
       ],
       markerEpoch: s.markerEpoch + 1,
@@ -1185,7 +1262,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     } else if (which === 'flag') {
       set({ lifelinesUsed, revealFlag: true })
     } else {
-      const cap = s.capitals[s.target]
+      const cap = s.cities[s.target]
       if (!cap) return
       // Offset the circle centre a fixed distance in a random direction so the
       // true capital lands inside the circle but not at its centre.
@@ -1222,6 +1299,7 @@ useGameStore.subscribe((state, prev) => {
   writeSave({
     seed: state.seed,
     mode: state.mode,
+    subMode: state.subMode,
     attempts: state.attempts,
     distances: state.distances,
     targetIndex: state.targetIndex,

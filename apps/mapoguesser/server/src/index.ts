@@ -131,14 +131,35 @@ const ALL_ANSWERED_GRACE_MS = 3_000
 const MAX_PLAYER_NAME_LEN = 10
 const PARTY_CODE_LEN = 4
 
-// The game modes a party can play. The lobby offers two of these to vote on;
-// extend this list to add more modes (voting + round-count logic pick them up
-// automatically). Keep the strings in lockstep with the client GameMode type.
-const PARTY_MODES = ['classic', 'worldcup', 'capitals'] as const
+// The sub-modes a party can play. The lobby offers two of these to vote on;
+// extend this list to add more (voting + round-count logic pick them up
+// automatically). Keep the ids in lockstep with the client's gameModes.ts.
+const PARTY_MODES = [
+  'all',
+  'worldcup',
+  'americas',
+  'europe',
+  'africa',
+  'asia',
+  'world-capitals',
+  'cities-north-america',
+  'cities-latin-america',
+  'cities-europe',
+] as const
 
-// How many questions a given mode runs for. Capitals is the short golf match.
+// The golf-scored city sub-modes (5 rounds, distance scoring). Everything else
+// is a 9-round country mode. Mirrors the 'cities' family in gameModes.ts.
+const CITY_MODES = new Set<string>([
+  'world-capitals',
+  'cities-north-america',
+  'cities-latin-america',
+  'cities-europe',
+])
+const isCityMode = (mode: string): boolean => CITY_MODES.has(mode)
+
+// How many questions a given mode runs for. City modes are the short golf match.
 const roundsForMode = (mode: string): number =>
-  mode === 'capitals' ? CAPITAL_PARTY_ROUNDS : PARTY_ROUNDS
+  isCityMode(mode) ? CAPITAL_PARTY_ROUNDS : PARTY_ROUNDS
 
 // Pick two distinct modes for a lobby to vote on. Derived from the wall clock
 // (reducers already use Date.now); good enough spread for a mode shuffle.
@@ -703,9 +724,9 @@ export const submit_party_guess = spacetimedb.reducer(
     })
 
     const cfg = ctx.db.party_config.code.find(code)
-    if (cfg?.mode === 'capitals') {
+    if (isCityMode(cfg?.mode ?? '')) {
       // Golf scoring: record the distance; the correct-count score is unused for
-      // capitals (the scoreboard sums these distances, lowest wins).
+      // city modes (the scoreboard sums these distances, lowest wins).
       const dist = Number.isFinite(distance_mi) && distance_mi >= 0 ? distance_mi : 0
       ctx.db.party_capital.insert({
         key: gKey,

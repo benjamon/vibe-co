@@ -9,7 +9,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Confetti } from './Confetti'
-import { useGameStore, roundsForMode, type GameMode } from './store'
+import { useGameStore, roundsForMode, cityRevealName, type GameMode } from './store'
+import { resolveSubMode, behavioralModeOf } from './gameModes'
 import {
   subscribeParty,
   subscribePartyGuesses,
@@ -31,18 +32,16 @@ import {
   type PartyEvent,
 } from './party'
 
-// Presentation for each game mode: shown on the lobby vote cards and the in-game
-// HUD. Add an entry here when a new mode is added to the server's PARTY_MODES.
-const MODE_META: Record<
-  string,
-  { label: string; icon: string; blurb: string }
-> = {
-  classic: { label: 'Classic', icon: '🌍', blurb: 'Find the country on the globe' },
-  worldcup: { label: 'World Cup', icon: '⚽', blurb: 'Find the 2026 qualifiers' },
-  capitals: { label: 'Capitals', icon: '📍', blurb: 'Drop a pin on the capital — closest wins' },
+// Presentation for a party sub-mode (lobby vote cards + in-game HUD), pulled
+// straight from the shared gameModes definitions so labels stay in one place.
+const modeMeta = (mode: string) => {
+  if (!mode) return { label: '—', icon: '❓', blurb: '' }
+  const sub = resolveSubMode(mode)
+  return { label: sub.label, icon: sub.icon, blurb: sub.blurb }
 }
-const modeMeta = (mode: string) =>
-  MODE_META[mode] ?? { label: mode || '—', icon: '❓', blurb: '' }
+// The behavioural mode ('classic'/'worldcup'/'capitals') for a party sub-mode id.
+const behavioralOf = (mode: string | undefined): GameMode =>
+  behavioralModeOf(resolveSubMode(mode ?? ''))
 
 // Capitals scoreboard: an un-answered round is penalised by this many miles so
 // skipping a question can't beat actually guessing. Bigger than any real
@@ -198,8 +197,9 @@ function Scoreboard({
   emphasizeTop?: boolean
 }) {
   const { players, myUserId, room } = snap
-  const isCapitals = room?.mode === 'capitals'
-  const rounds = roundsForMode((room?.mode as GameMode) ?? 'classic')
+  const behavioral = behavioralOf(room?.mode)
+  const isCapitals = behavioral === 'capitals'
+  const rounds = roundsForMode(behavioral)
 
   // Capitals ranks by lowest golf score (miles + skip penalty); the other modes
   // rank by highest correct-count. `metric` is the per-player number the row
@@ -687,7 +687,7 @@ function Lobby({ snap }: { snap: PartySnapshot }) {
 
 function GameHud({ snap }: { snap: PartySnapshot }) {
   const { room } = snap
-  const mode = (room?.mode as GameMode) ?? 'classic'
+  const mode = behavioralOf(room?.mode)
   const isCapitals = mode === 'capitals'
   const rounds = roundsForMode(mode)
 
@@ -696,7 +696,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   const roundGuess = useGameStore((s) => s.roundGuess)
   const guess = useGameStore((s) => s.country)
   const countryCodes = useGameStore((s) => s.countryCodes)
-  const capitals = useGameStore((s) => s.capitals)
+  const cities = useGameStore((s) => s.cities)
   const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
   const revealName = useGameStore((s) => s.revealName)
   const revealFlag = useGameStore((s) => s.revealFlag)
@@ -777,15 +777,19 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
           // behind the lifelines.
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ opacity: 0.7, fontSize: 18 }}>Capital:</span>
+              <span style={{ opacity: 0.7, fontSize: 18 }}>City:</span>
               <span style={{ fontSize: 28, fontWeight: 800 }}>
-                {target ? capitals[target]?.city ?? '…' : '…'}
+                {target ? cities[target]?.city ?? '…' : '…'}
               </span>
             </div>
             {(revealFlag || revealName) && target && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16, opacity: 0.9 }}>
-                {revealFlag && <Flag code={countryCodes[target]} height={16} />}
-                {revealName && <span>{target}</span>}
+                {revealFlag && (
+                  <Flag code={countryCodes[cities[target]?.country ?? '']} height={16} />
+                )}
+                {revealName && cities[target] && (
+                  <span>{cityRevealName(cities[target], room?.mode ?? '')}</span>
+                )}
               </div>
             )}
             {!partyAnswered && (
@@ -919,8 +923,9 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
 
 function Results({ snap, onExit }: { snap: PartySnapshot; onExit: () => void }) {
   const { room, players, myUserId } = snap
-  const isCapitals = room?.mode === 'capitals'
-  const rounds = roundsForMode((room?.mode as GameMode) ?? 'classic')
+  const behavioral = behavioralOf(room?.mode)
+  const isCapitals = behavioral === 'capitals'
+  const rounds = roundsForMode(behavioral)
 
   // Capitals wins on the lowest golf score; the other modes on the highest
   // correct-count. A capitals room always has a winner (someone is closest);

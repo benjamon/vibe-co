@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState, lazy, Suspense } from 'react'
 import { Confetti } from './Confetti'
 import { Fireworks } from './Fireworks'
 import { sfxEndJingle, installAudioUnlock } from './sfx'
-import { useGameStore, ROUNDS, CAPITAL_ROUNDS, type AttemptResult } from './store'
+import {
+  useGameStore,
+  ROUNDS,
+  CAPITAL_ROUNDS,
+  cityRevealName,
+  type AttemptResult,
+} from './store'
 import {
   fetchStats,
   releaseStats,
@@ -11,6 +17,7 @@ import {
   type CountryAgg,
 } from './stats'
 import { PartyOverlay, useParty } from './PartyUI'
+import { subModesFor, resolveSubMode, type SubMode } from './gameModes'
 
 // Cesium (~4 MB) lives entirely inside WorldViewer, so lazy-loading it splits
 // that weight into its own chunk: the menu / start screen paints off the small
@@ -152,17 +159,20 @@ export function App() {
   const guess = useGameStore((s) => s.country)
   const seed = useGameStore((s) => s.seed)
   const mode = useGameStore((s) => s.mode)
+  const subMode = useGameStore((s) => s.subMode)
   const distances = useGameStore((s) => s.distances)
-  const capitals = useGameStore((s) => s.capitals)
+  const cities = useGameStore((s) => s.cities)
   const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
   const revealName = useGameStore((s) => s.revealName)
   const revealFlag = useGameStore((s) => s.revealFlag)
   const useLifeline = useGameStore((s) => s.useLifeline)
   const roundGuess = useGameStore((s) => s.roundGuess)
-  // Capitals mode needs its own dataset (populated-places GeoJSON) on top of the
-  // country polygons before it can draw a pool.
+  // Cities modes need the populated-places dataset (joined to country polygons)
+  // before they can draw a pool. Gate on having enough capitals for the World
+  // Capitals mode; the regional modes have plenty once cities are loaded.
   const capitalsReady = useGameStore(
-    (s) => Object.keys(s.capitals).length >= CAPITAL_ROUNDS,
+    (s) =>
+      Object.values(s.cities).filter((c) => c.capital).length >= CAPITAL_ROUNDS,
   )
   const perfectStreak = useGameStore((s) => s.perfectStreak)
   const multiplayer = useGameStore((s) => s.multiplayer)
@@ -175,6 +185,9 @@ export function App() {
   const partyUI = partyActive || multiplayer
 
   const [menuOpen, setMenuOpen] = useState(false)
+  // Which mode-family sub-menu the idle start screen is showing (null = the
+  // top-level Countries / Cities / … picker).
+  const [submenu, setSubmenu] = useState<null | 'countries' | 'cities'>(null)
   const [statsOpen, setStatsOpen] = useState(false)
   const [statsSort, setStatsSort] = useState<'name' | 'sum'>('name')
   const [showConfetti, setShowConfetti] = useState(false)
@@ -314,13 +327,19 @@ export function App() {
     const params = new URLSearchParams(window.location.search)
     const urlSeed = params.get('seed')
     if (!urlSeed) return
-    // `cap=1` tags a capitals seed; `wc=1` a World Cup seed; else classic.
-    if (params.get('cap') === '1') {
-      // Wait for the capitals dataset before replaying a shared capitals seed.
-      if (capitalsReady) startGame(urlSeed, 'capitals')
-    } else {
-      startGame(urlSeed, params.get('wc') === '1' ? 'worldcup' : 'classic')
-    }
+    // `sm=<id>` is the current form (any region). Fall back to the legacy tags
+    // `cap=1` (capitals) / `wc=1` (World Cup) so old shared links still work.
+    const smParam = params.get('sm')
+    const sub = smParam
+      ? resolveSubMode(smParam)
+      : params.get('cap') === '1'
+        ? resolveSubMode('capitals')
+        : params.get('wc') === '1'
+          ? resolveSubMode('worldcup')
+          : resolveSubMode('classic')
+    // City sub-modes need the capitals dataset before the draw can reproduce.
+    if (sub.family === 'cities' && !capitalsReady) return
+    startGame(urlSeed, sub.id)
   }, [ready, capitalsReady, phase, startGame])
 
   // Mirror the active match seed (and its mode tag) into the URL so a refresh /
@@ -328,19 +347,22 @@ export function App() {
   useEffect(() => {
     if (!seed) return
     const url = new URL(window.location.href)
-    const wantWc = mode === 'worldcup'
-    const wantCap = mode === 'capitals'
+    // The sub-mode id fully identifies the draw. Omit it for the default 'all'
+    // pool so a plain classic link stays clean (?seed=…). Legacy wc/cap tags are
+    // dropped in favour of the single `sm` param.
+    const wantSm = subMode !== 'all' ? subMode : null
     const seedOk = url.searchParams.get('seed') === seed
-    const wcOk = (url.searchParams.get('wc') === '1') === wantWc
-    const capOk = (url.searchParams.get('cap') === '1') === wantCap
-    if (seedOk && wcOk && capOk) return
+    const smOk = (url.searchParams.get('sm') || null) === wantSm
+    const legacyClean =
+      !url.searchParams.has('wc') && !url.searchParams.has('cap')
+    if (seedOk && smOk && legacyClean) return
     url.searchParams.set('seed', seed)
-    if (wantWc) url.searchParams.set('wc', '1')
-    else url.searchParams.delete('wc')
-    if (wantCap) url.searchParams.set('cap', '1')
-    else url.searchParams.delete('cap')
+    if (wantSm) url.searchParams.set('sm', wantSm)
+    else url.searchParams.delete('sm')
+    url.searchParams.delete('wc')
+    url.searchParams.delete('cap')
     window.history.replaceState(null, '', url.toString())
-  }, [seed, mode])
+  }, [seed, subMode])
 
   const correctCount = attempts.filter((a) => a === 'correct').length
   // Capitals mode golf score: sum of the per-round great-circle miles.
@@ -402,13 +424,12 @@ export function App() {
     }
   }
 
-  const handleWorldCup = () => {
+  // Launch a match from a chosen sub-mode (region). Used by every button in the
+  // Countries / Cities sub-menus on the start screen.
+  const handleStartSubMode = (sub: SubMode) => {
     setMenuOpen(false)
-    startGame(undefined, 'worldcup')
-  }
-  const handleCapitals = () => {
-    setMenuOpen(false)
-    startGame(undefined, 'capitals')
+    setSubmenu(null)
+    startGame(undefined, sub.id)
   }
   // Drop ?seed= from the URL so the auto-start effect doesn't immediately
   // re-launch the just-ended match the moment resetGame() flips us to 'idle'.
@@ -416,10 +437,12 @@ export function App() {
     const url = new URL(window.location.href)
     if (
       url.searchParams.has('seed') ||
+      url.searchParams.has('sm') ||
       url.searchParams.has('wc') ||
       url.searchParams.has('cap')
     ) {
       url.searchParams.delete('seed')
+      url.searchParams.delete('sm')
       url.searchParams.delete('wc')
       url.searchParams.delete('cap')
       window.history.replaceState(null, '', url.toString())
@@ -427,6 +450,7 @@ export function App() {
   }
   const handleMainMenu = () => {
     setMenuOpen(false)
+    setSubmenu(null)
     // Back to the unseeded URL + the idle main-menu screen. Without clearing the
     // seed, the auto-start effect would just replay the same match.
     clearSeedFromUrl()
@@ -662,10 +686,10 @@ export function App() {
                     gap: 4,
                   }}
                 >
-                  {/* Only the capital city is given; the country name + flag are
-                      hidden behind the "show country name/flag" lifelines. */}
+                  {/* Only the city is given; the country name + flag are hidden
+                      behind the "show country name/flag" lifelines. */}
                   <span style={{ fontSize: 30, fontWeight: 800 }}>
-                    {capitals[target]?.city ?? '…'}
+                    {cities[target]?.city ?? '…'}
                   </span>
                   <span style={{ fontSize: 14, opacity: 0.8 }}>
                     {roundGuess
@@ -683,9 +707,14 @@ export function App() {
                       }}
                     >
                       {revealFlag && (
-                        <FlagIcon code={countryCodes[target]} height={18} />
+                        <FlagIcon
+                          code={countryCodes[cities[target]?.country ?? '']}
+                          height={18}
+                        />
                       )}
-                      {revealName && <span>{target}</span>}
+                      {revealName && cities[target] && (
+                        <span>{cityRevealName(cities[target], subMode)}</span>
+                      )}
                     </div>
                   )}
                   {lastMiles !== null && (
@@ -775,7 +804,7 @@ export function App() {
             <>
               <button
                 type="button"
-                onClick={() => startGame(undefined, mode)}
+                onClick={() => startGame(undefined, subMode)}
                 disabled={mode === 'capitals' ? !capitalsReady : !ready}
                 style={{
                   padding: '14px 32px',
@@ -803,54 +832,77 @@ export function App() {
                 Main Menu
               </button>
             </>
+          ) : submenu ? (
+            // Region picker for the chosen family. Each entry is a data-driven
+            // sub-mode (see gameModes.ts); picking one starts that match.
+            <>
+              <div
+                style={{
+                  fontSize: 20,
+                  fontWeight: 800,
+                  letterSpacing: 0.4,
+                  color: 'white',
+                  textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+                  marginBottom: 4,
+                }}
+              >
+                {submenu === 'countries' ? '🌍 Countries' : '🏙️ Cities'}
+              </div>
+              {subModesFor(submenu).map((sub) => {
+                const subReady = sub.family === 'cities' ? capitalsReady : ready
+                return (
+                  <button
+                    key={sub.id}
+                    type="button"
+                    onClick={() => handleStartSubMode(sub)}
+                    disabled={!subReady}
+                    style={{
+                      ...menuButtonStyle,
+                      minWidth: 220,
+                      cursor: subReady ? 'pointer' : 'wait',
+                      opacity: subReady ? 1 : 0.6,
+                    }}
+                  >
+                    {subReady ? `${sub.icon} ${sub.label}` : 'Loading…'}
+                  </button>
+                )
+              })}
+              <button
+                type="button"
+                onClick={() => setSubmenu(null)}
+                style={{ ...menuButtonStyle, opacity: 0.85 }}
+              >
+                ← Back
+              </button>
+            </>
           ) : (
-            // Idle start screen: full mode picker.
+            // Idle start screen: top-level family picker.
             <>
               <button
                 type="button"
-                onClick={() => startGame()}
-                disabled={!ready}
-                style={{
-                  padding: '14px 32px',
-                  fontSize: 22,
-                  fontWeight: 700,
-                  color: 'white',
-                  background: ready
-                    ? 'rgba(20, 60, 110, 0.85)'
-                    : 'rgba(60, 60, 60, 0.7)',
-                  border: '2px solid rgba(255,255,255,0.85)',
-                  borderRadius: 10,
-                  cursor: ready ? 'pointer' : 'wait',
-                  fontFamily: 'system-ui, sans-serif',
-                  letterSpacing: 0.4,
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
-                }}
-              >
-                {ready ? 'Start Game' : 'Loading…'}
-              </button>
-              <button
-                type="button"
-                onClick={handleWorldCup}
+                onClick={() => setSubmenu('countries')}
                 disabled={!ready}
                 style={{
                   ...menuButtonStyle,
+                  minWidth: 220,
                   cursor: ready ? 'pointer' : 'wait',
                   opacity: ready ? 1 : 0.6,
                 }}
               >
-                ⚽ World Cup Edition
+                🌍 Countries
               </button>
               <button
                 type="button"
-                onClick={handleCapitals}
+                onClick={() => setSubmenu('cities')}
                 disabled={!capitalsReady}
                 style={{
                   ...menuButtonStyle,
+                  minWidth: 220,
                   cursor: capitalsReady ? 'pointer' : 'wait',
                   opacity: capitalsReady ? 1 : 0.6,
                 }}
               >
-                📍 Capitals
+                🏙️ Cities
               </button>
               <button
                 type="button"
@@ -859,14 +911,14 @@ export function App() {
                   resetGame()
                   setFriendsOpen(true)
                 }}
-                style={menuButtonStyle}
+                style={{ ...menuButtonStyle, minWidth: 220 }}
               >
                 👥 Play With Friends
               </button>
               <button
                 type="button"
                 onClick={handleOpenStats}
-                style={menuButtonStyle}
+                style={{ ...menuButtonStyle, minWidth: 220 }}
               >
                 View Stats
               </button>
