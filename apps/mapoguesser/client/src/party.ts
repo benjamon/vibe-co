@@ -23,6 +23,10 @@ const SPACETIME_URI_KEY = 'mapoguesser:spacetimeUri'
 const SPACETIME_DB_KEY = 'mapoguesser:spacetimeDb'
 const PARTY_ID_KEY = 'mapoguesser:partyUserId'
 const PARTY_NAME_KEY = 'mapoguesser:partyName'
+// The room code we're currently in, persisted per-tab so a page refresh can
+// rejoin the same match (identity is per-tab too, so we resume as the same
+// player). Cleared when we leave the room.
+const PARTY_CODE_KEY = 'mapoguesser:partyCode'
 
 // Keep these in lockstep with the server module (PARTY_ROUNDS / QUESTION_MS)
 // and the client store (ROUNDS). The 30s deadline is authoritative server-side;
@@ -32,8 +36,8 @@ export const QUESTION_MS = 30_000
 export const MAX_PLAYER_NAME_LEN = 10
 export const PARTY_CODE_LEN = 4
 
-// Unambiguous code alphabet — no 0/O/1/I so a code is easy to read out loud.
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+// Letters only, and unambiguous — no I/O so a code is easy to read out loud.
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
 
 function readLocalStorage(key: string): string | null {
   try {
@@ -58,6 +62,14 @@ function writeSession(key: string, value: string): void {
     if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(key, value)
   } catch {
     /* private mode / unavailable — ignore */
+  }
+}
+
+function clearSession(key: string): void {
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(key)
+  } catch {
+    /* ignore */
   }
 }
 
@@ -571,6 +583,9 @@ function setActiveCode(code: string | null): void {
   activeCode = code
   seenGuessKeys.clear()
   seenEventKeys.clear()
+  // Persist (or drop) the code so a refresh can rejoin the same room.
+  if (code) writeSession(PARTY_CODE_KEY, code)
+  else clearSession(PARTY_CODE_KEY)
   if (code) openRoomSubscription(code)
   else {
     if (roomSub) {
@@ -705,6 +720,28 @@ export async function joinParty(code: string, name: string): Promise<boolean> {
     12000,
   )
   if (!ok) setActiveCode(null)
+  return ok
+}
+
+// On a fresh page load, rejoin the room this tab was in (if any) so a refresh
+// mid-match drops you straight back into the game. Identity is per-tab, so the
+// server still has our player row. If the room is gone (or we're no longer a
+// member), clear the saved code and stay on the menu. Runs at most once.
+let resumeAttempted = false
+export async function resumeParty(): Promise<boolean> {
+  if (resumeAttempted || activeCode) return false
+  resumeAttempted = true
+  const code = readSession(PARTY_CODE_KEY)
+  if (!code) return false
+  const conn = await connect()
+  if (!conn) return false
+  setActiveCode(code) // opens the room subscription + re-persists the code
+  const userId = getPartyUserId()
+  const ok = await waitFor(
+    (s) => s.room?.code === code && s.players.some((p) => p.userId === userId),
+    8000,
+  )
+  if (!ok) setActiveCode(null) // room gone / no longer a member → forget it
   return ok
 }
 

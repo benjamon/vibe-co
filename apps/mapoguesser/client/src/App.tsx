@@ -324,6 +324,9 @@ export function App() {
   // 'Play Again' later generates a fresh seed instead of replaying this one.
   useEffect(() => {
     if (!ready || phase !== 'idle') return
+    // Never auto-start a solo game while a party owns (or is rejoining) the
+    // screen — multiplayer is server-driven and doesn't use the URL seed.
+    if (partyUI) return
     const params = new URLSearchParams(window.location.search)
     const urlSeed = params.get('seed')
     if (!urlSeed) return
@@ -340,11 +343,30 @@ export function App() {
     // City sub-modes need the capitals dataset before the draw can reproduce.
     if (sub.family === 'cities' && !capitalsReady) return
     startGame(urlSeed, sub.id)
-  }, [ready, capitalsReady, phase, startGame])
+  }, [ready, capitalsReady, phase, startGame, partyUI])
 
   // Mirror the active match seed (and its mode tag) into the URL so a refresh /
   // link share reproduces the same draw. replaceState avoids polluting history.
   useEffect(() => {
+    // Multiplayer is server-driven: never expose the room's internal seed, and
+    // strip any leftover single-player params so a refresh resumes the party
+    // (via sessionStorage) instead of auto-starting a solo game from the URL.
+    if (multiplayer) {
+      const url = new URL(window.location.href)
+      const dirty =
+        url.searchParams.has('seed') ||
+        url.searchParams.has('sm') ||
+        url.searchParams.has('wc') ||
+        url.searchParams.has('cap')
+      if (dirty) {
+        url.searchParams.delete('seed')
+        url.searchParams.delete('sm')
+        url.searchParams.delete('wc')
+        url.searchParams.delete('cap')
+        window.history.replaceState(null, '', url.toString())
+      }
+      return
+    }
     if (!seed) return
     const url = new URL(window.location.href)
     // The sub-mode id fully identifies the draw. Omit it for the default 'all'
@@ -362,7 +384,7 @@ export function App() {
     url.searchParams.delete('wc')
     url.searchParams.delete('cap')
     window.history.replaceState(null, '', url.toString())
-  }, [seed, subMode])
+  }, [seed, subMode, multiplayer])
 
   const correctCount = attempts.filter((a) => a === 'correct').length
   // Capitals mode golf score: sum of the per-round great-circle miles.
@@ -593,9 +615,9 @@ export function App() {
         >
           {(
             [
-              { key: 'name', label: '🏳️ Show country name' },
-              { key: 'flag', label: '🚩 Show country flag' },
-              { key: 'circle', label: '⭕ Draw circle' },
+              { key: 'name', label: '🏳️ Name' },
+              { key: 'flag', label: '🚩 Flag' },
+              { key: 'circle', label: '⭕ Circle' },
             ] as const
           ).map((l) => {
             const used = lifelinesUsed[l.key]

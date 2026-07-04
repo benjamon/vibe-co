@@ -344,6 +344,10 @@ export function WorldViewer() {
       wrong: '#9aa0a6',
       reveal: '#e64545',
       stats: '#3d7bdb',
+      // City-mode guess dots (rendered as points, not flag pins — see
+      // renderMarker); these entries just keep the record total.
+      guess: '#9aa0a6',
+      'guess-best': '#ffd93b',
     }
     // Marker geometry. The pole is a thin vertical bar whose base touches the
     // clicked point; the flag flies off to the right from near its top.
@@ -975,6 +979,36 @@ export function WorldViewer() {
     // resolved, so we don't leak stale entities into the next game.
     let renderGen = 0
     const renderMarker = (m: Marker, gen: number): void => {
+      // City-mode guess markers render as a small dot rather than a flag pin:
+      // grey for a discarded guess, yellow for the one that scored.
+      if (m.kind === 'guess' || m.kind === 'guess-best') {
+        const best = m.kind === 'guess-best'
+        gameMarkers.entities.add({
+          position: Cartesian3.fromDegrees(m.lon, m.lat),
+          point: {
+            pixelSize: 9,
+            color: Color.fromCssColorString(best ? '#ffd93b' : '#9aa0a6'),
+            outlineColor: Color.fromCssColorString('rgba(0,0,0,0.8)'),
+            outlineWidth: 2,
+            heightReference: HeightReference.CLAMP_TO_GROUND,
+          },
+          label: m.label
+            ? {
+                text: m.label,
+                font: 'bold 15px sans-serif',
+                fillColor: Color.WHITE,
+                outlineColor: Color.BLACK,
+                outlineWidth: 3,
+                style: LabelStyle.FILL_AND_OUTLINE,
+                verticalOrigin: VerticalOrigin.BOTTOM,
+                horizontalOrigin: HorizontalOrigin.CENTER,
+                pixelOffset: new Cartesian2(0, -12),
+                heightReference: HeightReference.CLAMP_TO_GROUND,
+              }
+            : undefined,
+        })
+        return
+      }
       const code = m.code ?? useGameStore.getState().countryCodes[m.label]
       buildFlagPin(code, m.kind).then((image) => {
         if (gen !== renderGen || destroyed || viewer.isDestroyed()) return

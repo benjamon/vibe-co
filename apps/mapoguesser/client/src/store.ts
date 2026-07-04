@@ -52,8 +52,15 @@ export interface CityInfo {
 }
 // Sprite kind drawn at the marker location: green pin for a correct guess,
 // grey pin for the wrong country the player clicked, red X for the centroid
-// reveal of a missed target.
-export type MarkerKind = 'correct' | 'wrong' | 'reveal'
+// reveal of a missed target. City modes drop small dots for their guesses
+// instead of flag pins: 'guess' is a grey dot, 'guess-best' the yellow dot for
+// the guess that actually scored (the closer of the two).
+export type MarkerKind =
+  | 'correct'
+  | 'wrong'
+  | 'reveal'
+  | 'guess'
+  | 'guess-best'
 export interface Marker {
   lat: number
   lon: number
@@ -73,6 +80,13 @@ export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // budget for classic/worldcup.
 export const CAPITAL_ROUNDS = 5
 export const CAPITAL_GUESSES_PER_ROUND = 2
+// A city-mode guess scores its great-circle miss in miles (lower is better), but
+// capped here: any guess this far off (or worse) scores the same, and a round a
+// player never answers is charged exactly this — so a no-guess costs the same as
+// the worst possible guess, no more.
+export const MAX_CAPITAL_MILES = 1000
+// A city guess within this many miles counts as a "near" hit (green sfx).
+const CAPITAL_NEAR_MI = 50
 
 // After the target changes, guess input is ignored for this long so a click
 // queued/double-fired for the previous target doesn't land on the new one.
@@ -486,6 +500,10 @@ interface GameState {
   // distance from the current target's capital, drops the guess + answer
   // markers, records it to the server, and advances (or finishes) the match.
   handleCapitalGuess: (lat: number, lon: number) => void
+  // Multiplayer city modes: lock in the current round's single pending guess as
+  // the final answer (called when the round is about to end so a player who only
+  // dropped one pin still gets that score, instead of it being thrown out).
+  commitPartyCapitalGuess: () => void
   // Spend a once-per-game capitals lifeline on the current round.
   useLifeline: (which: Lifeline) => void
   // Records a marker drop. The viewer also handles the Cesium-side render via
@@ -1102,16 +1120,27 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!cap) return
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
 
-    const NEAR_MI = 50
-    const distance = haversineMiles(lat, lon, cap.lat, cap.lon)
+    const NEAR_MI = CAPITAL_NEAR_MI
+    // Cap the scored miss: anything past MAX_CAPITAL_MILES scores the same, so a
+    // wild guess costs no more than a no-guess timeout (also charged the cap).
+    const distance = Math.min(
+      haversineMiles(lat, lon, cap.lat, cap.lon),
+      MAX_CAPITAL_MILES,
+    )
     const near = distance <= NEAR_MI
 
-    // A guess pin labelled with its own miss distance, green for a near-perfect
-    // drop, otherwise grey. Shared by the multiplayer and single-player paths.
-    const pinFor = (gLat: number, gLon: number, dist: number): Marker => ({
+    // A guess dot labelled with its own (capped) miss distance. Grey by default;
+    // the closer of the two guesses — the one that actually scores — is drawn
+    // yellow. Shared by the multiplayer and single-player paths.
+    const pinFor = (
+      gLat: number,
+      gLon: number,
+      dist: number,
+      used = false,
+    ): Marker => ({
       lat: gLat,
       lon: gLon,
-      kind: dist <= NEAR_MI ? 'correct' : 'wrong',
+      kind: used ? 'guess-best' : 'guess',
       label: `${Math.round(dist).toLocaleString()} mi`,
     })
 
@@ -1138,17 +1167,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Second guess: score the closer of the two, submit once, reveal, lock.
       const first = s.roundGuess
       const best = Math.min(first.distance, distance)
-      const scoring =
-        distance <= first.distance
-          ? { lat, lon }
-          : { lat: first.lat, lon: first.lon }
+      // The current (second) guess scores when it's at least as close as the first.
+      const currentBest = distance <= first.distance
+      const scoring = currentBest
+        ? { lat, lon }
+        : { lat: first.lat, lon: first.lon }
       submitPartyGuess(s.targetIndex, best <= NEAR_MI, best)
       set({
         partyAnswered: true,
         roundGuess: null,
         markers: [
-          pinFor(first.lat, first.lon, first.distance),
-          pinFor(lat, lon, distance),
+          pinFor(first.lat, first.lon, first.distance, !currentBest),
+          pinFor(lat, lon, distance, currentBest),
           {
             lat: cap.lat,
             lon: cap.lon,
@@ -1194,11 +1224,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     // ---- Second guess: score the closer of the two, reveal, advance. ----
     const first = s.roundGuess
     const best = Math.min(first.distance, distance)
-    // The scoring (closer) guess — its pin is the one the answer line connects to.
-    const scoring =
-      distance <= first.distance
-        ? { lat, lon }
-        : { lat: first.lat, lon: first.lon }
+    // The current (second) guess scores when it's at least as close as the first;
+    // its pin is the one the answer line connects to and is drawn yellow.
+    const currentBest = distance <= first.distance
+    const scoring = currentBest
+      ? { lat, lon }
+      : { lat: first.lat, lon: first.lon }
 
     // Persist the scoring guess + the answer + the (best) distance to SpacetimeDB.
     recordCapitalGuess({
@@ -1215,12 +1246,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const finished = distances.length >= CAPITAL_ROUNDS
     set({
       distances,
-      // Both guess pins (each with its own distance) plus the reveal pin: the
+      // Both guess dots (the closer one yellow) plus the reveal pin: the
       // country's flag with a two-line "City,\nCountry" label above it (flag from
       // the explicit `code`, since the label text isn't a plain country name).
       markers: [
-        pinFor(first.lat, first.lon, first.distance),
-        pinFor(lat, lon, distance),
+        pinFor(first.lat, first.lon, first.distance, !currentBest),
+        pinFor(lat, lon, distance, currentBest),
         {
           lat: cap.lat,
           lon: cap.lon,
@@ -1246,6 +1277,44 @@ export const useGameStore = create<GameState>((set, get) => ({
       phase: finished ? 'finished' : 'playing',
       // Next capital served — hold input so a stray click doesn't guess it.
       inputLockUntil: finished ? s.inputLockUntil : lockUntil(),
+    })
+  },
+
+  commitPartyCapitalGuess: () => {
+    const s = get()
+    if (!s.multiplayer || s.mode !== 'capitals' || s.phase !== 'playing') return
+    if (s.partyAnswered || s.roundGuess === null || s.target === null) return
+    const cap = s.cities[s.target]
+    if (!cap) return
+    // The one pin the player did drop becomes the scoring guess (drawn yellow).
+    const g = s.roundGuess
+    submitPartyGuess(s.targetIndex, g.distance <= CAPITAL_NEAR_MI, g.distance)
+    set({
+      partyAnswered: true,
+      roundGuess: null,
+      markers: [
+        {
+          lat: g.lat,
+          lon: g.lon,
+          kind: 'guess-best',
+          label: `${Math.round(g.distance).toLocaleString()} mi`,
+        },
+        {
+          lat: cap.lat,
+          lon: cap.lon,
+          kind: 'reveal',
+          label: `${cap.city},\n${cityRevealName(cap, s.subMode)}`,
+          code: s.countryCodes[cap.country],
+        },
+      ],
+      markerEpoch: s.markerEpoch + 1,
+      guessLine: {
+        fromLat: g.lat,
+        fromLon: g.lon,
+        toLat: cap.lat,
+        toLon: cap.lon,
+      },
+      hintCircle: null,
     })
   },
 

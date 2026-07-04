@@ -9,7 +9,13 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Confetti } from './Confetti'
-import { useGameStore, roundsForMode, cityRevealName, type GameMode } from './store'
+import {
+  useGameStore,
+  roundsForMode,
+  cityRevealName,
+  MAX_CAPITAL_MILES,
+  type GameMode,
+} from './store'
 import { resolveSubMode, behavioralModeOf } from './gameModes'
 import {
   subscribeParty,
@@ -21,6 +27,7 @@ import {
   setReady,
   setVote,
   leaveParty,
+  resumeParty,
   advanceQuestion,
   restartParty,
   getSavedName,
@@ -43,10 +50,10 @@ const modeMeta = (mode: string) => {
 const behavioralOf = (mode: string | undefined): GameMode =>
   behavioralModeOf(resolveSubMode(mode ?? ''))
 
-// Capitals scoreboard: an un-answered round is penalised by this many miles so
-// skipping a question can't beat actually guessing. Bigger than any real
-// great-circle miss (max ~12,450 mi antipodal).
-const CAPITAL_MISS_PENALTY = 13_000
+// Capitals scoreboard: an un-answered round is charged the same as the worst
+// possible guess (guess miles are capped at MAX_CAPITAL_MILES), so skipping is
+// never better than guessing, but no worse than a maximally-bad guess either.
+const CAPITAL_MISS_PENALTY = MAX_CAPITAL_MILES
 
 // A player's effective capitals golf score: summed miss distance plus a penalty
 // for every round they didn't answer. Lower is better.
@@ -113,15 +120,16 @@ export function useParty(): { snap: PartySnapshot; active: boolean } {
     capitalTotals: {},
     capitalAnswered: {},
   })
-  useEffect(
-    () =>
-      subscribeParty((s) => {
-        setSnap(s)
-        // Mirror to window for Playwright introspection (cf. __gameState).
-        ;(window as unknown as { __party: PartySnapshot }).__party = s
-      }),
-    [],
-  )
+  useEffect(() => {
+    const unsub = subscribeParty((s) => {
+      setSnap(s)
+      // Mirror to window for Playwright introspection (cf. __gameState).
+      ;(window as unknown as { __party: PartySnapshot }).__party = s
+    })
+    // On a fresh load, try to rejoin the room this tab was in (no-op if none).
+    void resumeParty()
+    return unsub
+  }, [])
   return { snap, active: snap.room !== null }
 }
 
@@ -697,6 +705,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   const guess = useGameStore((s) => s.country)
   const countryCodes = useGameStore((s) => s.countryCodes)
   const cities = useGameStore((s) => s.cities)
+  const commitPartyCapitalGuess = useGameStore((s) => s.commitPartyCapitalGuess)
   const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
   const revealName = useGameStore((s) => s.revealName)
   const revealFlag = useGameStore((s) => s.revealFlag)
@@ -706,7 +715,8 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   // Local clock, synced to the server deadline. Drives the countdown and the
   // idempotent advance call when the deadline passes.
   const [now, setNow] = useState(() => Date.now())
-  const advancedFor = useRef(-1)
+  // Epoch-ms of our last advance attempt, to throttle retries (see below).
+  const lastAdvanceAttempt = useRef(0)
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(id)
@@ -717,22 +727,50 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   const secondsLeft = Math.max(0, Math.ceil((deadline - now) / 1000))
 
   useEffect(() => {
-    advancedFor.current = -1 // new question → re-arm the advance trigger
-  }, [question])
-  useEffect(() => {
     if (room?.phase !== 'playing') return
-    if (deadline > 0 && now >= deadline && advancedFor.current !== question) {
-      advancedFor.current = question
+    if (deadline <= 0 || now < deadline) return
+    // The deadline passed — ask the server to advance. Retry ~once a second
+    // rather than firing once: advance_question is idempotent (guarded by
+    // current_question), and retrying self-heals client/server clock skew. If
+    // our clock runs ahead of the server's, the first call arrives before the
+    // server's deadline and is rejected; a later retry lands once the server
+    // clock passes it. A single one-shot call would wedge the room forever.
+    if (now - lastAdvanceAttempt.current >= 1000) {
+      lastAdvanceAttempt.current = now
       advanceQuestion(question)
     }
   }, [now, deadline, question, room?.phase])
 
+  // City modes: if we only dropped one pin, lock it in a couple seconds before
+  // the deadline so it still counts (the second guess is optional). The buffer
+  // gives the submit time to land before the server's "too late" cutoff even
+  // with a little clock skew; a real second guess before then supersedes it.
+  useEffect(() => {
+    if (!isCapitals || partyAnswered || roundGuess === null) return
+    if (deadline <= 0 || secondsLeft > 2) return
+    commitPartyCapitalGuess()
+  }, [
+    isCapitals,
+    partyAnswered,
+    roundGuess,
+    deadline,
+    secondsLeft,
+    commitPartyCapitalGuess,
+  ])
+
   const lowTime = secondsLeft <= 5
-  // Capitals: this round's own guess distance (the non-reveal marker's label).
-  const myDistanceLabel =
-    isCapitals && partyAnswered
-      ? markers.find((m) => m.kind !== 'reveal')?.label ?? null
-      : null
+  // City modes: this round's scoring guess distance — the closer of the two
+  // guess pins (each labelled "N mi"). Shown once we've locked in.
+  const myDistanceLabel = useMemo(() => {
+    if (!isCapitals || !partyAnswered) return null
+    let best = Infinity
+    for (const m of markers) {
+      if (m.kind === 'reveal') continue
+      const n = Number(m.label.replace(/[^0-9.]/g, ''))
+      if (Number.isFinite(n) && n < best) best = n
+    }
+    return Number.isFinite(best) ? `${Math.round(best).toLocaleString()} mi` : null
+  }, [isCapitals, partyAnswered, markers])
 
   return (
     <>
@@ -814,7 +852,11 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
               fontWeight: 700,
               padding: '4px 14px',
               borderRadius: 999,
-              background: 'rgba(20,60,110,0.85)',
+              // City modes read as a neutral "your distance" note (grey); country
+              // modes keep the blue "locked in" chip.
+              background: isCapitals
+                ? 'rgba(90,90,90,0.85)'
+                : 'rgba(20,60,110,0.85)',
               border: '1px solid rgba(255,255,255,0.4)',
             }}
           >
