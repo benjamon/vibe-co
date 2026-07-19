@@ -32,6 +32,10 @@ export interface CitySpec {
   // After filtering, keep only the N largest by population — the eligible pool
   // each match then draws a random handful from.
   limit?: number
+  // Fold every admin-1 (US state) capital into the pool on top of the top-N,
+  // ignoring minPopulation/limit, deduped by city. So "top 100 cities + all 50
+  // state capitals", with the capitals already in the top 100 not repeated.
+  includeStateCapitals?: boolean
   // Draw US state/province boundary lines on the globe while this mode is
   // active (and only this mode) — a locating aid for US-heavy city sets.
   usStateLines?: boolean
@@ -134,19 +138,18 @@ const CITY_SUBMODES: SubMode[] = [
   { id: 'world-capitals', label: 'World Capitals', icon: '📍', blurb: 'Drop a pin on the capital — closest wins', family: 'cities', cities: { capitalsOnly: true } },
   {
     id: 'cities-north-america',
-    label: 'North America',
+    label: 'United States',
     icon: '🗽',
-    blurb: 'Largest US & North American cities',
+    blurb: 'Every state capital + the 100 largest US cities',
     family: 'cities',
     cities: {
       countries: [
-        'United States of America', 'Canada', 'Mexico', 'Guatemala', 'Belize',
-        'Honduras', 'El Salvador', 'Nicaragua', 'Costa Rica', 'Panama', 'Cuba',
-        'Bahamas', 'Jamaica', 'Haiti', 'Dominican Rep.',
+        'United States of America',
       ],
-      minPopulation: 100_000,
-      limit: 50,
-      // The largest cities here are overwhelmingly US — show state lines to help.
+      // Top 100 by population, plus all 50 state capitals (+ D.C.) even when
+      // tiny — deduped so a capital in the top 100 isn't listed twice.
+      limit: 100,
+      includeStateCapitals: true,
       usStateLines: true,
     },
   },
@@ -165,7 +168,7 @@ const CITY_SUBMODES: SubMode[] = [
         'Uruguay', 'Argentina', 'Chile',
       ],
       minPopulation: 100_000,
-      limit: 50,
+      limit: 100,
     },
   },
   {
@@ -182,7 +185,7 @@ const CITY_SUBMODES: SubMode[] = [
         'Ukraine', 'Romania', 'Croatia', 'Serbia',
       ],
       minPopulation: 100_000,
-      limit: 50,
+      limit: 100,
     },
   },
 ]

@@ -49,6 +49,10 @@ export interface CityInfo {
   // Whether this is the country's national capital (Natural Earth adm0cap).
   // The "World Capitals" sub-mode draws only from these.
   capital: boolean
+  // Whether this is an admin-1 (US state / province) capital — Natural Earth's
+  // 'Admin-1 capital' featurecla. Lets a region mode fold in every state capital
+  // regardless of population (Montpelier, Pierre, Juneau, …).
+  stateCapital: boolean
 }
 // Sprite kind drawn at the marker location: green pin for a correct guess,
 // grey pin for the wrong country the player clicked, red X for the centroid
@@ -576,6 +580,11 @@ const poolForSubMode = (s: GameState, sub: SubMode): string[] => {
       const set = new Set(spec.countries)
       entries = entries.filter(([, c]) => set.has(c.country))
     }
+    // The "all state capitals" set, folded back in below regardless of the
+    // population floor/limit so tiny capitals (Montpelier, Pierre, …) survive.
+    const stateCapitalKeys = spec.includeStateCapitals
+      ? entries.filter(([, c]) => c.stateCapital || c.capital).map(([k]) => k)
+      : []
     if (typeof spec.minPopulation === 'number') {
       entries = entries.filter(([, c]) => c.pop >= spec.minPopulation!)
     }
@@ -583,7 +592,12 @@ const poolForSubMode = (s: GameState, sub: SubMode): string[] => {
     // (and therefore the seeded draw) is identical across clients.
     entries.sort((a, b) => b[1].pop - a[1].pop || (a[0] < b[0] ? -1 : 1))
     if (typeof spec.limit === 'number') entries = entries.slice(0, spec.limit)
-    return entries.map(([k]) => k)
+    // Union the top-N-by-population list with every state capital, deduped by
+    // ne_id — a capital already in the top N isn't listed twice. Sorted so the
+    // seeded draw stays identical across clients.
+    const keys = new Set(entries.map(([k]) => k))
+    for (const k of stateCapitalKeys) keys.add(k)
+    return [...keys].sort((a, b) => s.cities[b].pop - s.cities[a].pop || (a < b ? -1 : 1))
   }
   if (sub.pool === 'all') return s.countries
   if (sub.pool === 'worldcup') return s.worldCupCountries
@@ -600,6 +614,25 @@ export const cityRevealName = (city: CityInfo, subMode: string): string => {
   const byState = resolveSubMode(subMode).cities?.usStateLines === true
   if (byState && city.country === US_NAME && city.region) return city.region
   return city.country
+}
+
+// A city's rank by population among every loaded US city (not just the mode's
+// draw pool) — "the Nth most populous city in the US". Ranked against the full
+// populated-places dataset for the country, so a state capital that misses the
+// mode's top-100 pool (Montpelier, Pierre, …) still gets an honest, much lower
+// rank rather than being compared only within the pool.
+export const usPopulationRank = (
+  cities: Record<string, CityInfo>,
+  key: string,
+): number | null => {
+  const city = cities[key]
+  if (!city) return null
+  const pops = Object.values(cities)
+    .filter((c) => c.country === US_NAME)
+    .map((c) => c.pop)
+    .sort((a, b) => b - a)
+  const rank = pops.indexOf(city.pop)
+  return rank === -1 ? null : rank + 1
 }
 
 // The country served for a given position in the pre-drawn sequence, or null

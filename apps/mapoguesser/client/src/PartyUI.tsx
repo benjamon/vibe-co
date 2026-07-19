@@ -13,9 +13,11 @@ import {
   useGameStore,
   roundsForMode,
   cityRevealName,
+  usPopulationRank,
   MAX_CAPITAL_MILES,
   type GameMode,
 } from './store'
+import { US_CITY_FOUNDED } from './usCityFacts'
 import { resolveSubMode, behavioralModeOf } from './gameModes'
 import {
   subscribeParty,
@@ -772,6 +774,21 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
     return Number.isFinite(best) ? `${Math.round(best).toLocaleString()} mi` : null
   }, [isCapitals, partyAnswered, markers])
 
+  // Once the round locks in, show population/rank/founded-year for the city
+  // just answered — `target` hasn't advanced yet in the party flow (the next
+  // question only lands on the server's round-end broadcast), so it's still
+  // the right city to read straight off the live target.
+  const lastCity =
+    isCapitals && partyAnswered && target ? cities[target] : null
+  const lastCityFacts =
+    lastCity && room?.mode === 'cities-north-america'
+      ? {
+          pop: lastCity.pop,
+          rank: usPopulationRank(cities, target!),
+          founded: US_CITY_FOUNDED[lastCity.city],
+        }
+      : null
+
   return (
     <>
       {/* Top centre: question progress, target, countdown. */}
@@ -864,6 +881,15 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
               ? `Your guess: ${myDistanceLabel} — waiting for the round to end…`
               : 'Locked in — waiting for the round to end…'}
           </div>
+        )}
+        {lastCityFacts && (
+          <span style={{ fontSize: 13, opacity: 0.7 }}>
+            {lastCity!.city}: pop. {lastCityFacts.pop.toLocaleString()}
+            {lastCityFacts.rank !== null &&
+              ` · #${lastCityFacts.rank} most populous`}
+            {lastCityFacts.founded !== undefined &&
+              ` · founded ${lastCityFacts.founded}`}
+          </span>
         )}
       </div>
 

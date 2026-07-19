@@ -89,11 +89,13 @@ const COASTLINE_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_coastline.geojson'
 const COUNTRY_POLYGONS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson'
-// Populated places (50m set, ~1250 cities with pop_max + adm0cap). Drives the
-// cities game modes (World Capitals + regional "largest cities") and doubles as
-// the source for the flag-pin fallback (a country's capital, validated inside).
+// Populated places (10m set, ~7300 cities with pop_max + adm0cap + admin-1
+// capitals). Drives the cities game modes (World Capitals + regional "largest
+// cities", incl. the US mode's every-state-capital pool, which needs all 50
+// admin-1 capitals — the sparser 50m set only carries 32) and doubles as the
+// source for the flag-pin fallback (a country's capital, validated inside).
 const POPULATED_PLACES_URL =
-  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_populated_places_simple.geojson'
+  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_populated_places_simple.geojson'
 // US state / province boundary lines. Fetched, filtered to the USA, and drawn as
 // a hidden layer that's only shown during the North America cities mode.
 const STATE_LINES_URL =
@@ -492,6 +494,7 @@ export function WorldViewer() {
       lon: number
       pop: number
       capital: boolean
+      stateCapital: boolean
       iso: string | null
       adm0: string
       sov0: string
@@ -528,6 +531,7 @@ export function WorldViewer() {
           lon: p.lon,
           pop: p.pop,
           capital: p.capital,
+          stateCapital: p.stateCapital,
         }
       }
       useGameStore.getState().setCities(out)
@@ -557,6 +561,9 @@ export function WorldViewer() {
             p.ADM0CAP === 1 ||
             fcla === 'admin-0 capital' ||
             fcla === 'admin-0 capital alt'
+          // Admin-1 (US state / province) capital. Lets the US city mode fold in
+          // every state capital regardless of population.
+          const stateCapital = fcla === 'admin-1 capital'
           const isoRaw = p.iso_a2 ?? p.ISO_A2
           const iso =
             typeof isoRaw === 'string' && /^[A-Za-z]{2}$/.test(isoRaw)
@@ -565,7 +572,7 @@ export function WorldViewer() {
           const adm0 = String(p.adm0name ?? p.ADM0NAME ?? '')
           const sov0 = String(p.sov0name ?? p.SOV0NAME ?? '')
           const adm1 = String(p.adm1name ?? p.ADM1NAME ?? '')
-          places.push({ neId, city, lat, lon, pop, capital, iso, adm0, sov0, adm1 })
+          places.push({ neId, city, lat, lon, pop, capital, stateCapital, iso, adm0, sov0, adm1 })
 
           // Feed the flag-pin fallback: one capital per country, keyed by the
           // same aliases publishCities uses. First capital to claim a key wins.
@@ -771,7 +778,7 @@ export function WorldViewer() {
     // that mode never pay for it.
     let stateLinesDS: GeoJsonDataSource | null = null
     let stateLinesRequested = false
-    const stateLineMat = new ColorMaterialProperty(new Color(0.1, 0.1, 0.1, 0.5))
+    const stateLineMat = new ColorMaterialProperty(new Color(0.1, 0.1, 0.1, 0.75))
     // Whether the active sub-mode wants US state lines shown.
     const wantStateLines = (subMode: string): boolean =>
       resolveSubMode(subMode).cities?.usStateLines === true

@@ -7,8 +7,10 @@ import {
   ROUNDS,
   CAPITAL_ROUNDS,
   cityRevealName,
+  usPopulationRank,
   type AttemptResult,
 } from './store'
+import { US_CITY_FOUNDED } from './usCityFacts'
 import {
   fetchStats,
   releaseStats,
@@ -161,6 +163,7 @@ export function App() {
   const mode = useGameStore((s) => s.mode)
   const subMode = useGameStore((s) => s.subMode)
   const distances = useGameStore((s) => s.distances)
+  const targets = useGameStore((s) => s.targets)
   const cities = useGameStore((s) => s.cities)
   const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
   const revealName = useGameStore((s) => s.revealName)
@@ -392,6 +395,23 @@ export function App() {
   const totalMiles = distances.reduce((sum, d) => sum + d, 0)
   const lastMiles = distances.length ? distances[distances.length - 1] : null
   const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
+  const popFmt = (p: number) => p.toLocaleString()
+
+  // The city the player just finished guessing. `target` has already advanced
+  // to the next round's question by the time this reveal renders, so it's
+  // derived from `targets`/`distances` (round i's distance lands at the same
+  // index as round i's target) rather than read off the live `target`.
+  const lastCityKey =
+    isCapitals && distances.length ? targets[distances.length - 1] : null
+  const lastCity = lastCityKey ? cities[lastCityKey] : null
+  const lastCityFacts =
+    lastCity && subMode === 'cities-north-america'
+      ? {
+          pop: lastCity.pop,
+          rank: usPopulationRank(cities, lastCityKey!),
+          founded: US_CITY_FOUNDED[lastCity.city],
+        }
+      : null
 
   // When a match wraps up, play the score-appropriate jingle and fire the
   // matching visual celebration. Keyed on `phase` so it runs once per
@@ -742,6 +762,15 @@ export function App() {
                   {lastMiles !== null && (
                     <span style={{ fontSize: 15, opacity: 0.75 }}>
                       Last: {milesFmt(lastMiles)}
+                    </span>
+                  )}
+                  {lastCityFacts && (
+                    <span style={{ fontSize: 13, opacity: 0.7 }}>
+                      {lastCity!.city}: pop. {popFmt(lastCityFacts.pop)}
+                      {lastCityFacts.rank !== null &&
+                        ` · #${lastCityFacts.rank} most populous`}
+                      {lastCityFacts.founded !== undefined &&
+                        ` · founded ${lastCityFacts.founded}`}
                     </span>
                   )}
                 </div>
