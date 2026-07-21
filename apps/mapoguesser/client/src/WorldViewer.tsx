@@ -26,6 +26,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { useGameStore, type Marker, type CityInfo } from './store'
 import { resolveSubMode } from './gameModes'
 import { ALL_GUESSES } from './stats'
+import { usStateFlagUrl } from './usStateFlags'
 
 // Cesium would otherwise reach Cesium ion for default assets; blank the token
 // so the only network calls are to our chosen tile provider.
@@ -97,9 +98,16 @@ const COUNTRY_POLYGONS_URL =
 const POPULATED_PLACES_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_populated_places_simple.geojson'
 // US state / province boundary lines. Fetched, filtered to the USA, and drawn as
-// a hidden layer that's only shown during the North America cities mode.
+// a hidden layer that's only shown during the North America cities mode and the
+// US States mode.
 const STATE_LINES_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_1_states_provinces_lines.geojson'
+// US state polygons (sibling dataset to STATE_LINES_URL, same admin-1 set but
+// with fill geometry) — CPU point-in-polygon hit-testing for the US States
+// mode. Filtered to `type === 'State'`, which drops DC and every territory,
+// leaving exactly the 50 states.
+const STATE_POLYGONS_URL =
+  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_1_states_provinces.geojson'
 
 // The 48 World Cup qualifiers, keyed by ISO 3166-1 alpha-2 (lowercase) — the
 // most reliable match against Natural Earth, whose NAME spellings vary. England
@@ -362,11 +370,13 @@ export function WorldViewer() {
     const PIN_H = POLE_H // full canvas height
     const flagPinCache = new Map<string, Promise<string>>()
 
+    const flagCdnUrl = (code: string): string => `https://flagcdn.com/w160/${code}.png`
+
     const buildFlagPin = (
-      code: string | undefined,
+      imageUrl: string | undefined,
       kind: PinKind,
     ): Promise<string> => {
-      const key = `${kind}:${code ?? '_'}`
+      const key = `${kind}:${imageUrl ?? '_'}`
       const cached = flagPinCache.get(key)
       if (cached) return cached
       const promise = (async () => {
@@ -380,14 +390,14 @@ export function WorldViewer() {
         //    the pole's right edge so the pole drawn next hides the seam.
         const flagX = POLE_W - 1
         let drewFlag = false
-        if (code) {
+        if (imageUrl) {
           try {
             const img = new Image()
             img.crossOrigin = 'anonymous'
             await new Promise<void>((resolve, reject) => {
               img.onload = () => resolve()
               img.onerror = () => reject(new Error('flag load failed'))
-              img.src = `https://flagcdn.com/w160/${code}.png`
+              img.src = imageUrl
             })
             ctx.drawImage(img, flagX, FLAG_TOP, FLAG_W, FLAG_H)
             drewFlag = true
@@ -453,6 +463,10 @@ export function WorldViewer() {
       aliases: string[]
     }
     let countryEntries: CountryEntry[] | null = null
+    // Same shape, built from the US state polygon dataset — backs the US
+    // States mode's hit-testing/reveal instead of countryEntries. States have
+    // no capitals-matching aliases, so that field is always empty.
+    let stateEntries: CountryEntry[] | null = null
 
     // Capital cities keyed by normalised country name. Loaded from CAPITALS_URL;
     // empty until then (placement just falls back to centroid/label meanwhile).
@@ -480,6 +494,25 @@ export function WorldViewer() {
       }
       if (entry.label && insideCountry(entry, entry.label.lat, entry.label.lon)) {
         return entry.label
+      }
+      // Disjoint shapes with no label anchor (US states have none) — e.g.
+      // Michigan's two peninsulas — can have their combined mean centroid land
+      // in the water between the parts. Fall back to the largest single
+      // sub-polygon's own centroid, which by construction lands inside it.
+      if (entry.polygons.length > 1) {
+        let largest: SubPolygon | null = null
+        let largestArea = -1
+        for (const poly of entry.polygons) {
+          const a = computeArea([poly])
+          if (a > largestArea) {
+            largestArea = a
+            largest = poly
+          }
+        }
+        if (largest) {
+          const c = computeCentroid([largest])
+          if (insideCountry(entry, c.lat, c.lon)) return c
+        }
       }
       return entry.centroid
     }
@@ -712,6 +745,55 @@ export function WorldViewer() {
         // CDN unreachable / blocked — clicks won't resolve to country names.
       })
 
+    // US state polygons: same shape as the country index above, but built from
+    // STATE_POLYGONS_URL and filtered to the 50 states. Powers the US States
+    // mode's hit-testing/reveal independently of countryEntries.
+    fetch(STATE_POLYGONS_URL)
+      .then((r) => {
+        if (!r.ok) throw new Error(`http ${r.status}`)
+        return r.json()
+      })
+      .then(
+        (geo: {
+          features?: Array<{
+            properties?: Record<string, unknown>
+            geometry?: unknown
+          }>
+        }) => {
+          if (destroyed || viewer.isDestroyed()) return
+          const list: CountryEntry[] = []
+          for (const feature of geo.features ?? []) {
+            const props = feature.properties ?? {}
+            const adm0 = props.adm0_a3 ?? props.ADM0_A3
+            const type = props.type ?? props.TYPE
+            if (adm0 !== 'USA' || type !== 'State') continue
+            const name =
+              typeof props.name === 'string'
+                ? props.name
+                : typeof props.NAME === 'string'
+                  ? (props.NAME as string)
+                  : null
+            if (!name || !feature.geometry) continue
+            const polygons = normalizeGeometry(feature.geometry)
+            if (polygons.length === 0) continue
+            list.push({
+              name,
+              polygons,
+              bbox: computeBBox(polygons),
+              centroid: computeCentroid(polygons),
+              area: computeArea(polygons),
+              aliases: [],
+            })
+          }
+          stateEntries = list
+          useGameStore.getState().setStates(list.map((c) => c.name))
+        },
+      )
+      .catch(() => {
+        // CDN unreachable / blocked — the US States mode stays unplayable
+        // (empty pool), same failure behaviour as the country dataset above.
+      })
+
     // Country borders + coastlines: solid pure-black lines, no halo. Same style
     // for both — borders give the political divisions, coastlines outline every
     // landmass and island (including ones that border no one).
@@ -771,17 +853,19 @@ export function WorldViewer() {
     loadLineLayer(COUNTRY_BORDERS_URL)
     loadLineLayer(COASTLINE_URL)
 
-    // US state lines: a secondary, lighter line layer drawn only during the
-    // North America cities mode (sub-modes whose CitySpec sets usStateLines).
-    // The dataset (~880 KB) is fetched lazily the first time such a mode is
-    // entered, then toggled via the store subscription — players who never touch
-    // that mode never pay for it.
+    // US state lines: a secondary, lighter line layer drawn during the North
+    // America cities mode (sub-modes whose CitySpec sets usStateLines) and the
+    // US States mode (see wantStateLines). The dataset (~880 KB) is fetched
+    // lazily the first time such a mode is entered, then toggled via the store
+    // subscription — players who never touch either mode never pay for it.
     let stateLinesDS: GeoJsonDataSource | null = null
     let stateLinesRequested = false
     const stateLineMat = new ColorMaterialProperty(new Color(0.1, 0.1, 0.1, 0.75))
     // Whether the active sub-mode wants US state lines shown.
-    const wantStateLines = (subMode: string): boolean =>
-      resolveSubMode(subMode).cities?.usStateLines === true
+    const wantStateLines = (subMode: string): boolean => {
+      const sm = resolveSubMode(subMode)
+      return sm.cities?.usStateLines === true || sm.family === 'states'
+    }
     const loadStateLines = (): void => {
       if (stateLinesRequested) return
       stateLinesRequested = true
@@ -979,6 +1063,26 @@ export function WorldViewer() {
       return null
     }
 
+    // Same point-in-polygon lookup as lookupCountryName, against stateEntries
+    // instead — used when the active sub-mode's family is 'states'.
+    const lookupStateName = (lat: number, lon: number): string | null => {
+      const list = stateEntries
+      if (!list) return null
+      for (const c of list) {
+        if (
+          lon < c.bbox[0] ||
+          lon > c.bbox[2] ||
+          lat < c.bbox[1] ||
+          lat > c.bbox[3]
+        )
+          continue
+        for (const poly of c.polygons) {
+          if (pointInSubPolygon(lon, lat, poly)) return c.name
+        }
+      }
+      return null
+    }
+
     // Render a marker entity for one store record. The store owns the marker
     // list (so it persists); this function is the Cesium-side projection.
     // Flag pin composition is async (image load); `gen` lets us abandon a
@@ -1016,8 +1120,16 @@ export function WorldViewer() {
         })
         return
       }
-      const code = m.code ?? useGameStore.getState().countryCodes[m.label]
-      buildFlagPin(code, m.kind).then((image) => {
+      const st = useGameStore.getState()
+      const imageUrl =
+        m.flagUrl ??
+        (resolveSubMode(st.subMode).family === 'states'
+          ? usStateFlagUrl(m.label)
+          : (() => {
+              const code = m.code ?? st.countryCodes[m.label]
+              return code ? flagCdnUrl(code) : undefined
+            })())
+      buildFlagPin(imageUrl, m.kind).then((image) => {
         if (gen !== renderGen || destroyed || viewer.isDestroyed()) return
         if (!image) return
         gameMarkers.entities.add({
@@ -1063,8 +1175,12 @@ export function WorldViewer() {
     let revealRaf: number | null = null
     let revealHoldTimeout: number | null = null
 
-    const flyToCountry = (name: string, onDone: (e: CountryEntry) => void) => {
-      const entry = countryEntries?.find((c) => c.name === name)
+    const flyToCountry = (
+      name: string,
+      onDone: (e: CountryEntry) => void,
+      entries: CountryEntry[] | null = countryEntries,
+    ) => {
+      const entry = entries?.find((c) => c.name === name)
       if (!entry) {
         onDone({
           name,
@@ -1137,8 +1253,11 @@ export function WorldViewer() {
       const lat = CesiumMath.toDegrees(carto.latitude)
       const lon = CesiumMath.toDegrees(carto.longitude)
       console.log(`lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`)
-      const name = lookupCountryName(lat, lon)
       const state = useGameStore.getState()
+      const name =
+        resolveSubMode(state.subMode).family === 'states'
+          ? lookupStateName(lat, lon)
+          : lookupCountryName(lat, lon)
 
       // Brief input lock right after the target changes: swallow the click so a
       // release/double-tap meant for the previous target doesn't guess the new
@@ -1346,7 +1465,7 @@ export function WorldViewer() {
       if (!entry) return
       const pt = flagPointFor(entry)
       const code = useGameStore.getState().countryCodes[name]
-      buildFlagPin(code, 'stats').then((image) => {
+      buildFlagPin(code ? flagCdnUrl(code) : undefined, 'stats').then((image) => {
         if (gen !== statsGen || destroyed || viewer.isDestroyed()) return
         if (!image) return
         statsDots.entities.add({
@@ -1438,9 +1557,10 @@ export function WorldViewer() {
     renderedMarkerCount = prevMarkers.length
 
     const unsub = useGameStore.subscribe((state) => {
-      // Show/hide the US state lines when the active sub-mode changes (only the
-      // North America cities mode requests them). No-op until the layer loads;
-      // its initial visibility is set from the current sub-mode at load time.
+      // Show/hide the US state lines when the active sub-mode changes (the
+      // North America cities mode and the US States mode request them). No-op
+      // until the layer loads; its initial visibility is set from the current
+      // sub-mode at load time.
       if (state.subMode !== prevSubMode) {
         prevSubMode = state.subMode
         const want = wantStateLines(state.subMode)
@@ -1526,25 +1646,33 @@ export function WorldViewer() {
 
       if (state.revealTarget && state.revealTarget !== prevReveal) {
         const name = state.revealTarget
-        flyToCountry(name, (entry) => {
-          if (entry.polygons.length > 0) {
-            const pt = flagPointFor(entry)
-            useGameStore.getState().addMarker({
-              lat: pt.lat,
-              lon: pt.lon,
-              kind: 'reveal',
-              label: name,
-            })
-          }
-          // Hold the missed-target label on screen for 2.5 s after the pan
-          // finishes so the player has time to register where it was; the
-          // new target (or finished phase) only takes over once this clears.
-          if (revealHoldTimeout !== null) clearTimeout(revealHoldTimeout)
-          revealHoldTimeout = window.setTimeout(() => {
-            revealHoldTimeout = null
-            useGameStore.getState().clearReveal()
-          }, 2500)
-        })
+        const entries =
+          resolveSubMode(state.subMode).family === 'states'
+            ? stateEntries
+            : countryEntries
+        flyToCountry(
+          name,
+          (entry) => {
+            if (entry.polygons.length > 0) {
+              const pt = flagPointFor(entry)
+              useGameStore.getState().addMarker({
+                lat: pt.lat,
+                lon: pt.lon,
+                kind: 'reveal',
+                label: name,
+              })
+            }
+            // Hold the missed-target label on screen for 2.5 s after the pan
+            // finishes so the player has time to register where it was; the
+            // new target (or finished phase) only takes over once this clears.
+            if (revealHoldTimeout !== null) clearTimeout(revealHoldTimeout)
+            revealHoldTimeout = window.setTimeout(() => {
+              revealHoldTimeout = null
+              useGameStore.getState().clearReveal()
+            }, 2500)
+          },
+          entries,
+        )
       }
       prevReveal = state.revealTarget
 
@@ -1553,13 +1681,21 @@ export function WorldViewer() {
       // already on the globe and stays put.
       if (state.endingTarget && state.endingTarget !== prevEnding) {
         const name = state.endingTarget
-        flyToCountry(name, () => {
-          if (endingHoldTimeout !== null) clearTimeout(endingHoldTimeout)
-          endingHoldTimeout = window.setTimeout(() => {
-            endingHoldTimeout = null
-            useGameStore.getState().finishGame()
-          }, 2000)
-        })
+        const entries =
+          resolveSubMode(state.subMode).family === 'states'
+            ? stateEntries
+            : countryEntries
+        flyToCountry(
+          name,
+          () => {
+            if (endingHoldTimeout !== null) clearTimeout(endingHoldTimeout)
+            endingHoldTimeout = window.setTimeout(() => {
+              endingHoldTimeout = null
+              useGameStore.getState().finishGame()
+            }, 2000)
+          },
+          entries,
+        )
       }
       prevEnding = state.endingTarget
 

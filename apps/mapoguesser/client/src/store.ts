@@ -14,6 +14,7 @@ import {
   type PartyPhase,
 } from './party'
 import { resolveSubMode, behavioralModeOf, type SubMode } from './gameModes'
+import { usStateFlagUrl } from './usStateFlags'
 
 // Which dataset the stats sidebar shows. 'mine' = this player's local history
 // (also mirrored to the server); 'global' = aggregate totals across all users
@@ -75,6 +76,9 @@ export interface Marker {
   // set this so the pin shows the country's flag while `label` reads
   // "City,\nCountry" (which isn't a country name and wouldn't resolve on its own).
   code?: string
+  // Explicit flag image URL, taking precedence over `code`. Used for US state
+  // flags (see cityFlagUrl), which aren't ISO country codes.
+  flagUrl?: string
 }
 
 export const ROUNDS = 9
@@ -329,6 +333,13 @@ interface GameState {
   // GeoJSON loads; drives the 'worldcup' draw pool.
   worldCupCountries: string[]
   setWorldCupCountries: (countries: string[]) => void
+
+  // US state names, populated by WorldViewer once the states polygon GeoJSON
+  // loads. Drives the 'states' family draw pool. Unlike countries, state
+  // guesses aren't registered into countryIds/stats (see handleGlobeClick) —
+  // this mode doesn't feed the persistent stats sidebar or server leaderboard.
+  states: string[]
+  setStates: (states: string[]) => void
 
   // ne_id → city. Populated by WorldViewer once the populated-places GeoJSON
   // loads. Drives the cities-mode ('capitals' behaviour) draw pool + scoring:
@@ -599,6 +610,7 @@ const poolForSubMode = (s: GameState, sub: SubMode): string[] => {
     for (const k of stateCapitalKeys) keys.add(k)
     return [...keys].sort((a, b) => s.cities[b].pop - s.cities[a].pop || (a < b ? -1 : 1))
   }
+  if (sub.family === 'states') return s.states
   if (sub.pool === 'all') return s.countries
   if (sub.pool === 'worldcup') return s.worldCupCountries
   const playable = new Set(s.countries)
@@ -614,6 +626,22 @@ export const cityRevealName = (city: CityInfo, subMode: string): string => {
   const byState = resolveSubMode(subMode).cities?.usStateLines === true
   if (byState && city.country === US_NAME && city.region) return city.region
   return city.country
+}
+
+// The flag image URL to show for the "flag" lifeline / reveal pin. In
+// sub-modes that draw US state lines, every city is American, so the country
+// flag is always the Stars and Stripes and tells the player nothing — show
+// the city's state flag instead. Returns undefined for every other mode
+// (callers fall back to the country ISO-code flag).
+export const cityFlagUrl = (
+  city: CityInfo,
+  subMode: string,
+): string | undefined => {
+  const byState = resolveSubMode(subMode).cities?.usStateLines === true
+  if (byState && city.country === US_NAME && city.region) {
+    return usStateFlagUrl(city.region)
+  }
+  return undefined
 }
 
 // A city's rank by population among every loaded US city (not just the mode's
@@ -726,6 +754,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   worldCupCountries: [],
   setWorldCupCountries: (worldCupCountries) => set({ worldCupCountries }),
+
+  states: [],
+  setStates: (states) => set({ states }),
 
   cities: {},
   setCities: (cities) => set({ cities }),
@@ -1058,7 +1089,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       const correct = clicked === s.target
       if (correct) sfxCorrect()
       else sfxWrong()
-      const nextStats = applyGuessStats(s, s.target, clicked, lat, lon)
+      // States mode isn't tracked in the persistent stats/leaderboard system
+      // (see the `states` field doc) — skip recordGuess so state names don't
+      // pollute the shared country leaderboard.
+      const isStates = resolveSubMode(s.subMode).family === 'states'
+      const nextStats = isStates
+        ? null
+        : applyGuessStats(s, s.target, clicked, lat, lon)
       submitPartyGuess(s.targetIndex, correct)
       set({
         partyAnswered: true,
@@ -1081,8 +1118,10 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Record this guess against the active target in the persistent stats
     // before we mutate any game state. Skipped if either name lacks an ID
-    // (registerCountries hasn't run yet — shouldn't happen in practice).
-    if (s.target) {
+    // (registerCountries hasn't run yet — shouldn't happen in practice), and
+    // for states mode entirely (state names aren't registered into
+    // countryIds/stats — see the `states` field doc).
+    if (s.target && resolveSubMode(s.subMode).family !== 'states') {
       const nextStats = applyGuessStats(s, s.target, clicked, lat, lon)
       if (nextStats) set({ stats: nextStats })
     }
@@ -1218,6 +1257,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             kind: 'reveal',
             label: `${cap.city},\n${cityRevealName(cap, s.subMode)}`,
             code: s.countryCodes[cap.country],
+            flagUrl: cityFlagUrl(cap, s.subMode),
           },
         ],
         markerEpoch: s.markerEpoch + 1,
@@ -1291,6 +1331,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           kind: 'reveal',
           label: `${cap.city},\n${cityRevealName(cap, s.subMode)}`,
           code: s.countryCodes[cap.country],
+          flagUrl: cityFlagUrl(cap, s.subMode),
         },
       ],
       markerEpoch: s.markerEpoch + 1,
@@ -1338,6 +1379,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           kind: 'reveal',
           label: `${cap.city},\n${cityRevealName(cap, s.subMode)}`,
           code: s.countryCodes[cap.country],
+          flagUrl: cityFlagUrl(cap, s.subMode),
         },
       ],
       markerEpoch: s.markerEpoch + 1,

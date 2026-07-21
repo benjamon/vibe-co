@@ -13,11 +13,13 @@ import {
   useGameStore,
   roundsForMode,
   cityRevealName,
+  cityFlagUrl,
   usPopulationRank,
   MAX_CAPITAL_MILES,
   type GameMode,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
+import { CityFactsCard, type CityFactsData } from './CityFactsCard'
 import { resolveSubMode, behavioralModeOf } from './gameModes'
 import {
   subscribeParty,
@@ -101,16 +103,27 @@ const inputStyle = {
   boxSizing: 'border-box',
 } as const
 
-const Flag = ({ code, height }: { code?: string; height: number }) =>
-  code ? (
+const Flag = ({
+  code,
+  src,
+  height,
+}: {
+  code?: string
+  // Explicit image URL override (US state flags aren't ISO country codes).
+  src?: string
+  height: number
+}) => {
+  const url = src ?? (code ? `https://flagcdn.com/w80/${code}.png` : undefined)
+  return url ? (
     <img
-      src={`https://flagcdn.com/w80/${code}.png`}
+      src={url}
       alt=""
       width={Math.round((height * 4) / 3)}
       height={height}
       style={{ borderRadius: 2, verticalAlign: 'middle', boxShadow: '0 1px 2px rgba(0,0,0,0.55)' }}
     />
   ) : null
+}
 
 // ---------- party state hook ----------
 
@@ -774,17 +787,22 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
     return Number.isFinite(best) ? `${Math.round(best).toLocaleString()} mi` : null
   }, [isCapitals, partyAnswered, markers])
 
-  // Once the round locks in, show population/rank/founded-year for the city
-  // just answered — `target` hasn't advanced yet in the party flow (the next
-  // question only lands on the server's round-end broadcast), so it's still
-  // the right city to read straight off the live target.
+  // Once the round locks in, show the facts card for the city just answered
+  // — `target` hasn't advanced yet in the party flow (the next question only
+  // lands on the server's round-end broadcast), so it's still the right city
+  // to read straight off the live target.
   const lastCity =
     isCapitals && partyAnswered && target ? cities[target] : null
-  const lastCityFacts =
-    lastCity && room?.mode === 'cities-north-america'
+  const lastCityInfo: CityFactsData | null =
+    lastCity && target
       ? {
+          key: target,
+          city: lastCity.city,
+          place: cityRevealName(lastCity, room?.mode ?? ''),
+          flagCode: countryCodes[lastCity.country],
+          flagSrc: cityFlagUrl(lastCity, room?.mode ?? ''),
           pop: lastCity.pop,
-          rank: usPopulationRank(cities, target!),
+          rank: usPopulationRank(cities, target),
           founded: US_CITY_FOUNDED[lastCity.city],
         }
       : null
@@ -839,8 +857,12 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
             </div>
             {(revealFlag || revealName) && target && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16, opacity: 0.9 }}>
-                {revealFlag && (
-                  <Flag code={countryCodes[cities[target]?.country ?? '']} height={16} />
+                {revealFlag && cities[target] && (
+                  <Flag
+                    code={countryCodes[cities[target].country]}
+                    src={cityFlagUrl(cities[target], room?.mode ?? '')}
+                    height={16}
+                  />
                 )}
                 {revealName && cities[target] && (
                   <span>{cityRevealName(cities[target], room?.mode ?? '')}</span>
@@ -882,16 +904,9 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
               : 'Locked in — waiting for the round to end…'}
           </div>
         )}
-        {lastCityFacts && (
-          <span style={{ fontSize: 13, opacity: 0.7 }}>
-            {lastCity!.city}: pop. {lastCityFacts.pop.toLocaleString()}
-            {lastCityFacts.rank !== null &&
-              ` · #${lastCityFacts.rank} most populous`}
-            {lastCityFacts.founded !== undefined &&
-              ` · founded ${lastCityFacts.founded}`}
-          </span>
-        )}
       </div>
+
+      <CityFactsCard info={lastCityInfo} seed={room?.code ?? null} />
 
       {/* Capitals lifelines (top-right), one-per-match, until you've answered. */}
       {isCapitals && !partyAnswered && (

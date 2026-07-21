@@ -7,10 +7,14 @@ import {
   ROUNDS,
   CAPITAL_ROUNDS,
   cityRevealName,
+  cityFlagUrl,
   usPopulationRank,
   type AttemptResult,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
+import { usStateFlagUrl } from './usStateFlags'
+import { StateFactsCard } from './StateFactsCard'
+import { CityFactsCard, type CityFactsData } from './CityFactsCard'
 import {
   fetchStats,
   releaseStats,
@@ -52,15 +56,19 @@ const CHECK_BG: Record<AttemptResult, string> = {
 // flag emojis as ISO letters, which looks broken.
 const FlagIcon = ({
   code,
+  src,
   height,
 }: {
-  code: string | undefined
+  code?: string
+  // Explicit image URL override (US state flags aren't ISO country codes).
+  src?: string
   height: number
 }) => {
-  if (!code) return null
+  const url = src ?? (code ? `https://flagcdn.com/w80/${code}.png` : undefined)
+  if (!url) return null
   return (
     <img
-      src={`https://flagcdn.com/w80/${code}.png`}
+      src={url}
       alt=""
       width={Math.round((height * 4) / 3)}
       height={height}
@@ -77,10 +85,13 @@ const FlagIcon = ({
 const Checkbox = ({
   result,
   code,
+  flagSrc,
   count,
 }: {
   result: AttemptResult
-  code: string | undefined
+  code?: string
+  // Explicit image URL override (US state flags aren't ISO country codes).
+  flagSrc?: string
   // How many boxes share the row — drives the responsive shrink so they all fit
   // across a narrow viewport even when misses push the count above 9.
   count: number
@@ -104,9 +115,9 @@ const Checkbox = ({
       overflow: 'hidden',
     }}
   >
-    {result !== 'pending' && code && (
+    {result !== 'pending' && (flagSrc || code) && (
       <img
-        src={`https://flagcdn.com/w80/${code}.png`}
+        src={flagSrc ?? `https://flagcdn.com/w80/${code}.png`}
         alt=""
         style={{ display: 'block', width: '70%', height: 'auto', borderRadius: 2 }}
       />
@@ -177,8 +188,19 @@ export function App() {
     (s) =>
       Object.values(s.cities).filter((c) => c.capital).length >= CAPITAL_ROUNDS,
   )
+  // The US States mode needs its own polygon dataset (independent of the
+  // country one), so it gets its own readiness gate.
+  const statesReady = useGameStore((s) => s.states.length > 0)
   const perfectStreak = useGameStore((s) => s.perfectStreak)
   const multiplayer = useGameStore((s) => s.multiplayer)
+
+  // Which family the active/last-played sub-mode belongs to — drives flag
+  // sourcing (state flags vs country flags) in the HUD below.
+  const subFamily = resolveSubMode(subMode).family
+  // Whether the just-played mode's pool is loaded, gating the "Play Again"
+  // button the same way the start-screen pickers gate their own buttons.
+  const playAgainReady =
+    mode === 'capitals' ? capitalsReady : subFamily === 'states' ? statesReady : ready
 
   // True whenever a party (lobby/in-game/results) owns the screen — used to
   // suppress all the single-player overlays while Party.tsx drives the UI.
@@ -190,7 +212,9 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   // Which mode-family sub-menu the idle start screen is showing (null = the
   // top-level Countries / Cities / … picker).
-  const [submenu, setSubmenu] = useState<null | 'countries' | 'cities'>(null)
+  const [submenu, setSubmenu] = useState<
+    null | 'countries' | 'cities' | 'states'
+  >(null)
   const [statsOpen, setStatsOpen] = useState(false)
   const [statsSort, setStatsSort] = useState<'name' | 'sum'>('name')
   const [showConfetti, setShowConfetti] = useState(false)
@@ -276,25 +300,45 @@ export function App() {
     [markers],
   )
 
+  // The most recently resolved US-States round — a correct guess (which
+  // matches the target) or the miss-twice reveal (the answer that was just
+  // shown). 'wrong' markers are on a target that hasn't resolved yet, so
+  // they're skipped. Drives the after-guess facts card; the object reference
+  // only changes when a *new* correct/reveal marker is pushed, so this is a
+  // stable trigger for the card's "show again" effect.
+  const lastResolvedStateMarker = useMemo(() => {
+    if (subFamily !== 'states') return null
+    for (let i = markers.length - 1; i >= 0; i--) {
+      const m = markers[i]
+      if (m.kind === 'correct' || m.kind === 'reveal') return m
+    }
+    return null
+  }, [markers, subFamily])
+
   // The HUD shows a fixed ROUNDS boxes — the player's guess budget. Each guess
   // made fills a box (flagged by what was clicked); unused guesses are pending.
   // A missed-twice country leaves two 'wrong' boxes, eating into the budget.
   const guessBoxes = useMemo(() => {
-    const boxes: { result: AttemptResult; code: string | undefined }[] = []
+    const boxes: {
+      result: AttemptResult
+      code?: string
+      flagSrc?: string
+    }[] = []
+    const isStates = subFamily === 'states'
     for (let i = 0; i < ROUNDS; i++) {
       if (i < attempts.length) {
+        const label = clickMarkers[i]?.label
         boxes.push({
           result: attempts[i],
-          code: clickMarkers[i]
-            ? countryCodes[clickMarkers[i].label]
-            : undefined,
+          code: label && !isStates ? countryCodes[label] : undefined,
+          flagSrc: label && isStates ? usStateFlagUrl(label) : undefined,
         })
       } else {
-        boxes.push({ result: 'pending', code: undefined })
+        boxes.push({ result: 'pending' })
       }
     }
     return boxes
-  }, [attempts, clickMarkers, countryCodes])
+  }, [attempts, clickMarkers, countryCodes, subFamily])
 
   const [shareLabel, setShareLabel] = useState<'idle' | 'copied'>('idle')
 
@@ -343,10 +387,12 @@ export function App() {
         : params.get('wc') === '1'
           ? resolveSubMode('worldcup')
           : resolveSubMode('classic')
-    // City sub-modes need the capitals dataset before the draw can reproduce.
+    // City sub-modes need the capitals dataset before the draw can reproduce;
+    // states sub-modes need the state polygon dataset.
     if (sub.family === 'cities' && !capitalsReady) return
+    if (sub.family === 'states' && !statesReady) return
     startGame(urlSeed, sub.id)
-  }, [ready, capitalsReady, phase, startGame, partyUI])
+  }, [ready, capitalsReady, statesReady, phase, startGame, partyUI])
 
   // Mirror the active match seed (and its mode tag) into the URL so a refresh /
   // link share reproduces the same draw. replaceState avoids polluting history.
@@ -395,7 +441,6 @@ export function App() {
   const totalMiles = distances.reduce((sum, d) => sum + d, 0)
   const lastMiles = distances.length ? distances[distances.length - 1] : null
   const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
-  const popFmt = (p: number) => p.toLocaleString()
 
   // The city the player just finished guessing. `target` has already advanced
   // to the next round's question by the time this reveal renders, so it's
@@ -404,11 +449,20 @@ export function App() {
   const lastCityKey =
     isCapitals && distances.length ? targets[distances.length - 1] : null
   const lastCity = lastCityKey ? cities[lastCityKey] : null
-  const lastCityFacts =
-    lastCity && subMode === 'cities-north-america'
+  // Snapshot of the just-finished round's city, for the after-guess facts
+  // card. `founded` is only known for US cities (see usCityFacts.ts) and
+  // `rank` only for US cities (ranked among every loaded US city); both are
+  // simply omitted for the rest of the world.
+  const lastCityInfo: CityFactsData | null =
+    lastCity && lastCityKey && lastMiles !== null
       ? {
+          key: lastCityKey,
+          city: lastCity.city,
+          place: cityRevealName(lastCity, subMode),
+          flagCode: countryCodes[lastCity.country],
+          flagSrc: cityFlagUrl(lastCity, subMode),
           pop: lastCity.pop,
-          rank: usPopulationRank(cities, lastCityKey!),
+          rank: usPopulationRank(cities, lastCityKey),
           founded: US_CITY_FOUNDED[lastCity.city],
         }
       : null
@@ -703,6 +757,7 @@ export function App() {
                   key={i}
                   result={b.result}
                   code={b.code}
+                  flagSrc={b.flagSrc}
                   count={guessBoxes.length}
                 />
               ))}
@@ -748,9 +803,10 @@ export function App() {
                         opacity: 0.9,
                       }}
                     >
-                      {revealFlag && (
+                      {revealFlag && cities[target] && (
                         <FlagIcon
-                          code={countryCodes[cities[target]?.country ?? '']}
+                          code={countryCodes[cities[target].country]}
+                          src={cityFlagUrl(cities[target], subMode)}
                           height={18}
                         />
                       )}
@@ -762,15 +818,6 @@ export function App() {
                   {lastMiles !== null && (
                     <span style={{ fontSize: 15, opacity: 0.75 }}>
                       Last: {milesFmt(lastMiles)}
-                    </span>
-                  )}
-                  {lastCityFacts && (
-                    <span style={{ fontSize: 13, opacity: 0.7 }}>
-                      {lastCity!.city}: pop. {popFmt(lastCityFacts.pop)}
-                      {lastCityFacts.rank !== null &&
-                        ` · #${lastCityFacts.rank} most populous`}
-                      {lastCityFacts.founded !== undefined &&
-                        ` · founded ${lastCityFacts.founded}`}
                     </span>
                   )}
                 </div>
@@ -795,13 +842,21 @@ export function App() {
             ) : revealTarget ? (
               <>
                 <span style={{ opacity: 0.7 }}>Was:</span>
-                <FlagIcon code={countryCodes[revealTarget]} height={22} />
+                <FlagIcon
+                  code={subFamily === 'states' ? undefined : countryCodes[revealTarget]}
+                  src={subFamily === 'states' ? usStateFlagUrl(revealTarget) : undefined}
+                  height={22}
+                />
                 <span>{revealTarget}</span>
               </>
             ) : phase === 'playing' && target ? (
               <>
                 <span style={{ opacity: 0.7 }}>Find:</span>
-                <FlagIcon code={countryCodes[target]} height={22} />
+                <FlagIcon
+                  code={subFamily === 'states' ? undefined : countryCodes[target]}
+                  src={subFamily === 'states' ? usStateFlagUrl(target) : undefined}
+                  height={22}
+                />
                 <span>{target}</span>
               </>
             ) : phase === 'finished' ? (
@@ -856,18 +911,18 @@ export function App() {
               <button
                 type="button"
                 onClick={() => startGame(undefined, subMode)}
-                disabled={mode === 'capitals' ? !capitalsReady : !ready}
+                disabled={!playAgainReady}
                 style={{
                   padding: '14px 32px',
                   fontSize: 22,
                   fontWeight: 700,
                   color: 'white',
-                  background: ready
+                  background: playAgainReady
                     ? 'rgba(20, 60, 110, 0.85)'
                     : 'rgba(60, 60, 60, 0.7)',
                   border: '2px solid rgba(255,255,255,0.85)',
                   borderRadius: 10,
-                  cursor: ready ? 'pointer' : 'wait',
+                  cursor: playAgainReady ? 'pointer' : 'wait',
                   fontFamily: 'system-ui, sans-serif',
                   letterSpacing: 0.4,
                   boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
@@ -897,10 +952,19 @@ export function App() {
                   marginBottom: 4,
                 }}
               >
-                {submenu === 'countries' ? '🌍 Countries' : '🏙️ Cities'}
+                {submenu === 'countries'
+                  ? '🌍 Countries'
+                  : submenu === 'cities'
+                    ? '🏙️ Cities'
+                    : '🗺️ States'}
               </div>
               {subModesFor(submenu).map((sub) => {
-                const subReady = sub.family === 'cities' ? capitalsReady : ready
+                const subReady =
+                  sub.family === 'cities'
+                    ? capitalsReady
+                    : sub.family === 'states'
+                      ? statesReady
+                      : ready
                 return (
                   <button
                     key={sub.id}
@@ -957,6 +1021,19 @@ export function App() {
               </button>
               <button
                 type="button"
+                onClick={() => setSubmenu('states')}
+                disabled={!statesReady}
+                style={{
+                  ...menuButtonStyle,
+                  minWidth: 220,
+                  cursor: statesReady ? 'pointer' : 'wait',
+                  opacity: statesReady ? 1 : 0.6,
+                }}
+              >
+                🗺️ States
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   clearSeedFromUrl()
                   resetGame()
@@ -996,9 +1073,20 @@ export function App() {
           }}
         >
           <span style={{ opacity: 0.75 }}>Guessed:</span>
-          <FlagIcon code={countryCodes[guess]} height={18} />
+          <FlagIcon
+            code={subFamily === 'states' ? undefined : countryCodes[guess]}
+            src={subFamily === 'states' ? usStateFlagUrl(guess) : undefined}
+            height={18}
+          />
           <span>{guess}</span>
         </div>
+      )}
+
+      {!partyUI && (
+        <>
+          <StateFactsCard marker={lastResolvedStateMarker} seed={seed} />
+          <CityFactsCard info={lastCityInfo} seed={seed} />
+        </>
       )}
 
       <div
@@ -1019,6 +1107,11 @@ export function App() {
           // Capitals edition: swap the "o" for a map pin.
           <>
             map<span style={{ fontSize: '0.85em' }}>📍</span>guesser
+          </>
+        ) : subFamily === 'states' ? (
+          // US States edition: swap the "o" for a map.
+          <>
+            map<span style={{ fontSize: '0.85em' }}>🗺️</span>guesser
           </>
         ) : (
           'mapoguesser'

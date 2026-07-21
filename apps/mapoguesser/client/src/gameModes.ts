@@ -4,9 +4,11 @@ import type { GameMode } from './store'
 // DATA-DRIVEN GAME MODES
 // ---------------------------------------------------------------------------
 // A "sub-mode" is just a named pool of things to guess layered on top of one of
-// the two underlying behaviours:
+// the underlying behaviours:
 //   - 'countries' family → locate the COUNTRY on the globe (9 rounds, hit/miss)
 //   - 'cities'    family → locate the CAPITAL city (5 rounds, golf-scored)
+//   - 'states'    family → locate the US STATE on the globe (same behaviour as
+//                          'countries', just a different polygon dataset)
 //
 // World Cup was the first example of this idea (country guessing with a
 // different list of countries); every regional mode below is the same pattern.
@@ -17,7 +19,7 @@ import type { GameMode } from './store'
 // typo just drops that one entry rather than breaking the mode.
 // ---------------------------------------------------------------------------
 
-export type ModeFamily = 'countries' | 'cities'
+export type ModeFamily = 'countries' | 'cities' | 'states'
 
 // How a 'cities'-family sub-mode picks which cities are in play. Cities come
 // from the population-ranked populated-places dataset, so a region mode is just
@@ -190,7 +192,26 @@ const CITY_SUBMODES: SubMode[] = [
   },
 ]
 
-export const SUB_MODES: SubMode[] = [...COUNTRY_SUBMODES, ...CITY_SUBMODES]
+// ---- STATES: locate the US state on the globe. -----------------------------
+// Same behaviour as the countries family (classic, 9 rounds, hit/miss) — just
+// a different polygon dataset (US state borders instead of country borders)
+// wired up in WorldViewer.tsx / store.ts wherever `family === 'states'`.
+const STATE_SUBMODES: SubMode[] = [
+  {
+    id: 'us-states',
+    label: 'US States',
+    icon: '🗺️',
+    blurb: 'Every US state',
+    family: 'states',
+    pool: 'all',
+  },
+]
+
+export const SUB_MODES: SubMode[] = [
+  ...COUNTRY_SUBMODES,
+  ...CITY_SUBMODES,
+  ...STATE_SUBMODES,
+]
 
 export const subModesFor = (family: ModeFamily): SubMode[] =>
   SUB_MODES.filter((m) => m.family === family)
