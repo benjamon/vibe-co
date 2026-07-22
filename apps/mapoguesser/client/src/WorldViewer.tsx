@@ -125,32 +125,6 @@ const STATE_LINES_URL =
 const STATE_POLYGONS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_1_states_provinces.geojson'
 
-// The 48 World Cup qualifiers, keyed by ISO 3166-1 alpha-2 (lowercase) — the
-// most reliable match against Natural Earth, whose NAME spellings vary. England
-// and Scotland both belong to the United Kingdom (gb) on this map, so the 48
-// teams collapse to 46 unique map countries. Curaçao (cw) is below the normal
-// playable-area threshold but is included anyway for this edition. Verified:
-// every code below resolves to exactly one sovereign state in ne_50m (after the
-// largest-area-per-ISO dedupe that drops shared-code dependent territories like
-// Australia's Ashmore Is.).
-const WORLD_CUP_ISO = new Set<string>([
-  // Hosts
-  'ca', 'mx', 'us',
-  // AFC
-  'au', 'ir', 'iq', 'jp', 'jo', 'qa', 'sa', 'kr',
-  // CAF
-  'dz', 'cv', 'cd', 'ci', 'eg', 'gh', 'ma', 'sn', 'za', 'tn',
-  // Concacaf
-  'cw', 'ht', 'pa',
-  // CONMEBOL
-  'ar', 'br', 'co', 'ec', 'py', 'uy',
-  // OFC
-  'nz',
-  // UEFA (England + Scotland → United Kingdom / gb)
-  'at', 'be', 'ba', 'hr', 'cz', 'gb', 'fr', 'de', 'nl', 'no', 'pt', 'es',
-  'se', 'ch', 'tr',
-])
-
 // Reveal animation duration when the player misses twice on the same target.
 const REVEAL_MS = 1200
 
@@ -743,22 +717,6 @@ export function WorldViewer() {
             .setCountries(
               list.filter((c) => c.area >= MIN_TARGET_AREA).map((c) => c.name),
             )
-          // World Cup pool: match by ISO code (the dataset's NAME spellings
-          // vary too much to match on). Several ISO codes are shared by a
-          // sovereign state and its tiny dependent territories (e.g. AU →
-          // Australia + Ashmore Is.), so keep only the largest-area entry per
-          // code — that's always the country itself. Bypasses the area filter
-          // so small qualifiers like Curaçao still appear.
-          const wcByIso = new Map<string, CountryEntry>()
-          for (const c of list) {
-            const iso = codes[c.name]
-            if (!iso || !WORLD_CUP_ISO.has(iso)) continue
-            const prev = wcByIso.get(iso)
-            if (!prev || c.area > prev.area) wcByIso.set(iso, c)
-          }
-          useGameStore
-            .getState()
-            .setWorldCupCountries([...wcByIso.values()].map((c) => c.name))
         },
       )
       .catch(() => {

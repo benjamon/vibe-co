@@ -154,7 +154,7 @@ export interface PartySnapshot {
   players: PartyPlayer[]
   myUserId: string
   // Capitals mode: total golf distance (miles) per userId, summed across the
-  // rounds answered so far. Empty for classic/worldcup.
+  // rounds answered so far. Empty for classic.
   capitalTotals: Record<string, number>
   // Capitals mode: how many rounds each userId has answered (so the UI can
   // penalise skipped rounds instead of rewarding them with a low total).
@@ -763,7 +763,7 @@ export function leaveParty(): void {
   setActiveCode(null)
 }
 
-// distanceMi is the capitals golf score (miles); pass 0 for classic/worldcup.
+// distanceMi is the capitals golf score (miles); pass 0 for classic.
 export function submitGuess(
   question: number,
   correct: boolean,

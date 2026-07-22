@@ -203,12 +203,11 @@ export function App() {
   // (subModeProgress) — a narrow slice rather than subscribing to the whole
   // store, so unrelated state changes don't re-render the menu.
   const countries = useGameStore((s) => s.countries)
-  const worldCupCountries = useGameStore((s) => s.worldCupCountries)
   const states = useGameStore((s) => s.states)
   const itemWeights = useGameStore((s) => s.itemWeights)
   const poolSource = useMemo(
-    () => ({ cities, states, countries, worldCupCountries, itemWeights }),
-    [cities, states, countries, worldCupCountries, itemWeights],
+    () => ({ cities, states, countries, itemWeights }),
+    [cities, states, countries, itemWeights],
   )
 
   // Which family the active/last-played sub-mode belongs to — drives flag
@@ -409,16 +408,15 @@ export function App() {
     const params = new URLSearchParams(window.location.search)
     const urlSeed = params.get('seed')
     if (!urlSeed) return
-    // `sm=<id>` is the current form (any region). Fall back to the legacy tags
-    // `cap=1` (capitals) / `wc=1` (World Cup) so old shared links still work.
+    // `sm=<id>` is the current form (any region). Fall back to the legacy
+    // `cap=1` (capitals) tag so old shared links still work. An old `wc=1`
+    // (World Cup, now removed) link falls through to classic All.
     const smParam = params.get('sm')
     const sub = smParam
       ? resolveSubMode(smParam)
       : params.get('cap') === '1'
         ? resolveSubMode('capitals')
-        : params.get('wc') === '1'
-          ? resolveSubMode('worldcup')
-          : resolveSubMode('classic')
+        : resolveSubMode('classic')
     // City sub-modes need the capitals dataset before the draw can reproduce;
     // states sub-modes need the state polygon dataset.
     if (sub.family === 'cities' && !capitalsReady) return
@@ -477,7 +475,7 @@ export function App() {
     : null
   // Capitals mode point score: sum of the per-round points (distance tier +
   // region bonus) — the match score for city modes, driving the win-screen
-  // tiers the same way correctCount does for classic/worldcup.
+  // tiers the same way correctCount does for classic mode.
   const totalCapitalPoints = capitalPoints.reduce((sum, p) => sum + p, 0)
   const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
 
@@ -509,7 +507,7 @@ export function App() {
 
   // When a match wraps up, play the score-appropriate jingle and fire the
   // matching visual celebration. Keyed on `phase` so it runs once per
-  // transition into 'finished'. Tiers (classic/worldcup, out of ROUNDS):
+  // transition into 'finished'. Tiers (classic mode, out of ROUNDS):
   //   7/9 → small confetti
   //   8/9 → full confetti
   //   9/9 → full confetti + fireworks
@@ -1144,7 +1142,7 @@ export function App() {
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        {progress.solved}/{progress.total} solved
+                        {progress.solved}/{progress.total}
                       </span>
                     )}
                   </button>
@@ -1272,12 +1270,7 @@ export function App() {
           fontWeight: 700,
         }}
       >
-        {mode === 'worldcup' ? (
-          // World Cup edition: swap the "o" in map-o-guesser for a soccer ball.
-          <>
-            map<span style={{ fontSize: '0.85em' }}>⚽</span>guesser
-          </>
-        ) : mode === 'capitals' ? (
+        {mode === 'capitals' ? (
           // Capitals edition: swap the "o" for a map pin.
           <>
             map<span style={{ fontSize: '0.85em' }}>📍</span>guesser

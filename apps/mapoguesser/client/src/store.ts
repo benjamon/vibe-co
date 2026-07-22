@@ -29,10 +29,9 @@ export type StatsMode = 'mine' | 'global'
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
 // Which country pool the match draws from. 'classic' = every playable country
-// in the dataset; 'worldcup' = only the 48 World Cup qualifiers (collapsed to
-// the unique map countries they belong to; URL `wc=1`); 'capitals' = guess the
+// (or a named regional subset — see gameModes.ts); 'capitals' = guess the
 // capital city of a country, scored golf-style by distance (URL `cap=1`).
-export type GameMode = 'classic' | 'worldcup' | 'capitals'
+export type GameMode = 'classic' | 'capitals'
 
 // A city and its coordinates. Populated by WorldViewer from the Natural Earth
 // populated-places dataset (50m ≈ 1250 cities with population). Drives the
@@ -90,7 +89,7 @@ export const ROUNDS = 9
 export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // Capitals mode is shorter and scored golf-style: 5 capitals, two guesses each
 // (the closer guess scores). Kept separate from ROUNDS, which is the guess
-// budget for classic/worldcup.
+// budget for classic.
 export const CAPITAL_ROUNDS = 5
 export const CAPITAL_GUESSES_PER_ROUND = 2
 // A city-mode guess scores its great-circle miss in miles (lower is better).
@@ -142,7 +141,7 @@ const PERFECT_STREAK_KEY = 'mapoguesser:perfectStreak'
 // Per-item adaptive-difficulty weights (single-player draw only — see
 // `drawWeightedUniqueTargets`). Keyed by `${family}:${itemId}` so the same
 // entity (e.g. "France") shares one weight across every sub-mode it appears in
-// (All, Europe, World Cup, …), while cities/states get their own namespace.
+// (All, Europe, Asia, …), while cities/states get their own namespace.
 const ITEM_WEIGHTS_KEY = 'mapoguesser:itemWeights'
 
 // One guess on a target. `id` is the country the player actually clicked.
@@ -242,7 +241,7 @@ interface SavedMatch {
   consecutiveWrong: number
   markers: Marker[]
   // Capitals mode only: the great-circle miles for each completed round, in
-  // order. Absent for classic/worldcup saves (which score by `attempts`).
+  // order. Absent for classic saves (which score by `attempts`).
   distances?: number[]
   // Capitals mode only: the points scored for each completed round (see
   // `pointsForDistance` + the region bonus), parallel to `distances`.
@@ -445,12 +444,6 @@ interface GameState {
   countries: string[]
   setCountries: (countries: string[]) => void
 
-  // The subset of `countries` that are World Cup qualifier nations (the unique
-  // map countries the 48 teams belong to). Populated by WorldViewer once the
-  // GeoJSON loads; drives the 'worldcup' draw pool.
-  worldCupCountries: string[]
-  setWorldCupCountries: (countries: string[]) => void
-
   // US state names, populated by WorldViewer once the states polygon GeoJSON
   // loads. Drives the 'states' family draw pool. Unlike countries, state
   // guesses aren't registered into countryIds/stats (see handleGlobeClick) —
@@ -531,7 +524,7 @@ interface GameState {
 
   // Game flow.
   phase: GamePhase
-  // The behavioural mode of the active match: 'classic'/'worldcup' guess the
+  // The behavioural mode of the active match: 'classic' guesses the
   // country, 'capitals' guesses the city. Derived from the sub-mode; drives
   // round count, scoring, HUD, and the map-corner label.
   mode: GameMode
@@ -561,7 +554,7 @@ interface GameState {
   attempts: AttemptResult[]
   // Capitals mode only: the great-circle miles for each completed round, in
   // order (uncapped — a wild guess shows its true miss distance). Empty in
-  // classic/worldcup (which score by `attempts`).
+  // classic mode (which scores by `attempts`).
   distances: number[]
   // Capitals mode only: the points scored for each completed round, parallel
   // to `distances` (see `pointsForDistance` + the region bonus). The total
@@ -589,7 +582,7 @@ interface GameState {
   roundGuess: RoundGuess | null
   // Bumped whenever the game markers are fully replaced (rather than appended),
   // so the viewer knows to wipe + redraw instead of appending. Capitals mode
-  // replaces its two markers each guess; classic/worldcup only ever appends.
+  // replaces its two markers each guess; classic only ever appends.
   markerEpoch: number
 
   // Markers placed on the globe. Owned by the store (rather than the viewer's
@@ -635,7 +628,7 @@ interface GameState {
   endPartyMatch: () => void
 
   // Start a match. `sel` is a sub-mode id (see gameModes.ts); legacy GameMode
-  // strings ('classic'/'worldcup'/'capitals') are also accepted for old callers.
+  // strings ('classic'/'capitals') are also accepted for old callers.
   startGame: (seed?: string, sel?: string) => void
   resetGame: () => void
   clearReveal: () => void
@@ -763,10 +756,7 @@ export const generateSeed = (): string =>
 // The slice of GameState the draw pool is built from — narrowed (rather than
 // the full GameState) so callers outside the store (App.tsx's mode menu) can
 // pass a small selected object instead of subscribing to the whole store.
-export type PoolSource = Pick<
-  GameState,
-  'cities' | 'states' | 'countries' | 'worldCupCountries'
->
+export type PoolSource = Pick<GameState, 'cities' | 'states' | 'countries'>
 
 // Build the draw pool for a sub-mode from the currently-loaded datasets. For
 // the country family the pool is country NAMEs; for the city family it's the
@@ -803,7 +793,6 @@ export const poolForSubMode = (s: PoolSource, sub: SubMode): string[] => {
   }
   if (sub.family === 'states') return s.states
   if (sub.pool === 'all') return s.countries
-  if (sub.pool === 'worldcup') return s.worldCupCountries
   const playable = new Set(s.countries)
   return (sub.pool as string[]).filter((n) => playable.has(n))
 }
@@ -978,9 +967,6 @@ export const useGameStore = create<GameState>((set, get) => ({
   countries: [],
   setCountries: (countries) => set({ countries }),
 
-  worldCupCountries: [],
-  setWorldCupCountries: (worldCupCountries) => set({ worldCupCountries }),
-
   states: [],
   setStates: (states) => set({ states }),
 
@@ -1124,7 +1110,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const idx = Math.min(currentQuestion, targets.length)
     const questionChanged = needDraw || idx !== s.targetIndex
     // Capitals shows one guess + answer per round, so wipe the board when the
-    // question changes; classic/worldcup accumulate their guess pins.
+    // question changes; classic mode accumulates its guess pins.
     const isCapitals = gameMode === 'capitals'
     const wipeMarkers = needDraw || (isCapitals && questionChanged)
     set({
@@ -1203,7 +1189,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const pool = poolForSubMode(state, sub)
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
-    // Capitals mode is a shorter, 5-capital match; classic/worldcup use ROUNDS.
+    // Capitals mode is a shorter, 5-capital match; classic mode uses ROUNDS.
     const roundCount = mode === 'capitals' ? CAPITAL_ROUNDS : ROUNDS
 
     // Resume only if the seed AND the sub-mode match the saved match — the same
@@ -1236,8 +1222,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const targetIndex = restore?.targetIndex ?? 0
     const roundGuess = restore?.roundGuess ?? null
     // Capitals mode records one distance per completed capital, so it finishes
-    // once every capital has a recorded distance; classic/worldcup finish on the
-    // guess budget.
+    // once every capital has a recorded distance; classic mode finishes on
+    // the guess budget.
     const finished =
       mode === 'capitals'
         ? distances.length >= CAPITAL_ROUNDS

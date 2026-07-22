@@ -51,28 +51,32 @@ describe('GameStore', () => {
     expect(new Set(a).size).toBe(ROUNDS)
   })
 
-  it('draws only from the World Cup pool in worldcup mode', () => {
-    const WC = ['Brazil', 'France', 'Japan', 'Ghana', 'Mexico']
-    useGameStore.setState({ worldCupCountries: WC })
-    useGameStore.getState().startGame('wc-seed', 'worldcup')
+  it('draws only from a named region pool (e.g. Europe)', () => {
+    const EUROPE_SAMPLE = ['France', 'Germany', 'Italy', 'Spain', 'Portugal']
+    useGameStore.setState({ countries: [...POOL, ...EUROPE_SAMPLE] })
+    useGameStore.getState().startGame('eu-seed', 'europe')
     const targets = useGameStore.getState().targets
-    expect(useGameStore.getState().mode).toBe('worldcup')
-    // Pool is smaller than ROUNDS, so the draw is capped at the pool size and
-    // every target is a qualifier — never a classic-pool country.
-    expect(targets.length).toBe(WC.length)
-    for (const t of targets) expect(WC).toContain(t)
+    expect(useGameStore.getState().mode).toBe('classic')
+    // Europe's fixed pool intersected with the loaded countries leaves only
+    // the sample above, so the draw is capped there — never a POOL entry.
+    expect(targets.length).toBe(EUROPE_SAMPLE.length)
+    for (const t of targets) expect(EUROPE_SAMPLE).toContain(t)
   })
 
-  it('keeps classic and worldcup draws independent for the same seed', () => {
-    useGameStore.setState({ worldCupCountries: POOL })
+  it('keeps classic-all and a named region draw independent for the same seed', () => {
+    const AMERICAS_SAMPLE = ['Brazil', 'Mexico']
+    useGameStore.setState({ countries: [...POOL, ...AMERICAS_SAMPLE] })
     useGameStore.getState().startGame('shared', 'classic')
     const classic = useGameStore.getState().targets
-    useGameStore.getState().startGame('shared', 'worldcup')
-    const worldcup = useGameStore.getState().targets
-    // Same seed, but a worldcup match must not resume the classic save.
-    expect(useGameStore.getState().mode).toBe('worldcup')
+    useGameStore.getState().startGame('shared', 'americas')
+    const americas = useGameStore.getState().targets
+    // Same seed, but a different sub-mode must not resume the classic save.
+    expect(useGameStore.getState().subMode).toBe('americas')
     expect(classic).toHaveLength(ROUNDS)
-    expect(worldcup).toHaveLength(ROUNDS)
+    // Americas' fixed pool intersected with the loaded countries leaves only
+    // the sample above — proving this draw didn't fall back to classic-all.
+    expect(americas.length).toBe(AMERICAS_SAMPLE.length)
+    for (const t of americas) expect(AMERICAS_SAMPLE).toContain(t)
   })
 
   it('draws different targets for different seeds', () => {

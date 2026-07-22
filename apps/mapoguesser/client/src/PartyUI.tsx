@@ -51,7 +51,7 @@ const modeMeta = (mode: string) => {
   const sub = resolveSubMode(mode)
   return { label: sub.label, icon: sub.icon, blurb: sub.blurb }
 }
-// The behavioural mode ('classic'/'worldcup'/'capitals') for a party sub-mode id.
+// The behavioural mode ('classic'/'capitals') for a party sub-mode id.
 const behavioralOf = (mode: string | undefined): GameMode =>
   behavioralModeOf(resolveSubMode(mode ?? ''))
 
@@ -795,7 +795,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   // to read straight off the live target.
   const lastCity =
     isCapitals && partyAnswered && target ? cities[target] : null
-  // The most recently resolved classic/worldcup round (not capitals), for the
+  // The most recently resolved classic round (not capitals), for the
   // Countries mode's after-guess facts card. Mirrors App.tsx's solo-mode
   // derivation — states isn't a party mode, so !isCapitals is enough to gate.
   const lastResolvedCountryMarker = useMemo(() => {
@@ -992,7 +992,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
         <Scoreboard snap={snap} />
       </div>
 
-      {/* Last guess, bottom centre (classic/worldcup only — capitals shows its
+      {/* Last guess, bottom centre (classic only — capitals shows its
           distance in the status pill above). */}
       {!isCapitals && guess && (
         <div

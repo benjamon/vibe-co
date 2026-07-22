@@ -10,9 +10,6 @@ import type { GameMode } from './store'
 //   - 'states'    family → locate the US STATE on the globe (same behaviour as
 //                          'countries', just a different polygon dataset)
 //
-// World Cup was the first example of this idea (country guessing with a
-// different list of countries); every regional mode below is the same pattern.
-//
 // To add or reshape a mode, edit the `pool` array here — nothing else needs to
 // change. Country names MUST match Natural Earth's NAME field exactly (the same
 // strings the globe loads); a name that doesn't load is simply skipped, so a
@@ -56,23 +53,19 @@ export interface SubMode {
   family: ModeFamily
   // COUNTRIES family — how the draw pool is built:
   //   'all'       → every playable country
-  //   'worldcup'  → the World Cup qualifier set
   //   string[]    → an explicit list of Natural Earth country NAMEs
-  pool?: 'all' | 'worldcup' | string[]
+  pool?: 'all' | string[]
   // CITIES family — which cities are in play (see CitySpec).
   cities?: CitySpec
 }
 
 // The behaviour (round count, scoring, HUD, map label) each family maps onto.
-// Only the dedicated World Cup sub-mode keeps the 'worldcup' branding; every
-// other country region behaves like 'classic'.
 export const behavioralModeOf = (sm: SubMode): GameMode =>
-  sm.family === 'cities' ? 'capitals' : sm.id === 'worldcup' ? 'worldcup' : 'classic'
+  sm.family === 'cities' ? 'capitals' : 'classic'
 
 // ---- COUNTRIES: locate the country on the globe. --------------------------
 const COUNTRY_SUBMODES: SubMode[] = [
   { id: 'all', label: 'All', icon: '🌐', blurb: 'Every country on the globe', family: 'countries', pool: 'all' },
-  { id: 'worldcup', label: 'World Cup', icon: '⚽', blurb: 'The 2026 World Cup qualifiers', family: 'countries', pool: 'worldcup' },
   {
     id: 'americas',
     label: 'The Americas',
@@ -219,16 +212,17 @@ export const subModesFor = (family: ModeFamily): SubMode[] =>
 const BY_ID = new Map(SUB_MODES.map((m) => [m.id, m]))
 
 // Resolve a selection string to a sub-mode. Accepts a sub-mode id, or a legacy
-// GameMode string ('classic'/'worldcup'/'capitals') for backward compatibility
-// with old callers, saves, and shared URLs. Defaults to the "All" countries
-// sub-mode.
+// GameMode string ('classic'/'capitals') for backward compatibility with old
+// callers, saves, and shared URLs. Defaults to the "All" countries sub-mode —
+// this also gracefully absorbs old 'worldcup' saves/links (now removed) into
+// the classic All pool instead of erroring.
 export const resolveSubMode = (sel: string | undefined): SubMode => {
   if (sel) {
     const direct = BY_ID.get(sel)
     if (direct) return direct
     if (sel === 'capitals') return BY_ID.get('world-capitals')!
-    if (sel === 'worldcup') return BY_ID.get('worldcup')!
-    // 'classic' and anything unknown fall through to All.
+    // 'classic' and anything unknown (incl. the retired 'worldcup') fall
+    // through to All.
   }
   return BY_ID.get('all')!
 }
