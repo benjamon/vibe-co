@@ -13,7 +13,12 @@ import {
   sendLifeline as sendPartyLifeline,
   type PartyPhase,
 } from './party'
-import { resolveSubMode, behavioralModeOf, type SubMode } from './gameModes'
+import {
+  resolveSubMode,
+  behavioralModeOf,
+  type SubMode,
+  type ModeFamily,
+} from './gameModes'
 import { usStateFlagUrl } from './usStateFlags'
 
 // Which dataset the stats sidebar shows. 'mine' = this player's local history
@@ -116,7 +121,7 @@ export const MAX_CAPITAL_POINTS = CAPITAL_ROUNDS * (5 + REGION_BONUS_POINTS)
 
 // After the target changes, guess input is ignored for this long so a click
 // queued/double-fired for the previous target doesn't land on the new one.
-export const GUESS_LOCK_MS = 2000
+export const GUESS_LOCK_MS = 1000
 const lockUntil = (): number => Date.now() + GUESS_LOCK_MS
 
 // How many rounds a given mode runs for. Must match the server's roundsForMode
@@ -134,6 +139,11 @@ const STATS_KEY = 'mapoguesser:stats'
 // Count of consecutive perfect (9/9) games. Persisted so the streak survives
 // reloads; reset to 0 the moment a match ends with any miss.
 const PERFECT_STREAK_KEY = 'mapoguesser:perfectStreak'
+// Per-item adaptive-difficulty weights (single-player draw only — see
+// `drawWeightedUniqueTargets`). Keyed by `${family}:${itemId}` so the same
+// entity (e.g. "France") shares one weight across every sub-mode it appears in
+// (All, Europe, World Cup, …), while cities/states get their own namespace.
+const ITEM_WEIGHTS_KEY = 'mapoguesser:itemWeights'
 
 // One guess on a target. `id` is the country the player actually clicked.
 // `lat`/`lon` are the exact click position on the globe — optional only
@@ -153,6 +163,60 @@ export interface CountryStats {
   score: number
 }
 
+// Adaptive-difficulty weight for one item (country/state/city). `weight` is
+// the draw multiplier (1.0 = default likelihood); `streak` is the player's
+// current run of consecutive correct rounds on this item (first OR second
+// attempt), used only to detect the "3-in-a-row" mastery rule.
+export interface WeightEntry {
+  weight: number
+  streak: number
+}
+export type ItemWeights = Record<string, WeightEntry>
+
+const DEFAULT_ITEM_WEIGHT = 1
+export const MIN_ITEM_WEIGHT = 0.1
+const MAX_ITEM_WEIGHT = 20
+const MASTERY_STREAK = 3
+
+// Namespaces a per-family item id so "France" (a country) and a same-named
+// city/state never collide in the weight map.
+export const itemWeightKey = (family: ModeFamily, item: string): string =>
+  `${family}:${item}`
+
+const clampWeight = (w: number): number =>
+  Math.min(MAX_ITEM_WEIGHT, Math.max(MIN_ITEM_WEIGHT, w))
+
+// How a completed round on one item affects its future draw weight:
+//   'first' → answered correctly on the FIRST attempt (halve the weight; for
+//             the golf-scored cities mode, "correct" means the first pin
+//             landed within the top two score tiers, i.e. <=50 mi).
+//   'second' → only correct on the second attempt (weight unchanged).
+//   'miss'   → never answered correctly (double the weight, or reset to the
+//              original 1.0, whichever is greater).
+// Any correct outcome (first or second) extends the mastery streak; three in
+// a row immediately floors the weight to the minimum. A miss breaks the
+// streak and can undo mastery — floored weight (0.1) doubles to 0.2, which is
+// still less than the original 1.0, so `Math.max` snaps it back up to 1.0
+// rather than leaving it barely above the floor.
+export type WeightOutcome = 'first' | 'second' | 'miss'
+
+const nextWeightEntry = (
+  entry: WeightEntry | undefined,
+  outcome: WeightOutcome,
+): WeightEntry => {
+  const weight = entry?.weight ?? DEFAULT_ITEM_WEIGHT
+  if (outcome === 'miss') {
+    return {
+      weight: clampWeight(Math.max(weight * 2, DEFAULT_ITEM_WEIGHT)),
+      streak: 0,
+    }
+  }
+  const streak = (entry?.streak ?? 0) + 1
+  if (streak >= MASTERY_STREAK) return { weight: MIN_ITEM_WEIGHT, streak }
+  if (outcome === 'first') return { weight: clampWeight(weight * 0.5), streak }
+  return { weight, streak }
+}
+
 interface SavedMatch {
   seed: string
   // Which pool the saved draw came from. A seed alone isn't enough to resume —
@@ -163,6 +227,13 @@ interface SavedMatch {
   // a different sequence per sub-mode, so resume requires it to match. Optional
   // for legacy saves (default resolves from `mode`).
   subMode?: string
+  // The drawn target sequence itself. Since the single-player draw is now
+  // weighted by the player's live item-performance history (see
+  // `drawWeightedUniqueTargets`), it's no longer safe to *recompute* the draw
+  // from seed+pool on resume — weights may have shifted mid-match (the
+  // rounds already played bump their own items' weights). Optional so legacy
+  // saves without it fall back to the old recompute-from-seed behaviour.
+  targets?: string[]
   // Per-guess log (one entry per click), NOT one per country. See GameState.
   attempts: AttemptResult[]
   // How far through the 9-country sequence we are (advances on a correct guess
@@ -273,6 +344,27 @@ const loadStats = (): Record<number, CountryStats> => {
       // Recompute from the full history rather than trusting the stored value —
       // older saves cached only a last-5 rolling score under `recentScore`.
       out[id] = { guesses, score: computeScore(guesses, id) }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+const loadItemWeights = (): ItemWeights => {
+  if (typeof localStorage === 'undefined') return {}
+  try {
+    const raw = localStorage.getItem(ITEM_WEIGHTS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: ItemWeights = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object') continue
+      const o = v as Record<string, unknown>
+      if (typeof o.weight !== 'number' || !Number.isFinite(o.weight)) continue
+      if (typeof o.streak !== 'number' || !Number.isFinite(o.streak)) continue
+      out[k] = { weight: clampWeight(o.weight), streak: Math.max(0, o.streak) }
     }
     return out
   } catch {
@@ -393,6 +485,13 @@ interface GameState {
   // Per-target guess history. Keyed by the target country's ID. Persisted to
   // localStorage independently of the in-progress match save.
   stats: Record<number, CountryStats>
+
+  // Adaptive-difficulty draw weight per item, keyed by `itemWeightKey(family,
+  // item)`. Persisted independently of the match save (like `stats`), grown
+  // over time by single-player-only guesses (see `handleGlobeClick` /
+  // `handleCapitalGuess`). Drives `drawWeightedUniqueTargets` in `startGame`
+  // and the per-mode "solved" counts (`subModeProgress`).
+  itemWeights: ItemWeights
 
   // Which row in the stats sidebar is currently selected. Drives the dots the
   // WorldViewer paints at the player's past guess locations for that country.
@@ -618,18 +717,63 @@ const drawUniqueTargets = (
   return arr.slice(0, limit)
 }
 
+// Weighted sampling without replacement: single-player only (see
+// `startGame`), so a player who keeps missing a country/city/state sees it
+// more often, and one they've mastered drops out almost entirely. Each of the
+// n draws picks from the remaining pool with probability proportional to
+// `weightOf(item)`, then removes it, so O(n * pool.length) — fine at these
+// pool sizes (a few hundred countries, ~9-30 draws/match). Still seeded, so a
+// shared seed replays identically given the same weights.
+const drawWeightedUniqueTargets = (
+  pool: string[],
+  weightOf: (item: string) => number,
+  seed: string,
+  n: number,
+): string[] => {
+  const rng = mulberry32(hashSeed(seed))
+  const remaining = pool.map((item) => ({ item, w: Math.max(0, weightOf(item)) }))
+  const limit = Math.min(n, remaining.length)
+  const out: string[] = []
+  for (let k = 0; k < limit; k++) {
+    let total = 0
+    for (const r of remaining) total += r.w
+    // All-zero weights (shouldn't happen — weights floor at MIN_ITEM_WEIGHT —
+    // but stay safe) falls back to a uniform pick.
+    let roll = total > 0 ? rng() * total : rng() * remaining.length
+    let idx = remaining.length - 1
+    for (let i = 0; i < remaining.length; i++) {
+      roll -= total > 0 ? remaining[i].w : 1
+      if (roll <= 0) {
+        idx = i
+        break
+      }
+    }
+    out.push(remaining[idx].item)
+    remaining.splice(idx, 1)
+  }
+  return out
+}
+
 // 6 char base36 → 36⁶ ≈ 2.2 billion possible seeds. Plenty for sharing.
 export const generateSeed = (): string =>
   Math.floor(Math.random() * 36 ** 6)
     .toString(36)
     .padStart(6, '0')
 
+// The slice of GameState the draw pool is built from — narrowed (rather than
+// the full GameState) so callers outside the store (App.tsx's mode menu) can
+// pass a small selected object instead of subscribing to the whole store.
+export type PoolSource = Pick<
+  GameState,
+  'cities' | 'states' | 'countries' | 'worldCupCountries'
+>
+
 // Build the draw pool for a sub-mode from the currently-loaded datasets. For
 // the country family the pool is country NAMEs; for the city family it's the
 // country NAMEs that have a matched capital (the capitals map keys). Explicit
 // name lists are intersected with what actually loaded, so an entry missing
 // from the dataset is silently dropped rather than breaking the draw.
-const poolForSubMode = (s: GameState, sub: SubMode): string[] => {
+export const poolForSubMode = (s: PoolSource, sub: SubMode): string[] => {
   if (sub.family === 'cities') {
     const spec = sub.cities ?? {}
     let entries = Object.entries(s.cities)
@@ -662,6 +806,22 @@ const poolForSubMode = (s: GameState, sub: SubMode): string[] => {
   if (sub.pool === 'worldcup') return s.worldCupCountries
   const playable = new Set(s.countries)
   return (sub.pool as string[]).filter((n) => playable.has(n))
+}
+
+// How much of a sub-mode's pool the player has "solved" — driven to the
+// minimum adaptive-difficulty weight (see `nextWeightEntry`). Shown next to
+// each mode in the menu so mastery is visible per region/category.
+export const subModeProgress = (
+  s: PoolSource & Pick<GameState, 'itemWeights'>,
+  sub: SubMode,
+): { solved: number; total: number } => {
+  const pool = poolForSubMode(s, sub)
+  let solved = 0
+  for (const item of pool) {
+    const w = s.itemWeights[itemWeightKey(sub.family, item)]?.weight
+    if (w !== undefined && w <= MIN_ITEM_WEIGHT) solved++
+  }
+  return { solved, total: pool.length }
 }
 
 const US_NAME = 'United States of America'
@@ -853,6 +1013,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   stats: loadStats(),
+  itemWeights: loadItemWeights(),
 
   selectedStatsCountryId: null,
   selectStatsCountry: (id) => {
@@ -1038,13 +1199,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     // then derive the behaviour and the filtered draw pool from it.
     const sub = resolveSubMode(sel)
     const mode = behavioralModeOf(sub)
-    const pool = poolForSubMode(get(), sub)
+    const state = get()
+    const pool = poolForSubMode(state, sub)
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
     // Capitals mode is a shorter, 5-capital match; classic/worldcup use ROUNDS.
     const roundCount = mode === 'capitals' ? CAPITAL_ROUNDS : ROUNDS
-    const targets = drawUniqueTargets(pool, matchSeed, roundCount)
-    if (targets.length === 0) return
 
     // Resume only if the seed AND the sub-mode match the saved match — the same
     // seed draws a different sequence per sub-mode. A different seed/sub-mode
@@ -1055,6 +1215,18 @@ export const useGameStore = create<GameState>((set, get) => ({
     const savedSub = saved?.subMode ?? resolveSubMode(saved?.mode).id
     const restore =
       saved && saved.seed === matchSeed && savedSub === sub.id ? saved : null
+    // A fresh draw is weighted by the player's per-item history (single-player
+    // only). A resumed match reuses its already-drawn `targets` verbatim
+    // rather than re-rolling — the rounds played so far have already nudged
+    // their own items' weights, so recomputing could reshuffle the remainder.
+    const weightOf = (item: string) =>
+      state.itemWeights[itemWeightKey(sub.family, item)]?.weight ??
+      DEFAULT_ITEM_WEIGHT
+    const targets =
+      restore?.targets && restore.targets.length > 0
+        ? restore.targets
+        : drawWeightedUniqueTargets(pool, weightOf, matchSeed, roundCount)
+    if (targets.length === 0) return
     const attempts = restore?.attempts ?? []
     const distances = restore?.distances ?? []
     const capitalPoints = restore?.capitalPoints ?? []
@@ -1197,12 +1369,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     // No active country (sequence exhausted) → nothing to guess against.
     if (s.target === null || s.targetIndex >= ROUNDS) return
 
+    const family = resolveSubMode(s.subMode).family
+
     // Record this guess against the active target in the persistent stats
     // before we mutate any game state. Skipped if either name lacks an ID
     // (registerCountries hasn't run yet — shouldn't happen in practice), and
     // for states mode entirely (state names aren't registered into
     // countryIds/stats — see the `states` field doc).
-    if (s.target && resolveSubMode(s.subMode).family !== 'states') {
+    if (s.target && family !== 'states') {
       const nextStats = applyGuessStats(s, s.target, clicked, lat, lon)
       if (nextStats) set({ stats: nextStats })
     }
@@ -1226,6 +1400,17 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     if (correct) {
       const targetIndex = s.targetIndex + 1
+      // Adaptive difficulty: this target is resolved (correctly), so bump its
+      // weight now — halved if nailed on the first try, unchanged on the
+      // second (see `nextWeightEntry`).
+      const key = itemWeightKey(family, s.target)
+      const itemWeights = {
+        ...s.itemWeights,
+        [key]: nextWeightEntry(
+          s.itemWeights[key],
+          s.consecutiveWrong === 0 ? 'first' : 'second',
+        ),
+      }
       // On the final guess, hand the camera to the viewer for a celebratory pan.
       // Phase stays 'playing' until finishGame() fires after the hold.
       set({
@@ -1236,6 +1421,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         endingTarget: finished ? clicked : null,
         // New target next — brief lock so a double-click doesn't burn a guess.
         inputLockUntil: finished ? s.inputLockUntil : lockUntil(),
+        itemWeights,
       })
       return
     }
@@ -1254,6 +1440,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     // flips to 'finished' once the guess budget is spent.
     const doubleMiss = newWrong >= WRONG_GUESSES_BEFORE_REVEAL
     const targetIndex = doubleMiss ? s.targetIndex + 1 : s.targetIndex
+    // Adaptive difficulty: the reveal fires because this target went
+    // unanswered (either two straight misses, or the guess budget ran out
+    // mid-country) — either way the player never got it, so it's a miss.
+    const key = itemWeightKey(family, s.target)
+    const itemWeights = {
+      ...s.itemWeights,
+      [key]: nextWeightEntry(s.itemWeights[key], 'miss'),
+    }
     set({
       attempts,
       targetIndex,
@@ -1261,6 +1455,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       revealTarget: s.target,
       target: finished ? null : targetAt(s.targets, targetIndex),
       phase: 'playing',
+      itemWeights,
     })
   },
 
@@ -1412,10 +1607,27 @@ export const useGameStore = create<GameState>((set, get) => ({
     const capitalBonus = [...s.capitalBonus, bestRegionMatch]
     const targetIndex = s.targetIndex + 1
     const finished = distances.length >= CAPITAL_ROUNDS
+    // Adaptive difficulty: for the golf-scored cities mode, "correct" means
+    // landing within the top two score tiers (<=50 mi, CAPITAL_NEAR_MI) — the
+    // same threshold as the "near" hit sfx above. First attempt scoring that
+    // close halves the weight; only reaching it on the second attempt leaves
+    // the weight unchanged; missing both drops it into the miss bucket.
+    const outcome: WeightOutcome =
+      first.distance <= CAPITAL_NEAR_MI
+        ? 'first'
+        : best <= CAPITAL_NEAR_MI
+          ? 'second'
+          : 'miss'
+    const weightKey = itemWeightKey('cities', s.target)
+    const itemWeights = {
+      ...s.itemWeights,
+      [weightKey]: nextWeightEntry(s.itemWeights[weightKey], outcome),
+    }
     set({
       distances,
       capitalPoints,
       capitalBonus,
+      itemWeights,
       // Both guess dots (the closer one yellow) plus the reveal pin: the
       // country's flag with a two-line "City,\nCountry" label above it (flag from
       // the explicit `code`, since the label text isn't a plain country name).
@@ -1547,6 +1759,7 @@ useGameStore.subscribe((state, prev) => {
     seed: state.seed,
     mode: state.mode,
     subMode: state.subMode,
+    targets: state.targets,
     attempts: state.attempts,
     distances: state.distances,
     capitalPoints: state.capitalPoints,
@@ -1565,4 +1778,6 @@ useGameStore.subscribe((state, prev) => {
   if (state.stats !== prev.stats) writeJSON(STATS_KEY, state.stats)
   if (state.perfectStreak !== prev.perfectStreak)
     writeJSON(PERFECT_STREAK_KEY, state.perfectStreak)
+  if (state.itemWeights !== prev.itemWeights)
+    writeJSON(ITEM_WEIGHTS_KEY, state.itemWeights)
 })

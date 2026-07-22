@@ -10,6 +10,7 @@ import {
   cityRevealName,
   cityFlagUrl,
   usPopulationRank,
+  subModeProgress,
   type AttemptResult,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
@@ -198,6 +199,17 @@ export function App() {
   const statesReady = useGameStore((s) => s.states.length > 0)
   const perfectStreak = useGameStore((s) => s.perfectStreak)
   const multiplayer = useGameStore((s) => s.multiplayer)
+  // Adaptive-difficulty pool source for the mode-menu "solved" counts
+  // (subModeProgress) — a narrow slice rather than subscribing to the whole
+  // store, so unrelated state changes don't re-render the menu.
+  const countries = useGameStore((s) => s.countries)
+  const worldCupCountries = useGameStore((s) => s.worldCupCountries)
+  const states = useGameStore((s) => s.states)
+  const itemWeights = useGameStore((s) => s.itemWeights)
+  const poolSource = useMemo(
+    () => ({ cities, states, countries, worldCupCountries, itemWeights }),
+    [cities, states, countries, worldCupCountries, itemWeights],
+  )
 
   // Which family the active/last-played sub-mode belongs to — drives flag
   // sourcing (state flags vs country flags) in the HUD below.
@@ -1100,6 +1112,9 @@ export function App() {
                     : sub.family === 'states'
                       ? statesReady
                       : ready
+                const progress = subReady
+                  ? subModeProgress(poolSource, sub)
+                  : null
                 return (
                   <button
                     key={sub.id}
@@ -1111,9 +1126,27 @@ export function App() {
                       minWidth: 220,
                       cursor: subReady ? 'pointer' : 'wait',
                       opacity: subReady ? 1 : 0.6,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
                     }}
                   >
-                    {subReady ? `${sub.icon} ${sub.label}` : 'Loading…'}
+                    <span>
+                      {subReady ? `${sub.icon} ${sub.label}` : 'Loading…'}
+                    </span>
+                    {progress && progress.total > 0 && (
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          opacity: 0.75,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {progress.solved}/{progress.total} solved
+                      </span>
+                    )}
                   </button>
                 )
               })}
