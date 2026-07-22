@@ -88,13 +88,31 @@ export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // budget for classic/worldcup.
 export const CAPITAL_ROUNDS = 5
 export const CAPITAL_GUESSES_PER_ROUND = 2
-// A city-mode guess scores its great-circle miss in miles (lower is better), but
-// capped here: any guess this far off (or worse) scores the same, and a round a
-// player never answers is charged exactly this — so a no-guess costs the same as
-// the worst possible guess, no more.
+// A city-mode guess scores its great-circle miss in miles (lower is better).
+// Used as the miss penalty for a round a player never answers (multiplayer
+// only) — a skipped round costs exactly this many miles, no cap on an actual
+// guess (see `handleCapitalGuess`, which reports the true distance).
 export const MAX_CAPITAL_MILES = 1000
 // A city guess within this many miles counts as a "near" hit (green sfx).
 const CAPITAL_NEAR_MI = 50
+
+// City-mode point tiers — closer guesses score more: within 15 mi → 5 pts, 50
+// mi → 4, 100 mi → 3, 300 mi → 2, 500 mi → 1, else 0. Exported so WorldViewer
+// can draw a matching concentric ring at each radius around the target when
+// the round's answer is revealed. Plus a bonus point when the scoring guess
+// lands in the target's actual country (or, in the US state-lines sub-mode,
+// its actual state). Max 6 pts/round × CAPITAL_ROUNDS = 30 — the perfect score
+// that triggers the win-screen fireworks.
+export const CAPITAL_POINT_TIER_MILES = [15, 50, 100, 300, 500]
+const pointsForDistance = (mi: number): number => {
+  for (let i = 0; i < CAPITAL_POINT_TIER_MILES.length; i++) {
+    if (mi <= CAPITAL_POINT_TIER_MILES[i])
+      return CAPITAL_POINT_TIER_MILES.length - i
+  }
+  return 0
+}
+const REGION_BONUS_POINTS = 1
+export const MAX_CAPITAL_POINTS = CAPITAL_ROUNDS * (5 + REGION_BONUS_POINTS)
 
 // After the target changes, guess input is ignored for this long so a click
 // queued/double-fired for the previous target doesn't land on the new one.
@@ -155,6 +173,13 @@ interface SavedMatch {
   // Capitals mode only: the great-circle miles for each completed round, in
   // order. Absent for classic/worldcup saves (which score by `attempts`).
   distances?: number[]
+  // Capitals mode only: the points scored for each completed round (see
+  // `pointsForDistance` + the region bonus), parallel to `distances`.
+  capitalPoints?: number[]
+  // Capitals mode only: whether each completed round's score included the
+  // region bonus, parallel to `distances`/`capitalPoints` — lets the UI show
+  // the bonus as its own "+1 country/state bonus" toast.
+  capitalBonus?: boolean[]
   // Capitals mode only: the in-progress first guess of the current capital (the
   // player has one guess left), or null/absent when between rounds.
   roundGuess?: RoundGuess | null
@@ -436,9 +461,17 @@ interface GameState {
   // never contains 'pending'.
   attempts: AttemptResult[]
   // Capitals mode only: the great-circle miles for each completed round, in
-  // order. The golf scorecard — the total (sum) is the match score, lower is
-  // better. Empty in classic/worldcup (which score by `attempts`).
+  // order (uncapped — a wild guess shows its true miss distance). Empty in
+  // classic/worldcup (which score by `attempts`).
   distances: number[]
+  // Capitals mode only: the points scored for each completed round, parallel
+  // to `distances` (see `pointsForDistance` + the region bonus). The total
+  // (sum) is the match score, out of `MAX_CAPITAL_POINTS` — higher is better,
+  // and a perfect run triggers the win-screen fireworks.
+  capitalPoints: number[]
+  // Capitals mode only: whether each completed round's score included the
+  // region bonus, parallel to `capitalPoints`.
+  capitalBonus: boolean[]
 
   // Capitals lifelines. `lifelinesUsed` tracks the three once-per-game helpers
   // (reset each match). `revealName`/`revealFlag` show the hidden country
@@ -519,7 +552,16 @@ interface GameState {
   // Capitals mode guess: the player dropped a pin at (lat, lon). Scores it by
   // distance from the current target's capital, drops the guess + answer
   // markers, records it to the server, and advances (or finishes) the match.
-  handleCapitalGuess: (lat: number, lon: number) => void
+  // `guessedCountry`/`guessedState` are the country/US-state (if any) the click
+  // point resolved to on the globe — resolved by WorldViewer via the same
+  // point-in-polygon lookup used for classic mode — so the region bonus can
+  // compare them against the target city's actual country/state.
+  handleCapitalGuess: (
+    lat: number,
+    lon: number,
+    guessedCountry?: string | null,
+    guessedState?: string | null,
+  ) => void
   // Multiplayer city modes: lock in the current round's single pending guess as
   // the final answer (called when the round is about to end so a player who only
   // dropped one pin still gets that score, instead of it being thrown out).
@@ -763,6 +805,10 @@ export interface RoundGuess {
   lat: number
   lon: number
   distance: number
+  // Whether THIS guess landed in the target's actual country (or US state, in
+  // the state-lines sub-mode) — carried alongside distance so whichever guess
+  // ends up scoring (the closer of the two) brings its own bonus eligibility.
+  regionMatch: boolean
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -863,6 +909,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   target: null,
   attempts: [],
   distances: [],
+  capitalPoints: [],
+  capitalBonus: [],
   lifelinesUsed: { name: false, flag: false, circle: false },
   revealName: false,
   revealFlag: false,
@@ -937,6 +985,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       markerEpoch: wipeMarkers ? s.markerEpoch + 1 : s.markerEpoch,
       attempts: needDraw ? [] : s.attempts,
       distances: needDraw ? [] : s.distances,
+      capitalPoints: needDraw ? [] : s.capitalPoints,
+      capitalBonus: needDraw ? [] : s.capitalBonus,
       // Lifelines are once-per-match; the per-round reveals reset each question.
       lifelinesUsed: needDraw
         ? { name: false, flag: false, circle: false }
@@ -967,6 +1017,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       target: null,
       attempts: [],
       distances: [],
+      capitalPoints: [],
+      capitalBonus: [],
       lifelinesUsed: { name: false, flag: false, circle: false },
       revealName: false,
       revealFlag: false,
@@ -1005,6 +1057,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       saved && saved.seed === matchSeed && savedSub === sub.id ? saved : null
     const attempts = restore?.attempts ?? []
     const distances = restore?.distances ?? []
+    const capitalPoints = restore?.capitalPoints ?? []
+    const capitalBonus = restore?.capitalBonus ?? []
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
     const targetIndex = restore?.targetIndex ?? 0
@@ -1027,6 +1081,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       target: finished ? null : targetAt(targets, targetIndex),
       attempts,
       distances,
+      capitalPoints,
+      capitalBonus,
       lifelinesUsed: { name: false, flag: false, circle: false },
       revealName: false,
       revealFlag: false,
@@ -1056,6 +1112,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       target: null,
       attempts: [],
       distances: [],
+      capitalPoints: [],
+      capitalBonus: [],
       lifelinesUsed: { name: false, flag: false, circle: false },
       revealName: false,
       revealFlag: false,
@@ -1206,7 +1264,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
   },
 
-  handleCapitalGuess: (lat, lon) => {
+  handleCapitalGuess: (lat, lon, guessedCountry, guessedState) => {
     const s = get()
     if (s.mode !== 'capitals') return
     if (s.phase !== 'playing' || s.target === null) return
@@ -1216,16 +1274,20 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
 
     const NEAR_MI = CAPITAL_NEAR_MI
-    // Cap the scored miss: anything past MAX_CAPITAL_MILES scores the same, so a
-    // wild guess costs no more than a no-guess timeout (also charged the cap).
-    const distance = Math.min(
-      haversineMiles(lat, lon, cap.lat, cap.lon),
-      MAX_CAPITAL_MILES,
-    )
+    // The true great-circle miss, uncapped — a wild guess shows its actual
+    // distance rather than being clamped, so the "X mi" text is always honest.
+    const distance = haversineMiles(lat, lon, cap.lat, cap.lon)
     const near = distance <= NEAR_MI
 
-    // A guess dot labelled with its own (capped) miss distance. Grey by default;
-    // the closer of the two guesses — the one that actually scores — is drawn
+    // Whether THIS click landed in the target's actual country — or, in the
+    // US state-lines sub-mode, its actual state — for the +1 region bonus.
+    const byState = resolveSubMode(s.subMode).cities?.usStateLines === true
+    const regionMatch = byState
+      ? guessedState != null && guessedState === cap.region
+      : guessedCountry != null && guessedCountry === cap.country
+
+    // A guess dot labelled with its own miss distance. Grey by default; the
+    // closer of the two guesses — the one that actually scores — is drawn
     // yellow. Shared by the multiplayer and single-player paths.
     const pinFor = (
       gLat: number,
@@ -1251,7 +1313,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // First of two guesses: show the pin + distance only, no answer, no submit.
       if (s.roundGuess === null) {
         set({
-          roundGuess: { lat, lon, distance },
+          roundGuess: { lat, lon, distance, regionMatch },
           markers: [pinFor(lat, lon, distance)],
           markerEpoch: s.markerEpoch + 1,
           guessLine: null,
@@ -1264,6 +1326,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       const best = Math.min(first.distance, distance)
       // The current (second) guess scores when it's at least as close as the first.
       const currentBest = distance <= first.distance
+      const bestRegionMatch = currentBest ? regionMatch : first.regionMatch
+      const points =
+        pointsForDistance(best) + (bestRegionMatch ? REGION_BONUS_POINTS : 0)
       const scoring = currentBest
         ? { lat, lon }
         : { lat: first.lat, lon: first.lon }
@@ -1271,6 +1336,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({
         partyAnswered: true,
         roundGuess: null,
+        capitalPoints: [...s.capitalPoints, points],
+        capitalBonus: [...s.capitalBonus, bestRegionMatch],
         markers: [
           pinFor(first.lat, first.lon, first.distance, !currentBest),
           pinFor(lat, lon, distance, currentBest),
@@ -1306,7 +1373,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // second attempt, and only the closer of the two counts.
     if (s.roundGuess === null) {
       set({
-        roundGuess: { lat, lon, distance },
+        roundGuess: { lat, lon, distance, regionMatch },
         // Replace the previous round's markers with just this guess pin. The
         // hint circle / name / flag reveals persist into the second guess.
         markers: [pinFor(lat, lon, distance)],
@@ -1323,6 +1390,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     // The current (second) guess scores when it's at least as close as the first;
     // its pin is the one the answer line connects to and is drawn yellow.
     const currentBest = distance <= first.distance
+    const bestRegionMatch = currentBest ? regionMatch : first.regionMatch
+    const points =
+      pointsForDistance(best) + (bestRegionMatch ? REGION_BONUS_POINTS : 0)
     const scoring = currentBest
       ? { lat, lon }
       : { lat: first.lat, lon: first.lon }
@@ -1338,10 +1408,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
 
     const distances = [...s.distances, best]
+    const capitalPoints = [...s.capitalPoints, points]
+    const capitalBonus = [...s.capitalBonus, bestRegionMatch]
     const targetIndex = s.targetIndex + 1
     const finished = distances.length >= CAPITAL_ROUNDS
     set({
       distances,
+      capitalPoints,
+      capitalBonus,
       // Both guess dots (the closer one yellow) plus the reveal pin: the
       // country's flag with a two-line "City,\nCountry" label above it (flag from
       // the explicit `code`, since the label text isn't a plain country name).
@@ -1385,10 +1459,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!cap) return
     // The one pin the player did drop becomes the scoring guess (drawn yellow).
     const g = s.roundGuess
+    const points =
+      pointsForDistance(g.distance) + (g.regionMatch ? REGION_BONUS_POINTS : 0)
     submitPartyGuess(s.targetIndex, g.distance <= CAPITAL_NEAR_MI, g.distance)
     set({
       partyAnswered: true,
       roundGuess: null,
+      capitalPoints: [...s.capitalPoints, points],
+      capitalBonus: [...s.capitalBonus, g.regionMatch],
       markers: [
         {
           lat: g.lat,
@@ -1457,6 +1535,8 @@ useGameStore.subscribe((state, prev) => {
     state.seed === prev.seed &&
     state.attempts === prev.attempts &&
     state.distances === prev.distances &&
+    state.capitalPoints === prev.capitalPoints &&
+    state.capitalBonus === prev.capitalBonus &&
     state.targetIndex === prev.targetIndex &&
     state.markers === prev.markers &&
     state.consecutiveWrong === prev.consecutiveWrong &&
@@ -1469,6 +1549,8 @@ useGameStore.subscribe((state, prev) => {
     subMode: state.subMode,
     attempts: state.attempts,
     distances: state.distances,
+    capitalPoints: state.capitalPoints,
+    capitalBonus: state.capitalBonus,
     targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,

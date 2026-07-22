@@ -23,7 +23,12 @@ import {
   Viewer,
 } from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
-import { useGameStore, type Marker, type CityInfo } from './store'
+import {
+  useGameStore,
+  CAPITAL_POINT_TIER_MILES,
+  type Marker,
+  type CityInfo,
+} from './store'
 import { resolveSubMode } from './gameModes'
 import { ALL_GUESSES } from './stats'
 import { usStateFlagUrl } from './usStateFlags'
@@ -40,6 +45,17 @@ const MAX_RANGE = 24_000_000
 // Streamed imagery LOD cap. z12 is ~9 km/pixel at the equator — plenty of
 // detail for a globe view without ballooning tile fetches.
 const MAX_TILE_LEVEL = 12
+
+// Outline colour for each capitals-mode score-tier ring (see
+// CAPITAL_POINT_TIER_MILES), innermost (best) to outermost (worst) — the same
+// green→red palette used elsewhere for correct/near/wrong feedback.
+const CAPITAL_TIER_RING_COLORS = [
+  Color.fromCssColorString('#3fb84e'),
+  Color.fromCssColorString('#a8d94a'),
+  Color.fromCssColorString('#f5c542'),
+  Color.fromCssColorString('#f2994a'),
+  Color.fromCssColorString('#e64545'),
+]
 
 // --- Rendering performance knobs -------------------------------------------
 // These trade visual fidelity for GPU / bandwidth savings that matter most on
@@ -1270,10 +1286,17 @@ export function WorldViewer() {
 
       // Capitals mode: the pin can land anywhere (including open ocean), and the
       // store owns both the guess pin and the reveal marker, so route the raw
-      // lat/lon straight through and skip the country-name path entirely.
+      // lat/lon straight through rather than resolving right/wrong here. `name`
+      // above is already the country the click landed in (cities-family
+      // sub-modes aren't 'states', so the ternary took the lookupCountryName
+      // branch) — reused here for the region bonus, plus a state lookup too
+      // for the US state-lines sub-mode, which awards the bonus by state.
       if (state.mode === 'capitals') {
         if (state.phase === 'playing' && state.target !== null) {
-          state.handleCapitalGuess(lat, lon)
+          const byState =
+            resolveSubMode(state.subMode).cities?.usStateLines === true
+          const guessedState = byState ? lookupStateName(lat, lon) : null
+          state.handleCapitalGuess(lat, lon, name, guessedState)
         }
         return
       }
@@ -1628,6 +1651,23 @@ export function WorldViewer() {
         }
         if (state.guessLine) {
           const g = state.guessLine
+          // Score reveal: one outlined ring per point tier, centred on the
+          // target, so the player can see at a glance which band their guess
+          // (and the tiers they missed/beat) fell into.
+          CAPITAL_POINT_TIER_MILES.forEach((mi, i) => {
+            overlays.entities.add({
+              position: Cartesian3.fromDegrees(g.toLon, g.toLat),
+              ellipse: {
+                semiMajorAxis: mi * MI_TO_M,
+                semiMinorAxis: mi * MI_TO_M,
+                fill: false,
+                outline: true,
+                outlineColor: CAPITAL_TIER_RING_COLORS[i].withAlpha(0.85),
+                outlineWidth: 2,
+                height: 0,
+              },
+            })
+          })
           overlays.entities.add({
             polyline: {
               positions: [

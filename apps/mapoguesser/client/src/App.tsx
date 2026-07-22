@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, lazy, Suspense } from 'react'
+import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { Confetti } from './Confetti'
 import { Fireworks } from './Fireworks'
 import { sfxEndJingle, installAudioUnlock } from './sfx'
@@ -6,6 +6,7 @@ import {
   useGameStore,
   ROUNDS,
   CAPITAL_ROUNDS,
+  MAX_CAPITAL_POINTS,
   cityRevealName,
   cityFlagUrl,
   usPopulationRank,
@@ -176,6 +177,8 @@ export function App() {
   const mode = useGameStore((s) => s.mode)
   const subMode = useGameStore((s) => s.subMode)
   const distances = useGameStore((s) => s.distances)
+  const capitalPoints = useGameStore((s) => s.capitalPoints)
+  const capitalBonus = useGameStore((s) => s.capitalBonus)
   const targets = useGameStore((s) => s.targets)
   const cities = useGameStore((s) => s.cities)
   const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
@@ -224,6 +227,13 @@ export function App() {
     'full',
   )
   const [showFireworks, setShowFireworks] = useState(false)
+  // Floating "+N points" / "+1 country bonus" toasts fired whenever a capitals
+  // round scores. Two toasts per round are staggered in time (not stacked
+  // spatially) so a bonus doesn't visually collide with the base-points toast.
+  const [pointToasts, setPointToasts] = useState<
+    { id: number; text: string }[]
+  >([])
+  const nextPointToastId = useRef(1)
 
   // Reverse lookup ID → name so we can fold the local guess history into the
   // "mine" aggregate. Recompute only when the (grow-only) ID map changes.
@@ -446,10 +456,17 @@ export function App() {
   }, [seed, subMode, multiplayer])
 
   const correctCount = attempts.filter((a) => a === 'correct').length
-  // Capitals mode golf score: sum of the per-round great-circle miles.
   const isCapitals = mode === 'capitals'
-  const totalMiles = distances.reduce((sum, d) => sum + d, 0)
+  // Capitals mode: the great-circle miss of the round just finished, shown
+  // alongside that round's point score.
   const lastMiles = distances.length ? distances[distances.length - 1] : null
+  const lastPoints = capitalPoints.length
+    ? capitalPoints[capitalPoints.length - 1]
+    : null
+  // Capitals mode point score: sum of the per-round points (distance tier +
+  // region bonus) — the match score for city modes, driving the win-screen
+  // tiers the same way correctCount does for classic/worldcup.
+  const totalCapitalPoints = capitalPoints.reduce((sum, p) => sum + p, 0)
   const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
 
   // The city the player just finished guessing. `target` has already advanced
@@ -480,16 +497,37 @@ export function App() {
 
   // When a match wraps up, play the score-appropriate jingle and fire the
   // matching visual celebration. Keyed on `phase` so it runs once per
-  // transition into 'finished'. Tiers:
+  // transition into 'finished'. Tiers (classic/worldcup, out of ROUNDS):
   //   7/9 → small confetti
   //   8/9 → full confetti
   //   9/9 → full confetti + fireworks
+  // Capitals mirrors the same relative tiers (max, max-1, max-2) but out of
+  // MAX_CAPITAL_POINTS (30) instead of ROUNDS.
   useEffect(() => {
-    // Multiplayer runs its own celebration on the party results screen; capitals
-    // mode is scored by distance (no correct/wrong tiers) so it skips this.
-    if (phase !== 'finished' || multiplayer || isCapitals) {
+    // Multiplayer runs its own celebration on the party results screen.
+    if (phase !== 'finished' || multiplayer) {
       setShowConfetti(false)
       setShowFireworks(false)
+      return
+    }
+    if (isCapitals) {
+      sfxEndJingle(
+        Math.round((totalCapitalPoints / MAX_CAPITAL_POINTS) * ROUNDS),
+      )
+      if (totalCapitalPoints >= MAX_CAPITAL_POINTS) {
+        setConfettiIntensity('full')
+        setShowConfetti(true)
+        setShowFireworks(true)
+      } else if (totalCapitalPoints === MAX_CAPITAL_POINTS - 1) {
+        setConfettiIntensity('full')
+        setShowConfetti(true)
+      } else if (totalCapitalPoints === MAX_CAPITAL_POINTS - 2) {
+        setConfettiIntensity('small')
+        setShowConfetti(true)
+      } else {
+        setShowConfetti(false)
+        setShowFireworks(false)
+      }
       return
     }
     sfxEndJingle(correctCount)
@@ -506,6 +544,38 @@ export function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
+
+  // Fire the "+N points" / "+1 bonus" floating toasts whenever a capitals round
+  // scores (capitalPoints grows by one). Tracked with a ref rather than state
+  // so resuming an in-progress match doesn't replay toasts for rounds that
+  // were already scored before this mount.
+  const prevCapitalRoundsRef = useRef(capitalPoints.length)
+  useEffect(() => {
+    const prevLen = prevCapitalRoundsRef.current
+    prevCapitalRoundsRef.current = capitalPoints.length
+    if (!isCapitals || capitalPoints.length <= prevLen) return
+    const i = capitalPoints.length - 1
+    const bonus = capitalBonus[i] ?? false
+    const base = capitalPoints[i] - (bonus ? 1 : 0)
+    const byState = resolveSubMode(subMode).cities?.usStateLines === true
+    const spawn = (text: string) => {
+      const id = nextPointToastId.current++
+      setPointToasts((prev) => [...prev, { id, text }])
+      window.setTimeout(
+        () => setPointToasts((prev) => prev.filter((t) => t.id !== id)),
+        1300,
+      )
+    }
+    spawn(`+${base} points`)
+    // Staggered in time (not stacked spatially) so the bonus toast doesn't
+    // appear on top of the still-visible base-points toast.
+    if (bonus) {
+      window.setTimeout(
+        () => spawn(`+1 ${byState ? 'state' : 'country'} bonus`),
+        1000,
+      )
+    }
+  }, [isCapitals, capitalPoints, capitalBonus, subMode])
 
   // Prime Web Audio on the first user interaction so end-game sounds reliably
   // play on iOS/Safari (which keeps the audio context suspended until then).
@@ -607,6 +677,51 @@ export function App() {
         />
       )}
       {showFireworks && <Fireworks onDone={() => setShowFireworks(false)} />}
+
+      {pointToasts.length > 0 && (
+        <>
+          <style>{`
+            @keyframes capPointToast {
+              0%   { opacity: 0; transform: translateY(-6px); }
+              15%  { opacity: 1; transform: translateY(0); }
+              70%  { opacity: 1; transform: translateY(10px); }
+              100% { opacity: 0; transform: translateY(22px); }
+            }
+          `}</style>
+          <div
+            style={{
+              position: 'absolute',
+              top: '40%',
+              left: '50%',
+              width: 0,
+              height: 0,
+              pointerEvents: 'none',
+              zIndex: 25,
+            }}
+          >
+            {pointToasts.map((t) => (
+              <span
+                key={t.id}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 0,
+                  transform: 'translateX(-50%)',
+                  whiteSpace: 'nowrap',
+                  fontFamily: 'system-ui, sans-serif',
+                  fontSize: 22,
+                  fontWeight: 800,
+                  color: '#ffd93b',
+                  textShadow: '0 2px 6px rgba(0,0,0,0.9)',
+                  animation: 'capPointToast 1.3s ease forwards',
+                }}
+              >
+                {t.text}
+              </span>
+            ))}
+          </div>
+        </>
+      )}
 
       {phase !== 'idle' && !partyUI && (
         <div
@@ -759,7 +874,7 @@ export function App() {
                   : CAPITAL_ROUNDS}{' '}
                 / {CAPITAL_ROUNDS}
               </span>
-              <span>Total: {milesFmt(totalMiles)}</span>
+              <span>Score: {totalCapitalPoints}</span>
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 4 }}>
@@ -828,7 +943,7 @@ export function App() {
                   )}
                   {lastMiles !== null && (
                     <span style={{ fontSize: 15, opacity: 0.75 }}>
-                      Last: {milesFmt(lastMiles)}
+                      Last: {milesFmt(lastMiles)}, (+{lastPoints})
                     </span>
                   )}
                 </div>
@@ -841,11 +956,20 @@ export function App() {
                     gap: 4,
                   }}
                 >
-                  <span>Total: {milesFmt(totalMiles)}</span>
-                  {distances.length > 0 && (
-                    <span style={{ fontSize: 16, opacity: 0.75 }}>
-                      {distances.length} capitals · avg{' '}
-                      {milesFmt(totalMiles / distances.length)}
+                  <span>
+                    Score: {totalCapitalPoints} / {MAX_CAPITAL_POINTS}
+                  </span>
+                  {totalCapitalPoints >= MAX_CAPITAL_POINTS && (
+                    <span
+                      style={{
+                        fontSize: 19,
+                        fontWeight: 800,
+                        color: '#ffd93b',
+                        letterSpacing: 0.5,
+                        textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+                      }}
+                    >
+                      Perfect Score!
                     </span>
                   )}
                 </div>
