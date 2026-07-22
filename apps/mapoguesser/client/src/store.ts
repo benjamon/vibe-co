@@ -354,6 +354,11 @@ interface GameState {
   countryCodes: Record<string, string>
   setCountryCodes: (codes: Record<string, string>) => void
 
+  // Name → Natural Earth's POP_EST (population estimate). Populated alongside
+  // countries; drives the Countries mode's after-guess facts card.
+  countryPopulations: Record<string, number>
+  setCountryPopulations: (pops: Record<string, number>) => void
+
   // Name → stable integer ID. Grow-only across reloads so stats keyed by ID
   // stay valid as new countries appear in the dataset. WorldViewer calls
   // registerCountries(names) after the GeoJSON loads.
@@ -663,6 +668,21 @@ export const usPopulationRank = (
   return rank === -1 ? null : rank + 1
 }
 
+// A country's rank by population among every loaded country (1 = most
+// populous), or null if it isn't in the map. Natural Earth's own POP_RANK
+// field is a coarse label-priority bucket, not a literal population rank, so
+// this is computed from the raw POP_EST values instead.
+export const countryPopulationRank = (
+  populations: Record<string, number>,
+  name: string,
+): number | null => {
+  const pop = populations[name]
+  if (pop === undefined) return null
+  const pops = Object.values(populations).sort((a, b) => b - a)
+  const rank = pops.indexOf(pop)
+  return rank === -1 ? null : rank + 1
+}
+
 // The country served for a given position in the pre-drawn sequence, or null
 // once the sequence is exhausted (game over).
 const targetAt = (targets: string[], index: number): string | null =>
@@ -763,6 +783,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   countryCodes: {},
   setCountryCodes: (countryCodes) => set({ countryCodes }),
+
+  countryPopulations: {},
+  setCountryPopulations: (countryPopulations) => set({ countryPopulations }),
 
   countryIds: loadCountryIds(),
   registerCountries: (names) => {

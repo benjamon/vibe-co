@@ -20,6 +20,7 @@ import {
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
 import { CityFactsCard, type CityFactsData } from './CityFactsCard'
+import { CountryFactsCard } from './CountryFactsCard'
 import { resolveSubMode, behavioralModeOf } from './gameModes'
 import {
   subscribeParty,
@@ -719,6 +720,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   const roundGuess = useGameStore((s) => s.roundGuess)
   const guess = useGameStore((s) => s.country)
   const countryCodes = useGameStore((s) => s.countryCodes)
+  const countryPopulations = useGameStore((s) => s.countryPopulations)
   const cities = useGameStore((s) => s.cities)
   const commitPartyCapitalGuess = useGameStore((s) => s.commitPartyCapitalGuess)
   const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
@@ -793,6 +795,17 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   // to read straight off the live target.
   const lastCity =
     isCapitals && partyAnswered && target ? cities[target] : null
+  // The most recently resolved classic/worldcup round (not capitals), for the
+  // Countries mode's after-guess facts card. Mirrors App.tsx's solo-mode
+  // derivation — states isn't a party mode, so !isCapitals is enough to gate.
+  const lastResolvedCountryMarker = useMemo(() => {
+    if (isCapitals) return null
+    for (let i = markers.length - 1; i >= 0; i--) {
+      const m = markers[i]
+      if (m.kind === 'correct' || m.kind === 'reveal') return m
+    }
+    return null
+  }, [markers, isCapitals])
   const lastCityInfo: CityFactsData | null =
     lastCity && target
       ? {
@@ -804,6 +817,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
           pop: lastCity.pop,
           rank: usPopulationRank(cities, target),
           founded: US_CITY_FOUNDED[lastCity.city],
+          isCapital: lastCity.stateCapital || lastCity.capital,
         }
       : null
 
@@ -907,6 +921,12 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
       </div>
 
       <CityFactsCard info={lastCityInfo} seed={room?.code ?? null} />
+      <CountryFactsCard
+        marker={lastResolvedCountryMarker}
+        countryCodes={countryCodes}
+        countryPopulations={countryPopulations}
+        seed={room?.code ?? null}
+      />
 
       {/* Capitals lifelines (top-right), one-per-match, until you've answered. */}
       {isCapitals && !partyAnswered && (

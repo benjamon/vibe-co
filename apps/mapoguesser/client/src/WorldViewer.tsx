@@ -663,6 +663,7 @@ export function WorldViewer() {
           if (destroyed || viewer.isDestroyed()) return
           const list: CountryEntry[] = []
           const codes: Record<string, string> = {}
+          const populations: Record<string, number> = {}
           for (const feature of geo.features ?? []) {
             const name =
               typeof feature?.properties?.NAME === 'string'
@@ -686,6 +687,8 @@ export function WorldViewer() {
               codes[name] = iso
               aliases.add(`iso:${iso}`)
             }
+            const popEst = Number(props.POP_EST)
+            if (Number.isFinite(popEst) && popEst > 0) populations[name] = popEst
             for (const key of [
               'NAME',
               'ADMIN',
@@ -715,6 +718,7 @@ export function WorldViewer() {
           // have also loaded — publishCities guards on placesLoaded).
           publishCities()
           useGameStore.getState().setCountryCodes(codes)
+          useGameStore.getState().setCountryPopulations(populations)
           // Register every country (not just playable targets) so guess
           // markers, which can land on any country, always resolve to an ID.
           useGameStore.getState().registerCountries(list.map((c) => c.name))

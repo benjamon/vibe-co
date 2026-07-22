@@ -55,7 +55,7 @@ export function StateFactsCard({
                     </>
                   }
                 />
-                <FactRow label="Capital" value={facts.capital} />
+                <FactRow label="Capital" value={<>{facts.capital} 🏛️</>} />
                 <FactRow label="Statehood" value={facts.admitted} />
               </FactsGrid>
             ) : (

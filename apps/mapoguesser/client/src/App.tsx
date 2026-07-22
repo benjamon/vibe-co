@@ -14,6 +14,7 @@ import {
 import { US_CITY_FOUNDED } from './usCityFacts'
 import { usStateFlagUrl } from './usStateFlags'
 import { StateFactsCard } from './StateFactsCard'
+import { CountryFactsCard } from './CountryFactsCard'
 import { CityFactsCard, type CityFactsData } from './CityFactsCard'
 import {
   fetchStats,
@@ -158,6 +159,7 @@ export function App() {
   const attempts = useGameStore((s) => s.attempts)
   const markers = useGameStore((s) => s.markers)
   const countryCodes = useGameStore((s) => s.countryCodes)
+  const countryPopulations = useGameStore((s) => s.countryPopulations)
   const countryIds = useGameStore((s) => s.countryIds)
   const stats = useGameStore((s) => s.stats)
   const selectedStatsCountryId = useGameStore((s) => s.selectedStatsCountryId)
@@ -300,14 +302,22 @@ export function App() {
     [markers],
   )
 
-  // The most recently resolved US-States round — a correct guess (which
-  // matches the target) or the miss-twice reveal (the answer that was just
-  // shown). 'wrong' markers are on a target that hasn't resolved yet, so
-  // they're skipped. Drives the after-guess facts card; the object reference
-  // only changes when a *new* correct/reveal marker is pushed, so this is a
-  // stable trigger for the card's "show again" effect.
+  // The most recently resolved round for the active family — a correct guess
+  // (which matches the target) or the miss-twice reveal (the answer that was
+  // just shown). 'wrong' markers are on a target that hasn't resolved yet, so
+  // they're skipped. Drives the after-guess facts cards below; the object
+  // reference only changes when a *new* correct/reveal marker is pushed, so
+  // this is a stable trigger for each card's "show again" effect.
   const lastResolvedStateMarker = useMemo(() => {
     if (subFamily !== 'states') return null
+    for (let i = markers.length - 1; i >= 0; i--) {
+      const m = markers[i]
+      if (m.kind === 'correct' || m.kind === 'reveal') return m
+    }
+    return null
+  }, [markers, subFamily])
+  const lastResolvedCountryMarker = useMemo(() => {
+    if (subFamily !== 'countries') return null
     for (let i = markers.length - 1; i >= 0; i--) {
       const m = markers[i]
       if (m.kind === 'correct' || m.kind === 'reveal') return m
@@ -464,6 +474,7 @@ export function App() {
           pop: lastCity.pop,
           rank: usPopulationRank(cities, lastCityKey),
           founded: US_CITY_FOUNDED[lastCity.city],
+          isCapital: lastCity.stateCapital || lastCity.capital,
         }
       : null
 
@@ -1085,6 +1096,12 @@ export function App() {
       {!partyUI && (
         <>
           <StateFactsCard marker={lastResolvedStateMarker} seed={seed} />
+          <CountryFactsCard
+            marker={lastResolvedCountryMarker}
+            countryCodes={countryCodes}
+            countryPopulations={countryPopulations}
+            seed={seed}
+          />
           <CityFactsCard info={lastCityInfo} seed={seed} />
         </>
       )}

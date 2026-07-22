@@ -12,6 +12,9 @@ export interface CityFactsData {
   // Rank among every loaded US city, or null outside the US / if unranked.
   rank: number | null
   founded?: number
+  // Whether this city is its state's (or country's) capital — shown with a
+  // 🏛️ next to the name, mirroring the 🏛️ on the state card's Capital row.
+  isCapital?: boolean
 }
 
 const popFmt = (p: number) => p.toLocaleString()
@@ -34,23 +37,29 @@ export function CityFactsCard({
       seed={seed}
       renderContent={(d) => (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
             {(d.flagSrc || d.flagCode) && (
               <img
                 src={d.flagSrc ?? `https://flagcdn.com/w80/${d.flagCode}.png`}
                 alt=""
-                width={42}
-                height={31}
+                width={63}
+                height={47}
                 style={{
-                  borderRadius: 3,
+                  borderRadius: 4,
                   boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
                   flex: 'none',
                   objectFit: 'cover',
                 }}
               />
             )}
-            <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 0.2 }}>
-              {d.city}
+            <div style={{ lineHeight: 1.25 }}>
+              <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 0.2 }}>
+                {d.city}
+                {d.isCapital && ' 🏛️'}
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.75 }}>
+                {d.place}
+              </div>
             </div>
           </div>
           <FactsGrid>
@@ -66,7 +75,6 @@ export function CityFactsCard({
               }
             />
             {d.founded !== undefined && <FactRow label="Founded" value={d.founded} />}
-            <FactRow label="Location" value={d.place} />
           </FactsGrid>
         </>
       )}
