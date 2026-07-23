@@ -250,6 +250,10 @@ interface SavedMatch {
   // region bonus, parallel to `distances`/`capitalPoints` — lets the UI show
   // the bonus as its own "+1 country/state bonus" toast.
   capitalBonus?: boolean[]
+  // Capitals mode only: total lifeline point cost for each completed round
+  // (see HINT_PENALTY), parallel to `distances`/`capitalPoints` — lets the UI
+  // show it as its own "-N hint" toast.
+  capitalHintPenalty?: number[]
   // Capitals mode only: the in-progress first guess of the current capital (the
   // player has one guess left), or null/absent when between rounds.
   roundGuess?: RoundGuess | null
@@ -564,12 +568,15 @@ interface GameState {
   // Capitals mode only: whether each completed round's score included the
   // region bonus, parallel to `capitalPoints`.
   capitalBonus: boolean[]
+  // Capitals mode only: total lifeline point cost deducted from each
+  // completed round's score, parallel to `capitalPoints` (see HINT_PENALTY).
+  capitalHintPenalty: number[]
 
-  // Capitals lifelines. `lifelinesUsed` tracks the three once-per-game helpers
-  // (reset each match). `revealName`/`revealFlag` show the hidden country
+  // Capitals lifelines, usable every round at a points cost (see
+  // HINT_PENALTY). `revealName`/`revealFlag` show the hidden country
   // name/flag for the *current* round; `hintCircle` is the drawn circle. All
-  // three per-round reveals reset when the round advances.
-  lifelinesUsed: Record<Lifeline, boolean>
+  // three reset when the round advances, which doubles as the "already used
+  // this round" gate in `useLifeline`.
   revealName: boolean
   revealFlag: boolean
   hintCircle: HintCircle | null
@@ -929,8 +936,21 @@ export const destinationPoint = (
 export const CIRCLE_RADIUS_MI = 750
 export const CIRCLE_OFFSET_MI = 600
 
-// The three once-per-game capitals-mode lifelines.
+// The three capitals-mode lifelines. Usable every round (not once per game),
+// each at most once per round — gated directly on that round's reveal state
+// (revealName/revealFlag/hintCircle), which already resets every round — but
+// each use costs points off that round's score (see HINT_PENALTY).
 export type Lifeline = 'name' | 'flag' | 'circle'
+
+// Points deducted from a round's score for each lifeline used that round
+// (stacks if more than one is used). "name" reveals the target's country/US
+// state and "circle" brackets its location within ~750 mi — both narrow the
+// guess a lot, so they cost more than "flag", a smaller visual nudge.
+export const HINT_PENALTY: Record<Lifeline, number> = {
+  name: 2,
+  flag: 1,
+  circle: 2,
+}
 
 // A hint circle to draw on the globe (centre + radius in miles).
 export interface HintCircle {
@@ -938,6 +958,15 @@ export interface HintCircle {
   lon: number
   radiusMi: number
 }
+
+// Total point cost of every lifeline used so far *this round*. Read at
+// scoring time (before the round's reveal state resets for the next one).
+const hintPenaltyFor = (
+  s: Pick<GameState, 'revealName' | 'revealFlag' | 'hintCircle'>,
+): number =>
+  (s.revealName ? HINT_PENALTY.name : 0) +
+  (s.revealFlag ? HINT_PENALTY.flag : 0) +
+  (s.hintCircle !== null ? HINT_PENALTY.circle : 0)
 
 // The line drawn from the player's dropped pin to the true capital after a guess.
 export interface GuessLine {
@@ -1058,7 +1087,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   distances: [],
   capitalPoints: [],
   capitalBonus: [],
-  lifelinesUsed: { name: false, flag: false, circle: false },
+  capitalHintPenalty: [],
   revealName: false,
   revealFlag: false,
   hintCircle: null,
@@ -1134,10 +1163,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       distances: needDraw ? [] : s.distances,
       capitalPoints: needDraw ? [] : s.capitalPoints,
       capitalBonus: needDraw ? [] : s.capitalBonus,
-      // Lifelines are once-per-match; the per-round reveals reset each question.
-      lifelinesUsed: needDraw
-        ? { name: false, flag: false, circle: false }
-        : s.lifelinesUsed,
+      capitalHintPenalty: needDraw ? [] : s.capitalHintPenalty,
       revealName: questionChanged ? false : s.revealName,
       revealFlag: questionChanged ? false : s.revealFlag,
       hintCircle: questionChanged ? null : s.hintCircle,
@@ -1166,7 +1192,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       distances: [],
       capitalPoints: [],
       capitalBonus: [],
-      lifelinesUsed: { name: false, flag: false, circle: false },
+      capitalHintPenalty: [],
       revealName: false,
       revealFlag: false,
       hintCircle: null,
@@ -1217,6 +1243,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const distances = restore?.distances ?? []
     const capitalPoints = restore?.capitalPoints ?? []
     const capitalBonus = restore?.capitalBonus ?? []
+    const capitalHintPenalty = restore?.capitalHintPenalty ?? []
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
     const targetIndex = restore?.targetIndex ?? 0
@@ -1241,7 +1268,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       distances,
       capitalPoints,
       capitalBonus,
-      lifelinesUsed: { name: false, flag: false, circle: false },
+      capitalHintPenalty,
       revealName: false,
       revealFlag: false,
       hintCircle: null,
@@ -1272,7 +1299,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       distances: [],
       capitalPoints: [],
       capitalBonus: [],
-      lifelinesUsed: { name: false, flag: false, circle: false },
+      capitalHintPenalty: [],
       revealName: false,
       revealFlag: false,
       hintCircle: null,
@@ -1508,8 +1535,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       // The current (second) guess scores when it's at least as close as the first.
       const currentBest = distance <= first.distance
       const bestRegionMatch = currentBest ? regionMatch : first.regionMatch
+      const hintPenalty = hintPenaltyFor(s)
       const points =
-        pointsForDistance(best) + (bestRegionMatch ? REGION_BONUS_POINTS : 0)
+        pointsForDistance(best) +
+        (bestRegionMatch ? REGION_BONUS_POINTS : 0) -
+        hintPenalty
       const scoring = currentBest
         ? { lat, lon }
         : { lat: first.lat, lon: first.lon }
@@ -1519,6 +1549,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         roundGuess: null,
         capitalPoints: [...s.capitalPoints, points],
         capitalBonus: [...s.capitalBonus, bestRegionMatch],
+        capitalHintPenalty: [...s.capitalHintPenalty, hintPenalty],
         markers: [
           pinFor(first.lat, first.lon, first.distance, !currentBest),
           pinFor(lat, lon, distance, currentBest),
@@ -1572,8 +1603,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     // its pin is the one the answer line connects to and is drawn yellow.
     const currentBest = distance <= first.distance
     const bestRegionMatch = currentBest ? regionMatch : first.regionMatch
+    const hintPenalty = hintPenaltyFor(s)
     const points =
-      pointsForDistance(best) + (bestRegionMatch ? REGION_BONUS_POINTS : 0)
+      pointsForDistance(best) +
+      (bestRegionMatch ? REGION_BONUS_POINTS : 0) -
+      hintPenalty
     const scoring = currentBest
       ? { lat, lon }
       : { lat: first.lat, lon: first.lon }
@@ -1591,6 +1625,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const distances = [...s.distances, best]
     const capitalPoints = [...s.capitalPoints, points]
     const capitalBonus = [...s.capitalBonus, bestRegionMatch]
+    const capitalHintPenalty = [...s.capitalHintPenalty, hintPenalty]
     const targetIndex = s.targetIndex + 1
     const finished = distances.length >= CAPITAL_ROUNDS
     // Adaptive difficulty: for the golf-scored cities mode, "correct" means
@@ -1613,6 +1648,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       distances,
       capitalPoints,
       capitalBonus,
+      capitalHintPenalty,
       itemWeights,
       // Both guess dots (the closer one yellow) plus the reveal pin: the
       // country's flag with a two-line "City,\nCountry" label above it (flag from
@@ -1657,14 +1693,18 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!cap) return
     // The one pin the player did drop becomes the scoring guess (drawn yellow).
     const g = s.roundGuess
+    const hintPenalty = hintPenaltyFor(s)
     const points =
-      pointsForDistance(g.distance) + (g.regionMatch ? REGION_BONUS_POINTS : 0)
+      pointsForDistance(g.distance) +
+      (g.regionMatch ? REGION_BONUS_POINTS : 0) -
+      hintPenalty
     submitPartyGuess(s.targetIndex, g.distance <= CAPITAL_NEAR_MI, g.distance)
     set({
       partyAnswered: true,
       roundGuess: null,
       capitalPoints: [...s.capitalPoints, points],
       capitalBonus: [...s.capitalBonus, g.regionMatch],
+      capitalHintPenalty: [...s.capitalHintPenalty, hintPenalty],
       markers: [
         {
           lat: g.lat,
@@ -1696,14 +1736,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     const s = get()
     if (s.mode !== 'capitals' || s.phase !== 'playing' || s.target === null)
       return
-    if (s.lifelinesUsed[which]) return
-    const lifelinesUsed = { ...s.lifelinesUsed, [which]: true }
+    // Each hint is usable once per round (not once per game) — gate directly
+    // on that round's own reveal state, which already resets every round.
+    if (which === 'name' && s.revealName) return
+    if (which === 'flag' && s.revealFlag) return
+    if (which === 'circle' && s.hintCircle !== null) return
     // In a party match, broadcast the lifeline so every client toasts it.
     if (s.multiplayer) sendPartyLifeline(which)
     if (which === 'name') {
-      set({ lifelinesUsed, revealName: true })
+      set({ revealName: true })
     } else if (which === 'flag') {
-      set({ lifelinesUsed, revealFlag: true })
+      set({ revealFlag: true })
     } else {
       const cap = s.cities[s.target]
       if (!cap) return
@@ -1712,7 +1755,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       const bearing = Math.random() * 360
       const c = destinationPoint(cap.lat, cap.lon, bearing, CIRCLE_OFFSET_MI)
       set({
-        lifelinesUsed,
         hintCircle: { lat: c.lat, lon: c.lon, radiusMi: CIRCLE_RADIUS_MI },
       })
     }
@@ -1735,6 +1777,7 @@ useGameStore.subscribe((state, prev) => {
     state.distances === prev.distances &&
     state.capitalPoints === prev.capitalPoints &&
     state.capitalBonus === prev.capitalBonus &&
+    state.capitalHintPenalty === prev.capitalHintPenalty &&
     state.targetIndex === prev.targetIndex &&
     state.markers === prev.markers &&
     state.consecutiveWrong === prev.consecutiveWrong &&
@@ -1750,6 +1793,7 @@ useGameStore.subscribe((state, prev) => {
     distances: state.distances,
     capitalPoints: state.capitalPoints,
     capitalBonus: state.capitalBonus,
+    capitalHintPenalty: state.capitalHintPenalty,
     targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,

@@ -16,6 +16,7 @@ import {
   cityFlagUrl,
   usPopulationRank,
   MAX_CAPITAL_MILES,
+  HINT_PENALTY,
   type GameMode,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
@@ -723,9 +724,9 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   const countryPopulations = useGameStore((s) => s.countryPopulations)
   const cities = useGameStore((s) => s.cities)
   const commitPartyCapitalGuess = useGameStore((s) => s.commitPartyCapitalGuess)
-  const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
   const revealName = useGameStore((s) => s.revealName)
   const revealFlag = useGameStore((s) => s.revealFlag)
+  const hintCircle = useGameStore((s) => s.hintCircle)
   const useLifeline = useGameStore((s) => s.useLifeline)
   const markers = useGameStore((s) => s.markers)
 
@@ -875,7 +876,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
                   <Flag
                     code={countryCodes[cities[target].country]}
                     src={cityFlagUrl(cities[target], room?.mode ?? '')}
-                    height={16}
+                    height={40}
                   />
                 )}
                 {revealName && cities[target] && (
@@ -928,7 +929,8 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
         seed={room?.code ?? null}
       />
 
-      {/* Capitals lifelines (top-right), one-per-match, until you've answered. */}
+      {/* Capitals lifelines (top-right): usable every round at a points cost,
+          until you've answered. */}
       {isCapitals && !partyAnswered && (
         <div
           style={{
@@ -945,32 +947,29 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
         >
           {(
             [
-              { key: 'name', label: '🏳️ Show country name' },
-              { key: 'flag', label: '🚩 Show country flag' },
-              { key: 'circle', label: '⭕ Draw circle' },
+              { key: 'name', label: '🏳️ Show country name', used: revealName },
+              { key: 'flag', label: '🚩 Show country flag', used: revealFlag },
+              { key: 'circle', label: '⭕ Draw circle', used: hintCircle !== null },
             ] as const
-          ).map((l) => {
-            const used = lifelinesUsed[l.key]
-            return (
-              <button
-                key={l.key}
-                type="button"
-                disabled={used}
-                onClick={() => useLifeline(l.key)}
-                style={{
-                  ...panelButton,
-                  padding: '8px 14px',
-                  fontSize: 14,
-                  whiteSpace: 'nowrap',
-                  cursor: used ? 'not-allowed' : 'pointer',
-                  opacity: used ? 0.45 : 1,
-                  textDecoration: used ? 'line-through' : 'none',
-                }}
-              >
-                {l.label}
-              </button>
-            )
-          })}
+          ).map((l) => (
+            <button
+              key={l.key}
+              type="button"
+              disabled={l.used}
+              onClick={() => useLifeline(l.key)}
+              style={{
+                ...panelButton,
+                padding: '8px 14px',
+                fontSize: 14,
+                whiteSpace: 'nowrap',
+                cursor: l.used ? 'not-allowed' : 'pointer',
+                opacity: l.used ? 0.45 : 1,
+                textDecoration: l.used ? 'line-through' : 'none',
+              }}
+            >
+              {l.label} (-{HINT_PENALTY[l.key]})
+            </button>
+          ))}
         </div>
       )}
 

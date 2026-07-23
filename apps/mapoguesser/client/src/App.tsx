@@ -7,6 +7,7 @@ import {
   ROUNDS,
   CAPITAL_ROUNDS,
   MAX_CAPITAL_POINTS,
+  HINT_PENALTY,
   cityRevealName,
   cityFlagUrl,
   usPopulationRank,
@@ -180,11 +181,12 @@ export function App() {
   const distances = useGameStore((s) => s.distances)
   const capitalPoints = useGameStore((s) => s.capitalPoints)
   const capitalBonus = useGameStore((s) => s.capitalBonus)
+  const capitalHintPenalty = useGameStore((s) => s.capitalHintPenalty)
   const targets = useGameStore((s) => s.targets)
   const cities = useGameStore((s) => s.cities)
-  const lifelinesUsed = useGameStore((s) => s.lifelinesUsed)
   const revealName = useGameStore((s) => s.revealName)
   const revealFlag = useGameStore((s) => s.revealFlag)
+  const hintCircle = useGameStore((s) => s.hintCircle)
   const useLifeline = useGameStore((s) => s.useLifeline)
   const roundGuess = useGameStore((s) => s.roundGuess)
   // Cities modes need the populated-places dataset (joined to country polygons)
@@ -566,7 +568,11 @@ export function App() {
     if (!isCapitals || capitalPoints.length <= prevLen) return
     const i = capitalPoints.length - 1
     const bonus = capitalBonus[i] ?? false
-    const base = capitalPoints[i] - (bonus ? 1 : 0)
+    const penalty = capitalHintPenalty[i] ?? 0
+    // capitalPoints[i] already has the bonus added and the hint penalty
+    // subtracted — back both out to isolate the pure distance-tier points for
+    // its own toast.
+    const base = capitalPoints[i] - (bonus ? 1 : 0) + penalty
     const byState = resolveSubMode(subMode).cities?.usStateLines === true
     const spawn = (text: string) => {
       const id = nextPointToastId.current++
@@ -577,15 +583,20 @@ export function App() {
       )
     }
     spawn(`+${base} points`)
-    // Staggered in time (not stacked spatially) so the bonus toast doesn't
-    // appear on top of the still-visible base-points toast.
+    // Staggered in time (not stacked spatially) so later toasts don't appear
+    // on top of the still-visible ones before them.
+    let delay = 1000
     if (bonus) {
       window.setTimeout(
         () => spawn(`+1 ${byState ? 'state' : 'country'} bonus`),
-        1000,
+        delay,
       )
+      delay += 1000
     }
-  }, [isCapitals, capitalPoints, capitalBonus, subMode])
+    if (penalty > 0) {
+      window.setTimeout(() => spawn(`-${penalty} hint`), delay)
+    }
+  }, [isCapitals, capitalPoints, capitalBonus, capitalHintPenalty, subMode])
 
   // Prime Web Audio on the first user interaction so end-game sounds reliably
   // play on iOS/Safari (which keeps the audio context suspended until then).
@@ -807,8 +818,8 @@ export function App() {
         </div>
       )}
 
-      {/* Capitals lifelines (top-right): three once-per-game helpers, always
-          shown as buttons (no submenu). */}
+      {/* Capitals lifelines (top-right): usable every round at a points cost,
+          always shown as buttons (no submenu). */}
       {isCapitals && phase === 'playing' && !partyUI && (
         <div
           style={{
@@ -825,30 +836,27 @@ export function App() {
         >
           {(
             [
-              { key: 'name', label: '🏳️ Name' },
-              { key: 'flag', label: '🚩 Flag' },
-              { key: 'circle', label: '⭕ Circle' },
+              { key: 'name', label: '🏳️ Name', used: revealName },
+              { key: 'flag', label: '🚩 Flag', used: revealFlag },
+              { key: 'circle', label: '⭕ Circle', used: hintCircle !== null },
             ] as const
-          ).map((l) => {
-            const used = lifelinesUsed[l.key]
-            return (
-              <button
-                key={l.key}
-                type="button"
-                disabled={used}
-                onClick={() => useLifeline(l.key)}
-                style={{
-                  ...menuButtonStyle,
-                  whiteSpace: 'nowrap',
-                  cursor: used ? 'not-allowed' : 'pointer',
-                  opacity: used ? 0.45 : 1,
-                  textDecoration: used ? 'line-through' : 'none',
-                }}
-              >
-                {l.label}
-              </button>
-            )
-          })}
+          ).map((l) => (
+            <button
+              key={l.key}
+              type="button"
+              disabled={l.used}
+              onClick={() => useLifeline(l.key)}
+              style={{
+                ...menuButtonStyle,
+                whiteSpace: 'nowrap',
+                cursor: l.used ? 'not-allowed' : 'pointer',
+                opacity: l.used ? 0.45 : 1,
+                textDecoration: l.used ? 'line-through' : 'none',
+              }}
+            >
+              {l.label} (-{HINT_PENALTY[l.key]})
+            </button>
+          ))}
         </div>
       )}
 
@@ -943,7 +951,7 @@ export function App() {
                         <FlagIcon
                           code={countryCodes[cities[target].country]}
                           src={cityFlagUrl(cities[target], subMode)}
-                          height={18}
+                          height={45}
                         />
                       )}
                       {revealName && cities[target] && (
