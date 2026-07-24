@@ -706,6 +706,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   const hintCircle = useGameStore((s) => s.hintCircle)
   const useLifeline = useGameStore((s) => s.useLifeline)
   const markers = useGameStore((s) => s.markers)
+  const markerEpoch = useGameStore((s) => s.markerEpoch)
 
   // Local clock, synced to the server deadline. Drives the countdown and the
   // idempotent advance call when the deadline passes.
@@ -798,6 +799,17 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
           isCapital: lastCity.stateCapital || lastCity.capital,
         }
       : null
+
+  // Epoch snapshot of the map state as of the last capitals-mode reveal —
+  // lets the details card's dismiss handler (which can fire up to
+  // AUTO_DISMISS_MS later) tell whether the player has already started a new
+  // round in the meantime (bumping markerEpoch again via their next guess),
+  // so it never wipes pins that aren't the ones it was shown for.
+  const cityRevealEpochRef = useRef(0)
+  useEffect(() => {
+    if (lastCityInfo) cityRevealEpochRef.current = markerEpoch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastCityInfo?.key])
 
   return (
     <>
@@ -892,7 +904,11 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
         )}
       </div>
 
-      <CityFactsCard info={lastCityInfo} seed={room?.code ?? null} onDismiss={clearRoundMarkers} />
+      <CityFactsCard
+        info={lastCityInfo}
+        seed={room?.code ?? null}
+        onDismiss={() => clearRoundMarkers(cityRevealEpochRef.current)}
+      />
       <CountryFactsCard
         marker={lastResolvedCountryMarker}
         countryCodes={countryCodes}

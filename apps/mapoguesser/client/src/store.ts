@@ -648,9 +648,12 @@ interface GameState {
   // Wipes a just-finished capitals/cities round's map content (guess pins,
   // reveal marker, score-tier ring + line, hint circle) once its details card
   // has been dismissed, so the globe doesn't sit cluttered while idling
-  // before the next guess. Cities-mode markers are fully replaced each round
-  // anyway (see markerEpoch), so clearing early here is safe.
-  clearRoundMarkers: () => void
+  // before the next guess. `epoch` is the markerEpoch that was current when
+  // the dismissed card's round resolved — the caller snapshots it at reveal
+  // time, so if the player has already guessed again before the dismiss
+  // fires (bumping markerEpoch further), this becomes a no-op instead of
+  // wiping the new round's just-placed pins.
+  clearRoundMarkers: (epoch: number) => void
   finishGame: () => void
   // Routes a globe click through the game logic when in 'playing' phase.
   // lat/lon are the exact click location on the ellipsoid; they're recorded
@@ -1343,13 +1346,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }),
 
-  clearRoundMarkers: () =>
-    set((state) => ({
-      markers: [],
-      guessLine: null,
-      hintCircle: null,
-      markerEpoch: state.markerEpoch + 1,
-    })),
+  clearRoundMarkers: (epoch) =>
+    set((state) => {
+      // A newer round has already replaced the markers (its own guess bumped
+      // markerEpoch past the snapshot the caller took) — leave them alone.
+      if (state.markerEpoch !== epoch) return {}
+      return {
+        markers: [],
+        guessLine: null,
+        hintCircle: null,
+        markerEpoch: state.markerEpoch + 1,
+      }
+    }),
 
   // Reached only after the final correct guess's celebratory pan. The match is
   // perfect iff every round was correct.

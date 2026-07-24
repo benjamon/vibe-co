@@ -12,6 +12,7 @@ import {
   cityFlagUrl,
   usPopulationRank,
   subModeProgress,
+  capitalPointTierMilesFor,
   type AttemptResult,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
@@ -68,6 +69,15 @@ const CHECK_BG: Record<AttemptResult, string> = {
   correct: COLOR.green,
   wrong: COLOR.coral,
 }
+
+// Capitals-mode "+N points" / "+1 bonus" / "-N hint" pop-down toasts: a beat
+// before the first one appears, and how long each one lingers once shown.
+// POINT_TOAST_LIFE_MS must match the capPointToast animation duration below;
+// POINT_TOAST_FADE_MS is how much of that lifespan, at the very end, is spent
+// fading out (the toast stays fully visible for everything before that).
+const POINT_TOAST_START_DELAY_MS = 1000
+const POINT_TOAST_LIFE_MS = 3100
+const POINT_TOAST_FADE_MS = 500
 
 // flagcdn.com serves free, CORS-friendly PNGs at 4:3 (w40 = 40×30). Using
 // images instead of emoji because Windows browsers render regional-indicator
@@ -167,6 +177,7 @@ export function App() {
   const revealTarget = useGameStore((s) => s.revealTarget)
   const attempts = useGameStore((s) => s.attempts)
   const markers = useGameStore((s) => s.markers)
+  const markerEpoch = useGameStore((s) => s.markerEpoch)
   const countryCodes = useGameStore((s) => s.countryCodes)
   const countryPopulations = useGameStore((s) => s.countryPopulations)
   const countryIds = useGameStore((s) => s.countryIds)
@@ -476,17 +487,14 @@ export function App() {
 
   const correctCount = attempts.filter((a) => a === 'correct').length
   const isCapitals = mode === 'capitals'
-  // Capitals mode: the great-circle miss of the round just finished, shown
-  // alongside that round's point score.
+  // Capitals mode: the great-circle miss of the round just finished — still
+  // needed to gate the after-guess facts card below (the score itself is now
+  // only shown via the point pop-down toasts, not this HUD).
   const lastMiles = distances.length ? distances[distances.length - 1] : null
-  const lastPoints = capitalPoints.length
-    ? capitalPoints[capitalPoints.length - 1]
-    : null
   // Capitals mode point score: sum of the per-round points (distance tier +
   // region bonus) — the match score for city modes, driving the win-screen
   // tiers the same way correctCount does for classic mode.
   const totalCapitalPoints = capitalPoints.reduce((sum, p) => sum + p, 0)
-  const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
   // A hint penalty can push a round's net points negative — only prefix "+"
   // on positive values so it never reads "+-5pts".
   const signedPts = (n: number) => (n > 0 ? `+${n}` : `${n}`)
@@ -516,6 +524,17 @@ export function App() {
           isCapital: lastCity.stateCapital || lastCity.capital,
         }
       : null
+
+  // Epoch snapshot of the map state as of the last capitals-mode reveal —
+  // lets the details card's dismiss handler (which can fire up to
+  // AUTO_DISMISS_MS later) tell whether the player has already started a new
+  // round in the meantime (bumping markerEpoch again via their next guess),
+  // so it never wipes pins that aren't the ones it was shown for.
+  const cityRevealEpochRef = useRef(0)
+  useEffect(() => {
+    if (lastCityInfo) cityRevealEpochRef.current = markerEpoch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastCityInfo?.key])
 
   // When a match wraps up, play the score-appropriate jingle and fire the
   // matching visual celebration. Keyed on `phase` so it runs once per
@@ -583,28 +602,42 @@ export function App() {
     // subtracted — back both out to isolate the pure distance-tier points for
     // its own toast.
     const base = capitalPoints[i] - (bonus ? 1 : 0) + penalty
+    // Which distance bucket the scoring guess landed in, e.g. "<50 miles" —
+    // points p came from tier index (tiers.length - p) in capitalPointTierMilesFor
+    // (see store.ts's pointsForDistance); 0 points means it missed every
+    // tier, i.e. fell outside the worst (last) one.
+    const tiers = capitalPointTierMilesFor(subMode)
+    const tierLabel =
+      base > 0
+        ? `<${tiers[tiers.length - base]} miles`
+        : `>${tiers[tiers.length - 1]} miles`
     const byState = resolveSubMode(subMode).cities?.usStateLines === true
-    const spawn = (text: string) => {
-      const id = nextPointToastId.current++
-      setPointToasts((prev) => [...prev, { id, text }])
-      window.setTimeout(
-        () => setPointToasts((prev) => prev.filter((t) => t.id !== id)),
-        1300,
-      )
+    // `delayMs` schedules the toast's appearance; it then lingers on screen
+    // for POINT_TOAST_LIFE_MS (must match the capPointToast animation
+    // duration below) before being unmounted.
+    const spawn = (text: string, delayMs: number) => {
+      window.setTimeout(() => {
+        const id = nextPointToastId.current++
+        setPointToasts((prev) => [...prev, { id, text }])
+        window.setTimeout(
+          () => setPointToasts((prev) => prev.filter((t) => t.id !== id)),
+          POINT_TOAST_LIFE_MS,
+        )
+      }, delayMs)
     }
-    spawn(`+${base} points`)
-    // Staggered in time (not stacked spatially) so later toasts don't appear
-    // on top of the still-visible ones before them.
-    let delay = 1000
+    // A beat before the first toast appears, then staggered in time (not
+    // stacked spatially) so later toasts don't appear on top of the still-
+    // visible ones before them.
+    let delay = POINT_TOAST_START_DELAY_MS
+    let extra_delay = POINT_TOAST_LIFE_MS - POINT_TOAST_FADE_MS
+    spawn(`${tierLabel}: ${signedPts(base)} points`, delay)
+    delay += extra_delay
     if (bonus) {
-      window.setTimeout(
-        () => spawn(`+1 ${byState ? 'state' : 'country'} bonus`),
-        delay,
-      )
-      delay += 1000
+      spawn(`+1 ${byState ? 'state' : 'country'} bonus`, delay)
+      delay += extra_delay
     }
     if (penalty > 0) {
-      window.setTimeout(() => spawn(`-${penalty} hint`), delay)
+      spawn(`-${penalty} hint`, delay)
     }
   }, [isCapitals, capitalPoints, capitalBonus, capitalHintPenalty, subMode])
 
@@ -713,10 +746,17 @@ export function App() {
         <>
           <style>{`
             @keyframes capPointToast {
-              0%   { opacity: 0; transform: translateY(-6px); }
-              15%  { opacity: 1; transform: translateY(0); }
-              70%  { opacity: 1; transform: translateY(10px); }
-              100% { opacity: 0; transform: translateY(22px); }
+              /* Each step re-applies translateX(-50%) alongside the vertical
+                 drift — a keyframe's transform replaces the element's whole
+                 transform (it doesn't compose with the inline style), so
+                 without it the toast loses its horizontal centering the
+                 moment the animation starts. Stays fully opaque until the
+                 last POINT_TOAST_FADE_MS of POINT_TOAST_LIFE_MS, then fades. */
+              0%    { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+              15%   { opacity: 1; transform: translateX(-50%) translateY(0); }
+              ${(((POINT_TOAST_LIFE_MS - POINT_TOAST_FADE_MS) / POINT_TOAST_LIFE_MS) * 100).toFixed(2)}%
+                    { opacity: 1; transform: translateX(-50%) translateY(10px); }
+              100%  { opacity: 0; transform: translateX(-50%) translateY(22px); }
             }
           `}</style>
           <div
@@ -748,7 +788,7 @@ export function App() {
                   borderRadius: 999,
                   padding: '4px 16px',
                   boxShadow: hardShadow(3),
-                  animation: 'capPointToast 1.3s ease forwards',
+                  animation: `capPointToast ${POINT_TOAST_LIFE_MS}ms ease forwards`,
                 }}
               >
                 {t.text}
@@ -984,11 +1024,6 @@ export function App() {
                         <span>{cityRevealName(cities[target], subMode)}</span>
                       )}
                     </div>
-                  )}
-                  {lastMiles !== null && (
-                    <span style={{ fontSize: 15, fontWeight: 600 }}>
-                      Last: {milesFmt(lastMiles)}, ({signedPts(lastPoints ?? 0)})
-                    </span>
                   )}
                 </div>
               ) : phase === 'finished' ? (
@@ -1293,7 +1328,11 @@ export function App() {
             countryPopulations={countryPopulations}
             seed={seed}
           />
-          <CityFactsCard info={lastCityInfo} seed={seed} onDismiss={clearRoundMarkers} />
+          <CityFactsCard
+            info={lastCityInfo}
+            seed={seed}
+            onDismiss={() => clearRoundMarkers(cityRevealEpochRef.current)}
+          />
         </>
       )}
 
