@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { Confetti } from './Confetti'
 import { Fireworks } from './Fireworks'
-import { sfxEndJingle, installAudioUnlock } from './sfx'
+import { sfxEndJingle, installAudioUnlock, getVolume, setVolume } from './sfx'
 import {
   useGameStore,
   ROUNDS,
@@ -288,6 +288,11 @@ const menuButtonStyle = {
   ...buttonStyle(COLOR.cream),
   padding: '10px 15px',
   pointerEvents: 'auto',
+  // These buttons size to their own content (minWidth is a floor, not a
+  // cap), so on a narrow phone there's normally plenty of room for the label
+  // on one line — nowrap keeps it there instead of wrapping and leaving
+  // unused width on either side.
+  whiteSpace: 'nowrap',
 } as const
 
 export function App() {
@@ -345,9 +350,12 @@ export function App() {
   const countries = useGameStore((s) => s.countries)
   const states = useGameStore((s) => s.states)
   const itemWeights = useGameStore((s) => s.itemWeights)
+  const countryAreas = useGameStore((s) => s.countryAreas)
+  const hideTinyIslands = useGameStore((s) => s.hideTinyIslands)
+  const setHideTinyIslands = useGameStore((s) => s.setHideTinyIslands)
   const poolSource = useMemo(
-    () => ({ cities, states, countries, itemWeights }),
-    [cities, states, countries, itemWeights],
+    () => ({ cities, states, countries, itemWeights, countryAreas, hideTinyIslands }),
+    [cities, states, countries, itemWeights, countryAreas, hideTinyIslands],
   )
 
   // Which family the active/last-played sub-mode belongs to — drives flag
@@ -367,16 +375,21 @@ export function App() {
 
   const [menuOpen, setMenuOpen] = useState(false)
   // Which mode-family sub-menu the idle start screen is showing (null = the
-  // top-level Countries / Cities / … picker).
+  // top-level Countries / Cities / … picker). 'settings' is the Settings
+  // menu (volume, tiny-island toggle, View Stats), not a region picker, but
+  // shares the same "navigate in / ← Back" slot.
   const [submenu, setSubmenu] = useState<
-    null | 'countries' | 'cities' | 'states'
+    null | 'countries' | 'cities' | 'states' | 'settings'
   >(null)
+  // Settings menu: master SFX volume. Seeded once from sfx.ts's persisted
+  // value; setVolume() both applies it live and re-persists it.
+  const [volume, setVolumeState] = useState(() => getVolume())
   const [statsOpen, setStatsOpen] = useState(false)
-  const [statsSort, setStatsSort] = useState<'name' | 'sum'>('name')
+  const [statsSort, setStatsSort] = useState<'name' | 'sum'>('sum')
   // Sub-mode whose full item list (weights + mastery status) the "view list"
   // button is showing, or null when that panel is closed.
   const [weightsSub, setWeightsSub] = useState<SubMode | null>(null)
-  const [weightsSort, setWeightsSort] = useState<'name' | 'mastery'>('name')
+  const [weightsSort, setWeightsSort] = useState<'name' | 'mastery'>('mastery')
   // The item (country/state name, or city key) currently drilled into from
   // the item-list panel — null shows the list, non-null shows its detail card
   // (see ItemDetailCard) and hides the list, per weightsSub's browse flow.
@@ -1337,6 +1350,7 @@ export function App() {
                   ...buttonStyle(COLOR.yellow),
                   padding: '14px 22px',
                   fontSize: 22,
+                  whiteSpace: 'nowrap',
                   cursor: playAgainReady ? 'pointer' : 'wait',
                   ...(playAgainReady ? {} : disabledLook),
                 }}
@@ -1356,6 +1370,113 @@ export function App() {
             // The item-list panel (below) owns the screen while browsing —
             // hide the region picker underneath it entirely.
             null
+          ) : submenu === 'settings' ? (
+            // Settings menu: View Stats lives here now, plus the SFX volume
+            // slider and the "All" countries tiny-island toggle.
+            <>
+              <div
+                style={{
+                  ...pillStyle,
+                  fontSize: 18,
+                  padding: '8px 20px',
+                  marginBottom: 4,
+                }}
+              >
+                ⚙️ Settings
+              </div>
+              <button
+                type="button"
+                className="arcade-btn"
+                onClick={() => {
+                  setSubmenu(null)
+                  handleOpenStats()
+                }}
+                style={{ ...menuButtonStyle, minWidth: 220 }}
+              >
+                View Stats
+              </button>
+              <div
+                style={{
+                  ...menuButtonStyle,
+                  minWidth: 220,
+                  cursor: 'default',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'stretch',
+                  gap: 6,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: 14,
+                    fontWeight: 700,
+                  }}
+                >
+                  <span>🔊 Volume</span>
+                  <span>{Math.round(volume * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={volume}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    setVolumeState(v)
+                    setVolume(v)
+                  }}
+                  style={{ width: '100%', accentColor: COLOR.charcoal }}
+                />
+              </div>
+              <button
+                type="button"
+                className="arcade-btn"
+                role="checkbox"
+                aria-checked={hideTinyIslands}
+                onClick={() => setHideTinyIslands(!hideTinyIslands)}
+                style={{
+                  ...menuButtonStyle,
+                  minWidth: 220,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                }}
+              >
+                <span>🏝️ Hide tiny islands</span>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 22,
+                    height: 22,
+                    flex: 'none',
+                    borderRadius: 6,
+                    border: border(2),
+                    background: hideTinyIslands ? COLOR.forestGreen : COLOR.cream,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {hideTinyIslands && (
+                    <span style={{ color: COLOR.cream, fontWeight: 900, fontSize: 14, lineHeight: 1 }}>
+                      ✓
+                    </span>
+                  )}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="arcade-btn"
+                onClick={() => setSubmenu(null)}
+                style={menuButtonStyle}
+              >
+                ← Back
+              </button>
+            </>
           ) : submenu ? (
             // Region picker for the chosen family. Each entry is a data-driven
             // sub-mode (see gameModes.ts); picking one starts that match.
@@ -1536,17 +1657,17 @@ export function App() {
                   resetGame()
                   setFriendsOpen(true)
                 }}
-                style={{ ...buttonStyle(COLOR.yellow), minWidth: 220 }}
+                style={{ ...buttonStyle(COLOR.yellow), minWidth: 220, whiteSpace: 'nowrap' }}
               >
                 👥 Play With Friends
               </button>
               <button
                 type="button"
                 className="arcade-btn"
-                onClick={handleOpenStats}
+                onClick={() => setSubmenu('settings')}
                 style={{ ...menuButtonStyle, minWidth: 220 }}
               >
-                View Stats
+                ⚙️ Settings
               </button>
             </>
           )}

@@ -149,6 +149,9 @@ const PERFECT_STREAK_KEY = 'mapoguesser:perfectStreak'
 // entity (e.g. "France") shares one weight across every sub-mode it appears in
 // (All, Europe, Asia, …), while cities/states get their own namespace.
 const ITEM_WEIGHTS_KEY = 'mapoguesser:itemWeights'
+// Settings-menu preference: whether the "All" countries pool excludes tiny
+// island nations / city-states. See MIN_TARGET_AREA / poolForSubMode.
+const HIDE_TINY_ISLANDS_KEY = 'mapoguesser:hideTinyIslands'
 
 // One guess on a target. `id` is the country the player actually clicked.
 // `lat`/`lon` are the exact click position on the globe — optional only
@@ -452,6 +455,16 @@ const loadPerfectStreak = (): number => {
   }
 }
 
+const loadHideTinyIslands = (): boolean => {
+  if (typeof localStorage === 'undefined') return true
+  try {
+    const raw = localStorage.getItem(HIDE_TINY_ISLANDS_KEY)
+    return raw === null ? true : JSON.parse(raw) === true
+  } catch {
+    return true
+  }
+}
+
 // Given a finished match's per-guess log, return the next perfect-game streak:
 // +1 on a flawless run, reset to 0 otherwise. A perfect run is exactly ROUNDS
 // guesses that are all correct — any miss adds an extra 'wrong' entry, pushing
@@ -497,6 +510,18 @@ interface GameState {
   // countries; drives the Countries mode's after-guess facts card.
   countryPopulations: Record<string, number>
   setCountryPopulations: (pops: Record<string, number>) => void
+
+  // Name → total polygon area (deg²). Populated alongside countries; used
+  // only to let the "All" pool optionally exclude tiny island nations /
+  // city-states when hideTinyIslands is on — see poolForSubMode.
+  countryAreas: Record<string, number>
+  setCountryAreas: (areas: Record<string, number>) => void
+
+  // Settings-menu preference: when true, the "All" countries pool excludes
+  // countries below MIN_TARGET_AREA (Vatican, Monaco, Tuvalu, Nauru, …).
+  // Persisted; defaults to true (exclude them).
+  hideTinyIslands: boolean
+  setHideTinyIslands: (hide: boolean) => void
 
   // Name → stable integer ID. Grow-only across reloads so stats keyed by ID
   // stay valid as new countries appear in the dataset. WorldViewer calls
@@ -823,7 +848,16 @@ export const generateSeed = (): string =>
 // The slice of GameState the draw pool is built from — narrowed (rather than
 // the full GameState) so callers outside the store (App.tsx's mode menu) can
 // pass a small selected object instead of subscribing to the whole store.
-export type PoolSource = Pick<GameState, 'cities' | 'states' | 'countries'>
+export type PoolSource = Pick<
+  GameState,
+  'cities' | 'states' | 'countries' | 'countryAreas' | 'hideTinyIslands'
+>
+
+// Min total polygon area (deg²) for a country to count as a "tiny island" —
+// city-states and pinprick island nations that are effectively unclickable
+// on the globe (Vatican, Monaco, Tuvalu, Nauru, …). Only applied to the
+// "All" pool, and only when the hideTinyIslands setting is on.
+export const MIN_TARGET_AREA = 0.1
 
 // Build the draw pool for a sub-mode from the currently-loaded datasets. For
 // the country family the pool is country NAMEs; for the city family it's the
@@ -859,7 +893,12 @@ export const poolForSubMode = (s: PoolSource, sub: SubMode): string[] => {
     return [...keys].sort((a, b) => s.cities[b].pop - s.cities[a].pop || (a < b ? -1 : 1))
   }
   if (sub.family === 'states') return s.states
-  if (sub.pool === 'all') return s.countries
+  if (sub.pool === 'all') {
+    if (!s.hideTinyIslands) return s.countries
+    return s.countries.filter(
+      (n) => (s.countryAreas[n] ?? Infinity) >= MIN_TARGET_AREA,
+    )
+  }
   const playable = new Set(s.countries)
   return (sub.pool as string[]).filter((n) => playable.has(n))
 }
@@ -1067,6 +1106,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   countryPopulations: {},
   setCountryPopulations: (countryPopulations) => set({ countryPopulations }),
+
+  countryAreas: {},
+  setCountryAreas: (countryAreas) => set({ countryAreas }),
+
+  hideTinyIslands: loadHideTinyIslands(),
+  setHideTinyIslands: (hide) => set({ hideTinyIslands: hide }),
 
   countryIds: loadCountryIds(),
   registerCountries: (names) => {
@@ -1900,4 +1945,6 @@ useGameStore.subscribe((state, prev) => {
     writeJSON(PERFECT_STREAK_KEY, state.perfectStreak)
   if (state.itemWeights !== prev.itemWeights)
     writeJSON(ITEM_WEIGHTS_KEY, state.itemWeights)
+  if (state.hideTinyIslands !== prev.hideTinyIslands)
+    writeJSON(HIDE_TINY_ISLANDS_KEY, state.hideTinyIslands)
 })

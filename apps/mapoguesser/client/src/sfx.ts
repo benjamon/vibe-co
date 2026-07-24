@@ -9,6 +9,39 @@ type Ctx = { c: AudioContext; master: GainNode }
 let cached: Ctx | null = null
 let unavailable = false
 
+// Master volume (0–1), persisted so the Settings menu's slider survives
+// reloads. Applied to the master gain node immediately if the AudioContext
+// already exists; otherwise it's picked up as the initial gain the first
+// time ac() creates one.
+const VOLUME_KEY = 'mapoguesser:volume'
+const DEFAULT_VOLUME = 0.5
+let currentVolume = DEFAULT_VOLUME
+try {
+  if (typeof localStorage !== 'undefined') {
+    const raw = localStorage.getItem(VOLUME_KEY)
+    if (raw !== null) {
+      const v = Number(raw)
+      if (Number.isFinite(v) && v >= 0 && v <= 1) currentVolume = v
+    }
+  }
+} catch {
+  // localStorage unavailable (private browsing, etc.) — stick with the default.
+}
+
+export const getVolume = (): number => currentVolume
+
+export const setVolume = (v: number): void => {
+  currentVolume = Math.min(1, Math.max(0, v))
+  if (cached) cached.master.gain.value = currentVolume
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(VOLUME_KEY, String(currentVolume))
+    }
+  } catch {
+    // quota exceeded / private browsing — the in-memory value still applies.
+  }
+}
+
 const ac = (): Ctx | null => {
   if (unavailable) return null
   if (cached) {
@@ -26,7 +59,7 @@ const ac = (): Ctx | null => {
     }
     const c: AudioContext = new Ctor()
     const master = c.createGain()
-    master.gain.value = 0.5
+    master.gain.value = currentVolume
     master.connect(c.destination)
     cached = { c, master }
     if (c.state === 'suspended') void c.resume()

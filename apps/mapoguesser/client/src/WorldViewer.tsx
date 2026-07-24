@@ -631,11 +631,6 @@ export function WorldViewer() {
         // No places → flag placement falls back to label/centroid, and the
         // cities game modes stay unavailable (empty pool).
       })
-    // Min total polygon area (deg²) for a country to be eligible as a target.
-    // Excludes city-states and pinprick island nations that are effectively
-    // unclickable on the globe (Vatican, Monaco, Tuvalu, Nauru, …).
-    const MIN_TARGET_AREA = 0.1
-
     // Pulls an ISO 3166-1 alpha-2 code from a Natural Earth feature. Prefer
     // ISO_A2_EH ("Edward Hand" fix-up of disputed codes like Norway/France/
     // Kosovo); fall back to ISO_A2. The dataset uses "-99" as a sentinel for
@@ -722,14 +717,19 @@ export function WorldViewer() {
           publishCities()
           useGameStore.getState().setCountryCodes(codes)
           useGameStore.getState().setCountryPopulations(populations)
-          // Register every country (not just playable targets) so guess
-          // markers, which can land on any country, always resolve to an ID.
-          useGameStore.getState().registerCountries(list.map((c) => c.name))
-          useGameStore
-            .getState()
-            .setCountries(
-              list.filter((c) => c.area >= MIN_TARGET_AREA).map((c) => c.name),
-            )
+          // Every loaded country is a playable target — including tiny
+          // island nations and city-states (Vatican, Monaco, Tuvalu, Nauru,
+          // …). The Settings menu's "hide tiny islands" toggle can filter
+          // them back out of the "All" pool client-side via countryAreas
+          // (see poolForSubMode); region sub-modes are unaffected either way,
+          // since their pools are hand-curated name lists that never
+          // included these.
+          const names = list.map((c) => c.name)
+          const areas: Record<string, number> = {}
+          for (const c of list) areas[c.name] = c.area
+          useGameStore.getState().registerCountries(names)
+          useGameStore.getState().setCountries(names)
+          useGameStore.getState().setCountryAreas(areas)
         },
       )
       .catch(() => {
