@@ -110,7 +110,7 @@ const COUNTRY_SUBMODES: SubMode[] = [
       'Madagascar', 'Namibia', 'Botswana', 'South Africa', 'Rwanda', 'Burundi',
       'Lesotho', 'eSwatini', 'Benin', 'Togo', 'Guinea-Bissau', 'Eq. Guinea',
       'Djibouti', 'Eritrea', 'Liberia', 'West Sahara', 'Burkina Faso', 
-      'Central African Rep.', 'Tanzania',  'Gambia', 'Somalia', 'Somaliland',
+      'Central African Rep.',  'Gambia', 'Somalia', 'Somaliland',
       'Sierra Leone', 'Gabon', 'Congo', 'Cabo Verde', 'Comoros', 'Mauritius',
       'Malawi'
     ],
@@ -128,7 +128,9 @@ const COUNTRY_SUBMODES: SubMode[] = [
       'India', 'Nepal', 'Bangladesh', 'Sri Lanka', 'Myanmar', 'Thailand',
       'Cambodia', 'Vietnam', 'Malaysia', 'Indonesia', 'Philippines', 'China',
       'Mongolia', 'North Korea', 'South Korea', 'Japan', 'Australia',
-      'New Zealand', 'Papua New Guinea', 'Fiji', 'Samoa',
+      'New Zealand', 'Papua New Guinea', 'Fiji', 'Samoa', 'Turkmenistan',
+      'Kyrgystan', 'Tajikistan', 'Armenia', 'Qatar', 'Kuwait', 'Azerbaijan',
+      'Georgia', 'Siachen Glacier', 'Brunei', 'Timor-Leste', 'Fr. Polynesia',
     ],
   },
 ]
