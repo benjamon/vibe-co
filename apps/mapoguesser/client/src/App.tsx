@@ -115,24 +115,68 @@ const FlagIcon = ({
   )
 }
 
-// Three-line hamburger/list icon for the "view item list" button next to each
-// sub-mode in the region picker.
-const HamburgerIcon = () => (
-  <svg
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2.5"
-    strokeLinecap="round"
-    aria-hidden="true"
-  >
-    <line x1="4" y1="6" x2="20" y2="6" />
-    <line x1="4" y1="12" x2="20" y2="12" />
-    <line x1="4" y1="18" x2="20" y2="18" />
-  </svg>
-)
+// Donut/pie chart for the "view item list" button next to each sub-mode in
+// the region picker — a compact preview of that sub-mode's mastery mix
+// before opening the full list. Four buckets, matching the item list's own
+// status legend: forest green = mastered, yellow = still improving, grey =
+// exactly at the untouched default weight (new), dark grey = above it
+// (struggling).
+const DonutIcon = ({
+  mastered,
+  working,
+  at,
+  above,
+  // 35% larger than the original 18px default so the mastery mix reads more
+  // clearly, while the button itself stays 44px (see the width:44/padding:0
+  // button style at the call site) — the icon just fills more of its box.
+  size = 24,
+}: {
+  mastered: number
+  working: number
+  at: number
+  above: number
+  size?: number
+}) => {
+  const total = mastered + working + at + above
+  const R = 14
+  const STROKE = 8
+  const C = 2 * Math.PI * R
+  const segments =
+    total > 0
+      ? [
+          { value: mastered, color: COLOR.forestGreen },
+          { value: working, color: COLOR.yellow },
+          { value: at, color: COLOR.grey },
+          { value: above, color: COLOR.darkGrey },
+        ]
+      : [{ value: 1, color: COLOR.grey }]
+  let offset = 0
+  return (
+    <svg width={size} height={size} viewBox="0 0 36 36" aria-hidden="true">
+      <g transform="rotate(-90 18 18)">
+        {segments.map((seg, i) => {
+          if (seg.value <= 0) return null
+          const dash = (seg.value / (total > 0 ? total : 1)) * C
+          const circle = (
+            <circle
+              key={i}
+              cx={18}
+              cy={18}
+              r={R}
+              fill="none"
+              stroke={seg.color}
+              strokeWidth={STROKE}
+              strokeDasharray={`${dash} ${C - dash}`}
+              strokeDashoffset={-offset}
+            />
+          )
+          offset += dash
+          return circle
+        })}
+      </g>
+    </svg>
+  )
+}
 
 // Per-item mastery status, driven off the adaptive-difficulty weight (see
 // store.ts's nextWeightEntry): floored to the minimum = mastered/solved,
@@ -140,7 +184,7 @@ const HamburgerIcon = () => (
 // default = new, above default = struggling (missed more than it's hit).
 type ItemStatus = 'solved' | 'under' | 'exact' | 'over'
 const STATUS_COLOR: Record<ItemStatus, string> = {
-  solved: COLOR.green,
+  solved: COLOR.forestGreen,
   under: COLOR.yellow,
   exact: COLOR.grey,
   over: COLOR.coral,
@@ -1340,6 +1384,23 @@ export function App() {
                 const progress = subReady
                   ? subModeProgress(poolSource, sub)
                   : null
+                // Mastery mix for the donut icon below, matching the item
+                // list's own 4-status legend (solved/under/exact/over).
+                const donut = subReady
+                  ? poolForSubMode(poolSource, sub).reduce(
+                      (acc, item) => {
+                        const weight =
+                          poolSource.itemWeights[itemWeightKey(sub.family, item)]
+                            ?.weight ?? DEFAULT_ITEM_WEIGHT
+                        if (weight <= MIN_ITEM_WEIGHT) acc.mastered++
+                        else if (weight < DEFAULT_ITEM_WEIGHT) acc.working++
+                        else if (weight === DEFAULT_ITEM_WEIGHT) acc.at++
+                        else acc.above++
+                        return acc
+                      },
+                      { mastered: 0, working: 0, at: 0, above: 0 },
+                    )
+                  : null
                 return (
                   <div key={sub.id} style={{ display: 'flex', gap: 8 }}>
                     <button
@@ -1400,7 +1461,12 @@ export function App() {
                         ...(subReady ? {} : disabledLook),
                       }}
                     >
-                      <HamburgerIcon />
+                      <DonutIcon
+                        mastered={donut?.mastered ?? 0}
+                        working={donut?.working ?? 0}
+                        at={donut?.at ?? 0}
+                        above={donut?.above ?? 0}
+                      />
                     </button>
                   </div>
                 )
@@ -1565,7 +1631,10 @@ export function App() {
             ...panelStyle,
             position: 'absolute',
             top: 16,
-            bottom: 16,
+            // The list view stretches to fill the height (bottom: 16); the
+            // detail view is short and fixed, so it just sizes to its content
+            // instead of leaving a tall empty panel below it.
+            ...(typeof selectedStatsCountryId === 'number' ? {} : { bottom: 16 }),
             left: 16,
             width: 'min(340px, 92vw)',
             display: 'flex',
@@ -1601,9 +1670,6 @@ export function App() {
             // the flag/dots on the globe) and brings the list back.
             <div
               style={{
-                flex: 1,
-                minHeight: 0,
-                overflowY: 'auto',
                 background: COLOR.cream,
                 border: border(2),
                 borderRadius: 12,
@@ -1843,7 +1909,10 @@ export function App() {
             ...panelStyle,
             position: 'absolute',
             top: 16,
-            bottom: 16,
+            // The list view stretches to fill the height (bottom: 16); the
+            // detail view is short and fixed, so it just sizes to its content
+            // instead of leaving a tall empty panel below it.
+            ...(weightsItem ? {} : { bottom: 16 }),
             right: 16,
             width: 'min(340px, 92vw)',
             display: 'flex',
@@ -1929,9 +1998,6 @@ export function App() {
             // (and the flag on the globe) back.
             <div
               style={{
-                flex: 1,
-                minHeight: 0,
-                overflowY: 'auto',
                 background: COLOR.cream,
                 border: border(2),
                 borderRadius: 12,

@@ -11,7 +11,12 @@ export const COLOR = {
   yellow: '#FFC72C',
   coral: '#FF4D4D',
   green: '#3DDC84',
+  // Darker, more forest-toned green for "mastered" indicators (donut icon,
+  // item-list status dots) — reads clearly next to the yellow "improving"
+  // slice, where the brighter mint `green` above washes out the contrast.
+  forestGreen: '#1bb048',
   grey: '#A89C89',
+  darkGrey: '#6E6656',
   white: '#FFFFFF',
 } as const
 

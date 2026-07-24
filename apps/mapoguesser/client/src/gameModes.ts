@@ -77,12 +77,13 @@ const COUNTRY_SUBMODES: SubMode[] = [
       'United States of America', 'Canada', 'Mexico', 'Guatemala', 'Honduras',
       'Costa Rica', 'Panama', 'Cuba', 'Dominican Rep.', 'Haiti', 'Jamaica',
       'Colombia', 'Venezuela', 'Ecuador', 'Peru', 'Bolivia', 'Brazil',
-      'Paraguay', 'Uruguay', 'Argentina', 'Chile',
+      'Paraguay', 'Uruguay', 'Argentina', 'Chile', 'Guyana', 'Suriname',
+      'Trinidad and Tobago', 'Bahamas', 'Falkland Is.', 'S. Geo. and the Is.',
     ],
   },
   {
     id: 'europe',
-    label: 'Europe',
+    label: 'Europe+',
     icon: '🏰',
     blurb: 'Countries of Europe',
     family: 'countries',
@@ -90,7 +91,9 @@ const COUNTRY_SUBMODES: SubMode[] = [
       'Iceland', 'Ireland', 'United Kingdom', 'Portugal', 'Spain', 'France',
       'Belgium', 'Netherlands', 'Germany', 'Switzerland', 'Austria', 'Italy',
       'Denmark', 'Norway', 'Sweden', 'Finland', 'Poland', 'Czechia', 'Hungary',
-      'Romania', 'Ukraine', 'Greece', 'Croatia', 'Serbia',
+      'Romania', 'Ukraine', 'Greece', 'Croatia', 'Serbia', 'Albania', 'Slovenia',
+      'Slovakia', 'Kosovo', 'Bulgaria', 'Belarus', 'Moldova', 'Latvia', 'North Cyprus',
+      'Cyprus', 'Faeroe Is.', 'Luxembourg', 'Åland', 'Lithuania', 'Estonia'
     ],
   },
   {
@@ -104,7 +107,12 @@ const COUNTRY_SUBMODES: SubMode[] = [
       'Niger', 'Chad', 'Sudan', 'Senegal', 'Guinea', "Côte d'Ivoire", 'Ghana',
       'Nigeria', 'Cameroon', 'Ethiopia', 'Kenya', 'Tanzania', 'Uganda',
       'Dem. Rep. Congo', 'Angola', 'Zambia', 'Zimbabwe', 'Mozambique',
-      'Madagascar', 'Namibia', 'Botswana', 'South Africa',
+      'Madagascar', 'Namibia', 'Botswana', 'South Africa', 'Rwanda', 'Burundi',
+      'Lesotho', 'eSwatini', 'Benin', 'Togo', 'Guinea-Bissau', 'Eq. Guinea',
+      'Djibouti', 'Eritrea', 'Liberia', 'West Sahara', 'Burkina Faso', 
+      'Central African Rep.', 'Tanzania',  'Gambia', 'Somalia', 'Somaliland',
+      'Sierra Leone', 'Gabon', 'Congo', 'Cabo Verde', 'Comoros', 'Mauritius',
+      'Malawi'
     ],
   },
   {

@@ -127,6 +127,11 @@ const STATE_POLYGONS_URL =
 
 // Reveal animation duration when the player misses twice on the same target.
 const REVEAL_MS = 1200
+// Camera pan duration for the My Stats / item-list "browse" row clicks — 50%
+// quicker than the in-game reveal/ending pan, since the marker is already on
+// screen by the time this fly starts (see the browseTarget/selectedStatsCountryId
+// handling below) and a snappier pan reads better for a plain lookup.
+const BROWSE_FLY_MS = REVEAL_MS * 0.5
 
 // Multiplier on the (physically-calibrated) drag sensitivity. 1.0 tracks the
 // cursor ~1:1 at screen centre; raise for a faster spin, lower for finer
@@ -1163,11 +1168,14 @@ export function WorldViewer() {
 
     // Cinematic camera fly to a raw (lat, lon), used both by flyToCountry
     // (below) and by the item-list "browse" flow, which flies to a city's
-    // exact coordinates rather than a country/state centroid.
+    // exact coordinates rather than a country/state centroid. `durationMs`
+    // defaults to the reveal/ending pan's timing; the browse flows (My Stats
+    // + item-list row clicks) pass a shorter one — see BROWSE_FLY_MS.
     const flyToHeadingPitch = (
       targetLat: number,
       targetLon: number,
       onDone: () => void,
+      durationMs: number = REVEAL_MS,
     ) => {
       stopMomentum()
       if (revealRaf !== null) cancelAnimationFrame(revealRaf)
@@ -1194,7 +1202,7 @@ export function WorldViewer() {
 
       const startTime = performance.now()
       const step = (now: number) => {
-        const t = Math.min((now - startTime) / REVEAL_MS, 1)
+        const t = Math.min((now - startTime) / durationMs, 1)
         const eased =
           t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
         heading = CesiumMath.zeroToTwoPi(startHeading + dh * eased)
@@ -1215,6 +1223,7 @@ export function WorldViewer() {
       name: string,
       onDone: (e: CountryEntry) => void,
       entries: CountryEntry[] | null = countryEntries,
+      durationMs: number = REVEAL_MS,
     ) => {
       const entry = entries?.find((c) => c.name === name)
       if (!entry) {
@@ -1228,8 +1237,11 @@ export function WorldViewer() {
         })
         return
       }
-      flyToHeadingPitch(entry.centroid.lat, entry.centroid.lon, () =>
-        onDone(entry),
+      flyToHeadingPitch(
+        entry.centroid.lat,
+        entry.centroid.lon,
+        () => onDone(entry),
+        durationMs,
       )
     }
 
@@ -1811,38 +1823,40 @@ export function WorldViewer() {
         prevGlobalGuesses = state.globalGuesses
         if (selChanged && typeof newId === 'number') {
           const name = nameForId(newId)
-          // Wipe the previous selection's dots before the pan so they don't sit
-          // on a country we're flying away from. flyToCountry sets
-          // `cinematic = true`, locking input until the animation finishes. The
-          // dots are repainted on arrival (global) or on done (mine).
-          statsDots.entities.removeAll()
-          if (name) flyToCountry(name, () => renderStatsDots())
-          else renderStatsDots()
+          // Place the flag pin (+ any already-loaded dots) immediately, then
+          // pan the camera to it — the marker shouldn't wait on the flight.
+          // renderStatsDots() clears the previous selection's dots itself.
+          renderStatsDots()
+          if (name) flyToCountry(name, () => {}, countryEntries, BROWSE_FLY_MS)
         } else {
           renderStatsDots()
         }
       }
 
-      // Item-list "browse" flag: a new (or cleared) browseTarget re-flies the
-      // camera to the item and drops/removes its flag pin. Countries/states
-      // fly to their flagPointFor anchor; cities fly straight to their
+      // Item-list "browse" flag: a new (or cleared) browseTarget drops/removes
+      // its flag pin immediately, then flies the camera to it. Countries/
+      // states fly to their flagPointFor anchor; cities fly straight to their
       // coordinates (they have no polygon to anchor inside of).
       if (state.browseTarget !== prevBrowseTarget) {
         const bt = state.browseTarget
         prevBrowseTarget = bt
         browseFlag.entities.removeAll()
         if (bt) {
+          renderBrowseFlag()
           if (bt.family === 'cities') {
             const city = state.cities[bt.item]
             if (city) {
-              flyToHeadingPitch(city.lat, city.lon, () => renderBrowseFlag())
+              flyToHeadingPitch(city.lat, city.lon, () => {}, BROWSE_FLY_MS)
             }
           } else {
             const entries = bt.family === 'states' ? stateEntries : countryEntries
             const entry = entries?.find((c) => c.name === bt.item)
             if (entry) {
-              flyToHeadingPitch(entry.centroid.lat, entry.centroid.lon, () =>
-                renderBrowseFlag(),
+              flyToHeadingPitch(
+                entry.centroid.lat,
+                entry.centroid.lon,
+                () => {},
+                BROWSE_FLY_MS,
               )
             }
           }
