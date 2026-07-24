@@ -100,18 +100,24 @@ export const MAX_CAPITAL_MILES = 1000
 // A city guess within this many miles counts as a "near" hit (green sfx).
 const CAPITAL_NEAR_MI = 50
 
-// City-mode point tiers — closer guesses score more: within 15 mi → 5 pts, 50
-// mi → 4, 100 mi → 3, 300 mi → 2, 500 mi → 1, else 0. Exported so WorldViewer
-// can draw a matching concentric ring at each radius around the target when
-// the round's answer is revealed. Plus a bonus point when the scoring guess
-// lands in the target's actual country (or, in the US state-lines sub-mode,
-// its actual state). Max 6 pts/round × CAPITAL_ROUNDS = 30 — the perfect score
+// City-mode point tiers — closer guesses score more. Two scales: the US
+// regional mode covers a much smaller area than the rest of the world, so its
+// tiers are tighter; every other city sub-mode (World Capitals, Latin
+// America, Europe) shares the wider world scale. Exported so WorldViewer can
+// draw a matching concentric ring at each radius around the target when the
+// round's answer is revealed. Plus a bonus point when the scoring guess lands
+// in the target's actual country (or, in the US state-lines sub-mode, its
+// actual state). Max 6 pts/round × CAPITAL_ROUNDS = 30 — the perfect score
 // that triggers the win-screen fireworks.
-export const CAPITAL_POINT_TIER_MILES = [15, 50, 100, 300, 500]
-const pointsForDistance = (mi: number): number => {
-  for (let i = 0; i < CAPITAL_POINT_TIER_MILES.length; i++) {
-    if (mi <= CAPITAL_POINT_TIER_MILES[i])
-      return CAPITAL_POINT_TIER_MILES.length - i
+export const US_CAPITAL_POINT_TIER_MILES = [20, 50, 100, 200, 350]
+export const WORLD_CAPITAL_POINT_TIER_MILES = [30, 100, 300, 500, 1000]
+export const capitalPointTierMilesFor = (subMode: string): number[] =>
+  resolveSubMode(subMode).cities?.usStateLines === true
+    ? US_CAPITAL_POINT_TIER_MILES
+    : WORLD_CAPITAL_POINT_TIER_MILES
+const pointsForDistance = (mi: number, tiers: number[]): number => {
+  for (let i = 0; i < tiers.length; i++) {
+    if (mi <= tiers[i]) return tiers.length - i
   }
   return 0
 }
@@ -639,6 +645,12 @@ interface GameState {
   startGame: (seed?: string, sel?: string) => void
   resetGame: () => void
   clearReveal: () => void
+  // Wipes a just-finished capitals/cities round's map content (guess pins,
+  // reveal marker, score-tier ring + line, hint circle) once its details card
+  // has been dismissed, so the globe doesn't sit cluttered while idling
+  // before the next guess. Cities-mode markers are fully replaced each round
+  // anyway (see markerEpoch), so clearing early here is safe.
+  clearRoundMarkers: () => void
   finishGame: () => void
   // Routes a globe click through the game logic when in 'playing' phase.
   // lat/lon are the exact click location on the ellipsoid; they're recorded
@@ -1331,6 +1343,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }),
 
+  clearRoundMarkers: () =>
+    set((state) => ({
+      markers: [],
+      guessLine: null,
+      hintCircle: null,
+      markerEpoch: state.markerEpoch + 1,
+    })),
+
   // Reached only after the final correct guess's celebratory pan. The match is
   // perfect iff every round was correct.
   finishGame: () =>
@@ -1537,7 +1557,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const bestRegionMatch = currentBest ? regionMatch : first.regionMatch
       const hintPenalty = hintPenaltyFor(s)
       const points =
-        pointsForDistance(best) +
+        pointsForDistance(best, capitalPointTierMilesFor(s.subMode)) +
         (bestRegionMatch ? REGION_BONUS_POINTS : 0) -
         hintPenalty
       const scoring = currentBest
@@ -1605,7 +1625,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const bestRegionMatch = currentBest ? regionMatch : first.regionMatch
     const hintPenalty = hintPenaltyFor(s)
     const points =
-      pointsForDistance(best) +
+      pointsForDistance(best, capitalPointTierMilesFor(s.subMode)) +
       (bestRegionMatch ? REGION_BONUS_POINTS : 0) -
       hintPenalty
     const scoring = currentBest
@@ -1695,7 +1715,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const g = s.roundGuess
     const hintPenalty = hintPenaltyFor(s)
     const points =
-      pointsForDistance(g.distance) +
+      pointsForDistance(g.distance, capitalPointTierMilesFor(s.subMode)) +
       (g.regionMatch ? REGION_BONUS_POINTS : 0) -
       hintPenalty
     submitPartyGuess(s.targetIndex, g.distance <= CAPITAL_NEAR_MI, g.distance)

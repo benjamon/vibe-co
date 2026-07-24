@@ -25,7 +25,7 @@ import {
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import {
   useGameStore,
-  CAPITAL_POINT_TIER_MILES,
+  capitalPointTierMilesFor,
   type Marker,
   type CityInfo,
 } from './store'
@@ -47,7 +47,7 @@ const MAX_RANGE = 24_000_000
 const MAX_TILE_LEVEL = 12
 
 // Outline colour for each capitals-mode score-tier ring (see
-// CAPITAL_POINT_TIER_MILES), innermost (best) to outermost (worst) — the same
+// capitalPointTierMilesFor), innermost (best) to outermost (worst) — the same
 // green→red palette used elsewhere for correct/near/wrong feedback.
 const CAPITAL_TIER_RING_COLORS = [
   Color.fromCssColorString('#3fb84e'),
@@ -1612,7 +1612,7 @@ export function WorldViewer() {
           // Score reveal: one outlined ring per point tier, centred on the
           // target, so the player can see at a glance which band their guess
           // (and the tiers they missed/beat) fell into.
-          CAPITAL_POINT_TIER_MILES.forEach((mi, i) => {
+          capitalPointTierMilesFor(state.subMode).forEach((mi, i) => {
             overlays.entities.add({
               position: Cartesian3.fromDegrees(g.toLon, g.toLat),
               ellipse: {

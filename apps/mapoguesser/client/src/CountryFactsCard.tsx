@@ -1,6 +1,7 @@
 import type { Marker } from './store'
 import { countryPopulationRank } from './store'
 import { SlideUpCard, FactsGrid, FactRow } from './SlideUpCard'
+import { border } from './theme'
 
 const popFmt = (p: number) => p.toLocaleString()
 
@@ -39,8 +40,8 @@ export function CountryFactsCard({
                   width={42}
                   height={31}
                   style={{
-                    borderRadius: 3,
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+                    borderRadius: 5,
+                    border: border(2),
                     flex: 'none',
                     objectFit: 'cover',
                   }}
@@ -58,14 +59,14 @@ export function CountryFactsCard({
                     <>
                       {popFmt(pop)}
                       {rank !== null && (
-                        <span style={{ opacity: 0.6, fontWeight: 400 }}> (#{rank})</span>
+                        <span style={{ fontWeight: 500 }}> (#{rank})</span>
                       )}
                     </>
                   }
                 />
               </FactsGrid>
             ) : (
-              <div style={{ fontSize: 13, opacity: 0.6 }}>No facts available.</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>No facts available.</div>
             )}
           </>
         )

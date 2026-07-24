@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { COLOR, panelStyle } from './theme'
 
-const AUTO_DISMISS_MS = 8000
+const AUTO_DISMISS_MS = 12000
 const SWIPE_DISMISS_PX = 90
 
 // A card that slides up from the bottom of the screen, showing a snapshot of
@@ -14,11 +15,16 @@ export function SlideUpCard<T>({
   data,
   seed,
   renderContent,
+  onDismiss,
 }: {
   triggerKey: unknown
   data: T | null
   seed: string | null
   renderContent: (data: T) => React.ReactNode
+  // Fired when the card leaves the screen by auto-timeout or swipe (not on a
+  // hard reset from `seed` changing) — the caller's cue to tidy up whatever
+  // this card was showing, e.g. clearing the round's pins off the globe.
+  onDismiss?: () => void
 }) {
   const [shown, setShown] = useState<T | null>(null)
   const [visible, setVisible] = useState(false)
@@ -35,7 +41,10 @@ export function SlideUpCard<T>({
   }
   const armDismissTimer = () => {
     clearDismissTimer()
-    dismissTimerRef.current = window.setTimeout(() => setVisible(false), AUTO_DISMISS_MS)
+    dismissTimerRef.current = window.setTimeout(() => {
+      setVisible(false)
+      onDismiss?.()
+    }, AUTO_DISMISS_MS)
   }
 
   useEffect(() => {
@@ -75,6 +84,7 @@ export function SlideUpCard<T>({
     setDragging(false)
     if (Math.abs(dragX) > SWIPE_DISMISS_PX) {
       setVisible(false)
+      onDismiss?.()
     } else {
       setDragX(0)
       armDismissTimer()
@@ -91,6 +101,7 @@ export function SlideUpCard<T>({
         if (!visible) setShown(null)
       }}
       style={{
+        ...panelStyle,
         position: 'absolute',
         left: '50%',
         bottom: 64,
@@ -106,13 +117,7 @@ export function SlideUpCard<T>({
         pointerEvents: 'auto',
         userSelect: 'none',
         zIndex: 900,
-        background: 'rgba(10, 22, 40, 0.94)',
-        border: '1px solid rgba(255,255,255,0.22)',
-        borderRadius: 14,
-        boxShadow: '0 8px 28px rgba(0,0,0,0.55)',
         padding: '12px 16px 14px',
-        color: 'white',
-        fontFamily: 'system-ui, sans-serif',
       }}
     >
       <div
@@ -120,7 +125,8 @@ export function SlideUpCard<T>({
           width: 36,
           height: 4,
           borderRadius: 2,
-          background: 'rgba(255,255,255,0.25)',
+          background: COLOR.charcoal,
+          opacity: 0.3,
           margin: '0 auto 10px',
         }}
       />
@@ -153,7 +159,7 @@ export const FactRow = ({
   value: React.ReactNode
 }) => (
   <>
-    <span style={{ opacity: 0.65 }}>{label}</span>
-    <span style={{ fontWeight: 600, textAlign: 'right' }}>{value}</span>
+    <span style={{ fontWeight: 600 }}>{label}</span>
+    <span style={{ fontWeight: 700, textAlign: 'right' }}>{value}</span>
   </>
 )

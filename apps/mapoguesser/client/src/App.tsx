@@ -28,6 +28,7 @@ import {
 } from './stats'
 import { PartyOverlay, useParty } from './PartyUI'
 import { subModesFor, resolveSubMode, type SubMode } from './gameModes'
+import { COLOR, FONT, border, hardShadow, panelStyle, pillStyle, buttonStyle, disabledLook } from './theme'
 
 // Cesium (~4 MB) lives entirely inside WorldViewer, so lazy-loading it splits
 // that weight into its own chunk: the menu / start screen paints off the small
@@ -37,22 +38,35 @@ const WorldViewer = lazy(() =>
   import('./WorldViewer').then((m) => ({ default: m.WorldViewer })),
 )
 
+// Positioning-only base for the floating HUD readouts — each one gets its own
+// opaque cream "scoreboard pill" background (see hudPillStyle) rather than
+// bare text over the globe, so it stays legible over any map tile colour.
 const overlayBase = {
   position: 'absolute',
-  color: 'white',
-  fontFamily: 'system-ui, sans-serif',
+  color: COLOR.charcoal,
+  fontFamily: FONT,
   pointerEvents: 'none',
   userSelect: 'none',
-  textShadow: '0 1px 2px rgba(0,0,0,0.85)',
 } as const
 
-// Background colour encodes the round outcome (green = correct, red = wrong,
-// dark = pending). Replaces the older ✓/✗ glyph — the flag now lives in the
+// Opaque scoreboard-pill chrome for the HUD readouts (round status, guessed
+// line, footer badge) — passport-stamp look: cream fill, chunky dark border,
+// offset hard shadow.
+const hudPillStyle = {
+  background: COLOR.cream,
+  border: border(2),
+  borderRadius: 16,
+  boxShadow: hardShadow(4),
+  padding: '10px 18px',
+} as const
+
+// Background colour encodes the round outcome (green = correct, coral = wrong,
+// cream = pending). Replaces the older ✓/✗ glyph — the flag now lives in the
 // box, so the colour is the only thing carrying right/wrong.
 const CHECK_BG: Record<AttemptResult, string> = {
-  pending: 'rgba(0,0,0,0.45)',
-  correct: 'rgba(63, 184, 78, 0.9)',
-  wrong: 'rgba(230, 69, 69, 0.9)',
+  pending: COLOR.cream,
+  correct: COLOR.green,
+  wrong: COLOR.coral,
 }
 
 // flagcdn.com serves free, CORS-friendly PNGs at 4:3 (w40 = 40×30). Using
@@ -79,8 +93,8 @@ const FlagIcon = ({
       style={{
         display: 'inline-block',
         verticalAlign: 'middle',
-        borderRadius: 2,
-        boxShadow: '0 1px 2px rgba(0,0,0,0.55)',
+        borderRadius: 4,
+        border: border(1.5),
       }}
     />
   )
@@ -109,13 +123,13 @@ const Checkbox = ({
       aspectRatio: '40 / 32',
       boxSizing: 'border-box',
       flex: 'none',
-      border: '2px solid rgba(255,255,255,0.9)',
-      borderRadius: 6,
+      border: border(2),
+      borderRadius: 8,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       background: CHECK_BG[result],
-      boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+      boxShadow: hardShadow(2),
       overflow: 'hidden',
     }}
   >
@@ -133,25 +147,17 @@ const Checkbox = ({
 // otherwise. A zero result still gets shown but uses the muted style so the
 // strong colours stay reserved for clear signal.
 const scoreColour = (sum: number): string => {
-  if (sum > 0) return '#7eff8e'
-  if (sum < 0) return '#ff7e7e'
-  return 'rgba(255,255,255,0.85)'
+  if (sum > 0) return '#1E8E4A'
+  if (sum < 0) return COLOR.coral
+  return COLOR.charcoal
 }
 
 // Hamburger / menu / stats / start-screen all share this button look so the
-// HUD reads as one consistent UI rather than a pile of bespoke styles.
+// HUD reads as one consistent UI rather than a pile of bespoke styles. Pair
+// with className="arcade-btn" for the press-depress :active state.
 const menuButtonStyle = {
-  padding: '10px 22px',
-  fontSize: 16,
-  fontWeight: 600,
-  color: 'white',
-  background: 'rgba(20, 60, 110, 0.85)',
-  border: '2px solid rgba(255,255,255,0.85)',
-  borderRadius: 8,
-  cursor: 'pointer',
-  fontFamily: 'system-ui, sans-serif',
-  letterSpacing: 0.3,
-  boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+  ...buttonStyle(COLOR.cream),
+  padding: '10px 15px',
   pointerEvents: 'auto',
 } as const
 
@@ -189,6 +195,7 @@ export function App() {
   const hintCircle = useGameStore((s) => s.hintCircle)
   const useLifeline = useGameStore((s) => s.useLifeline)
   const roundGuess = useGameStore((s) => s.roundGuess)
+  const clearRoundMarkers = useGameStore((s) => s.clearRoundMarkers)
   // Cities modes need the populated-places dataset (joined to country polygons)
   // before they can draw a pool. Gate on having enough capitals for the World
   // Capitals mode; the regional modes have plenty once cities are loaded.
@@ -480,6 +487,9 @@ export function App() {
   // tiers the same way correctCount does for classic mode.
   const totalCapitalPoints = capitalPoints.reduce((sum, p) => sum + p, 0)
   const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
+  // A hint penalty can push a round's net points negative — only prefix "+"
+  // on positive values so it never reads "+-5pts".
+  const signedPts = (n: number) => (n > 0 ? `+${n}` : `${n}`)
 
   // The city the player just finished guessing. `target` has already advanced
   // to the next round's question by the time this reveal renders, so it's
@@ -729,11 +739,15 @@ export function App() {
                   top: 0,
                   transform: 'translateX(-50%)',
                   whiteSpace: 'nowrap',
-                  fontFamily: 'system-ui, sans-serif',
+                  fontFamily: FONT,
                   fontSize: 22,
                   fontWeight: 800,
-                  color: '#ffd93b',
-                  textShadow: '0 2px 6px rgba(0,0,0,0.9)',
+                  color: COLOR.charcoal,
+                  background: COLOR.yellow,
+                  border: border(2),
+                  borderRadius: 999,
+                  padding: '4px 16px',
+                  boxShadow: hardShadow(3),
                   animation: 'capPointToast 1.3s ease forwards',
                 }}
               >
@@ -762,6 +776,7 @@ export function App() {
         >
           <button
             type="button"
+            className="arcade-btn"
             aria-label={menuOpen ? 'Close menu' : 'Open menu'}
             onClick={() => setMenuOpen((v) => !v)}
             style={{
@@ -771,18 +786,17 @@ export function App() {
               alignItems: 'center',
               justifyContent: 'center',
               padding: 0,
-              fontSize: 26,
+              fontSize: 22,
               fontWeight: 700,
-              color: 'white',
-              // Clear, borderless toggle — just the glyph over the globe, with a
-              // shadow so it stays legible against bright map tiles.
-              background: 'transparent',
-              border: 'none',
-              borderRadius: 8,
+              color: COLOR.charcoal,
+              background: COLOR.cream,
+              border: border(2),
+              borderRadius: 12,
+              boxShadow: hardShadow(3),
               cursor: 'pointer',
-              fontFamily: 'system-ui, sans-serif',
-              textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+              fontFamily: FONT,
               lineHeight: 1,
+              pointerEvents: 'auto',
             }}
           >
             {menuOpen ? '×' : '☰'}
@@ -798,6 +812,7 @@ export function App() {
               {seed && (
                 <button
                   type="button"
+                  className="arcade-btn"
                   // Don't close the menu — keep it open so the "Copied!"
                   // confirmation is visible after a clipboard copy.
                   onClick={handleShareSeed}
@@ -808,8 +823,9 @@ export function App() {
               )}
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={handleMainMenu}
-                style={menuButtonStyle}
+                style={{ ...menuButtonStyle, background: COLOR.coral, color: COLOR.cream }}
               >
                 Abandon
               </button>
@@ -836,25 +852,35 @@ export function App() {
         >
           {(
             [
-              { key: 'name', label: '🏳️ Name', used: revealName },
-              { key: 'flag', label: '🚩 Flag', used: revealFlag },
-              { key: 'circle', label: '⭕ Circle', used: hintCircle !== null },
+              { key: 'name', icon: '🏳️', text: 'Name', used: revealName },
+              { key: 'flag', icon: '🚩', text: 'Flag', used: revealFlag },
+              { key: 'circle', icon: '⭕', text: 'Circle', used: hintCircle !== null },
             ] as const
           ).map((l) => (
             <button
               key={l.key}
               type="button"
+              className="arcade-btn"
               disabled={l.used}
               onClick={() => useLifeline(l.key)}
               style={{
                 ...menuButtonStyle,
-                whiteSpace: 'nowrap',
-                cursor: l.used ? 'not-allowed' : 'pointer',
-                opacity: l.used ? 0.45 : 1,
+                // Narrow + stacked so a long label wraps down the button
+                // instead of stretching it wide into the centre of the map.
+                width: 76,
+                boxSizing: 'border-box',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 2,
+                lineHeight: 1.15,
                 textDecoration: l.used ? 'line-through' : 'none',
+                ...(l.used ? disabledLook : {}),
               }}
             >
-              {l.label} (-{HINT_PENALTY[l.key]})
+              <span style={{ fontSize: 20 }}>{l.icon}</span>
+              <span>{l.text}</span>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>-{HINT_PENALTY[l.key]}</span>
             </button>
           ))}
         </div>
@@ -864,6 +890,7 @@ export function App() {
         <div
           style={{
             ...overlayBase,
+            ...hudPillStyle,
             // Sit below the 44px hamburger (top:16 → bottom:60) so the centred
             // flag boxes never overlap it on narrow screens.
             top: 64,
@@ -885,7 +912,7 @@ export function App() {
                 fontWeight: 600,
               }}
             >
-              <span style={{ opacity: 0.75 }}>
+              <span>
                 Round{' '}
                 {phase === 'playing'
                   ? Math.min(distances.length + 1, CAPITAL_ROUNDS)
@@ -932,7 +959,7 @@ export function App() {
                   <span style={{ fontSize: 30, fontWeight: 800 }}>
                     {cities[target]?.city ?? '…'}
                   </span>
-                  <span style={{ fontSize: 14, opacity: 0.8 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700 }}>
                     {roundGuess
                       ? 'Guess 2 of 2'
                       : 'Guess 1 of 2'}
@@ -944,7 +971,6 @@ export function App() {
                         alignItems: 'center',
                         gap: 8,
                         fontSize: 18,
-                        opacity: 0.9,
                       }}
                     >
                       {revealFlag && cities[target] && (
@@ -960,8 +986,8 @@ export function App() {
                     </div>
                   )}
                   {lastMiles !== null && (
-                    <span style={{ fontSize: 15, opacity: 0.75 }}>
-                      Last: {milesFmt(lastMiles)}, (+{lastPoints})
+                    <span style={{ fontSize: 15, fontWeight: 600 }}>
+                      Last: {milesFmt(lastMiles)}, ({signedPts(lastPoints ?? 0)})
                     </span>
                   )}
                 </div>
@@ -982,9 +1008,8 @@ export function App() {
                       style={{
                         fontSize: 19,
                         fontWeight: 800,
-                        color: '#ffd93b',
+                        color: COLOR.coral,
                         letterSpacing: 0.5,
-                        textShadow: '0 1px 4px rgba(0,0,0,0.9)',
                       }}
                     >
                       Perfect Score!
@@ -994,7 +1019,7 @@ export function App() {
               ) : null
             ) : revealTarget ? (
               <>
-                <span style={{ opacity: 0.7 }}>Was:</span>
+                <span style={{ fontWeight: 700 }}>Was:</span>
                 <FlagIcon
                   code={subFamily === 'states' ? undefined : countryCodes[revealTarget]}
                   src={subFamily === 'states' ? usStateFlagUrl(revealTarget) : undefined}
@@ -1004,7 +1029,7 @@ export function App() {
               </>
             ) : phase === 'playing' && target ? (
               <>
-                <span style={{ opacity: 0.7 }}>Find:</span>
+                <span style={{ fontWeight: 700 }}>Find:</span>
                 <FlagIcon
                   code={subFamily === 'states' ? undefined : countryCodes[target]}
                   src={subFamily === 'states' ? usStateFlagUrl(target) : undefined}
@@ -1029,9 +1054,8 @@ export function App() {
                     style={{
                       fontSize: 19,
                       fontWeight: 800,
-                      color: '#ffd93b',
+                      color: COLOR.coral,
                       letterSpacing: 0.5,
-                      textShadow: '0 1px 4px rgba(0,0,0,0.9)',
                     }}
                   >
                     {perfectStreak >= 2
@@ -1063,28 +1087,22 @@ export function App() {
             <>
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={() => startGame(undefined, subMode)}
                 disabled={!playAgainReady}
                 style={{
-                  padding: '14px 32px',
+                  ...buttonStyle(COLOR.yellow),
+                  padding: '14px 22px',
                   fontSize: 22,
-                  fontWeight: 700,
-                  color: 'white',
-                  background: playAgainReady
-                    ? 'rgba(20, 60, 110, 0.85)'
-                    : 'rgba(60, 60, 60, 0.7)',
-                  border: '2px solid rgba(255,255,255,0.85)',
-                  borderRadius: 10,
                   cursor: playAgainReady ? 'pointer' : 'wait',
-                  fontFamily: 'system-ui, sans-serif',
-                  letterSpacing: 0.4,
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
+                  ...(playAgainReady ? {} : disabledLook),
                 }}
               >
                 Play Again
               </button>
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={handleMainMenu}
                 style={menuButtonStyle}
               >
@@ -1097,11 +1115,9 @@ export function App() {
             <>
               <div
                 style={{
-                  fontSize: 20,
-                  fontWeight: 800,
-                  letterSpacing: 0.4,
-                  color: 'white',
-                  textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+                  ...pillStyle,
+                  fontSize: 18,
+                  padding: '8px 20px',
                   marginBottom: 4,
                 }}
               >
@@ -1125,17 +1141,18 @@ export function App() {
                   <button
                     key={sub.id}
                     type="button"
+                    className="arcade-btn"
                     onClick={() => handleStartSubMode(sub)}
                     disabled={!subReady}
                     style={{
                       ...menuButtonStyle,
                       minWidth: 220,
                       cursor: subReady ? 'pointer' : 'wait',
-                      opacity: subReady ? 1 : 0.6,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       gap: 10,
+                      ...(subReady ? {} : disabledLook),
                     }}
                   >
                     <span>
@@ -1146,8 +1163,11 @@ export function App() {
                         style={{
                           fontSize: 12,
                           fontWeight: 700,
-                          opacity: 0.75,
                           whiteSpace: 'nowrap',
+                          background: COLOR.yellow,
+                          border: border(1.5),
+                          borderRadius: 999,
+                          padding: '2px 8px',
                         }}
                       >
                         {progress.solved}/{progress.total}
@@ -1158,8 +1178,9 @@ export function App() {
               })}
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={() => setSubmenu(null)}
-                style={{ ...menuButtonStyle, opacity: 0.85 }}
+                style={menuButtonStyle}
               >
                 ← Back
               </button>
@@ -1169,56 +1190,61 @@ export function App() {
             <>
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={() => setSubmenu('countries')}
                 disabled={!ready}
                 style={{
                   ...menuButtonStyle,
                   minWidth: 220,
                   cursor: ready ? 'pointer' : 'wait',
-                  opacity: ready ? 1 : 0.6,
+                  ...(ready ? {} : disabledLook),
                 }}
               >
                 🌍 Countries
               </button>
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={() => setSubmenu('cities')}
                 disabled={!capitalsReady}
                 style={{
                   ...menuButtonStyle,
                   minWidth: 220,
                   cursor: capitalsReady ? 'pointer' : 'wait',
-                  opacity: capitalsReady ? 1 : 0.6,
+                  ...(capitalsReady ? {} : disabledLook),
                 }}
               >
                 🏙️ Cities
               </button>
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={() => setSubmenu('states')}
                 disabled={!statesReady}
                 style={{
                   ...menuButtonStyle,
                   minWidth: 220,
                   cursor: statesReady ? 'pointer' : 'wait',
-                  opacity: statesReady ? 1 : 0.6,
+                  ...(statesReady ? {} : disabledLook),
                 }}
               >
                 🗺️ States
               </button>
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={() => {
                   clearSeedFromUrl()
                   resetGame()
                   setFriendsOpen(true)
                 }}
-                style={{ ...menuButtonStyle, minWidth: 220 }}
+                style={{ ...buttonStyle(COLOR.yellow), minWidth: 220 }}
               >
                 👥 Play With Friends
               </button>
               <button
                 type="button"
+                className="arcade-btn"
                 onClick={handleOpenStats}
                 style={{ ...menuButtonStyle, minWidth: 220 }}
               >
@@ -1233,20 +1259,22 @@ export function App() {
         <div
           style={{
             ...overlayBase,
+            ...hudPillStyle,
+            padding: '6px 16px',
             // Lifted clear of the bottom footers (the "mapoguesser" label and
             // the map-tile attribution credits).
             bottom: 56,
             left: '50%',
             transform: 'translateX(-50%)',
-            fontSize: 20,
-            fontWeight: 500,
+            fontSize: 18,
+            fontWeight: 600,
             letterSpacing: 0.3,
             display: 'flex',
             alignItems: 'center',
             gap: 8,
           }}
         >
-          <span style={{ opacity: 0.75 }}>Guessed:</span>
+          <span style={{ fontWeight: 700 }}>Guessed:</span>
           <FlagIcon
             code={subFamily === 'states' ? undefined : countryCodes[guess]}
             src={subFamily === 'states' ? usStateFlagUrl(guess) : undefined}
@@ -1265,17 +1293,19 @@ export function App() {
             countryPopulations={countryPopulations}
             seed={seed}
           />
-          <CityFactsCard info={lastCityInfo} seed={seed} />
+          <CityFactsCard info={lastCityInfo} seed={seed} onDismiss={clearRoundMarkers} />
         </>
       )}
 
       <div
         style={{
           ...overlayBase,
-          bottom: 16,
-          right: 16,
-          fontSize: 22,
+          bottom: 10,
+          right: 10,
+          fontSize: 20,
           fontWeight: 700,
+          color: COLOR.yellow,
+          textShadow: `-1px -1px 0 ${COLOR.charcoal}, 1px -1px 0 ${COLOR.charcoal}, -1px 1px 0 ${COLOR.charcoal}, 1px 1px 0 ${COLOR.charcoal}`,
         }}
       >
         {mode === 'capitals' ? (
@@ -1296,22 +1326,17 @@ export function App() {
       {statsOpen && (
         <div
           style={{
+            ...panelStyle,
             position: 'absolute',
             top: 16,
             bottom: 16,
             left: 16,
             width: 'min(340px, 92vw)',
-            background: 'rgba(8, 18, 32, 0.92)',
-            border: '1px solid rgba(255,255,255,0.2)',
-            borderRadius: 12,
             display: 'flex',
             flexDirection: 'column',
             gap: 10,
-            padding: 12,
+            padding: 14,
             pointerEvents: 'auto',
-            fontFamily: 'system-ui, sans-serif',
-            color: 'white',
-            boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
           }}
         >
           <div
@@ -1322,13 +1347,14 @@ export function App() {
               gap: 8,
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
+            <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 0.3 }}>
               {statsMode === 'global' ? 'Global stats' : 'My stats'}
             </div>
             <button
               type="button"
+              className="arcade-btn"
               onClick={handleCloseStats}
-              style={{ ...menuButtonStyle, padding: '6px 14px', fontSize: 14 }}
+              style={{ ...buttonStyle(COLOR.coral, COLOR.cream), padding: '6px 10px', fontSize: 14 }}
             >
               Close
             </button>
@@ -1342,8 +1368,8 @@ export function App() {
                 display: 'flex',
                 flex: 1,
                 gap: 0,
-                border: '1px solid rgba(255,255,255,0.25)',
-                borderRadius: 8,
+                border: border(2),
+                borderRadius: 12,
                 overflow: 'hidden',
               }}
             >
@@ -1362,10 +1388,8 @@ export function App() {
                       fontSize: 14,
                       fontWeight: 700,
                       letterSpacing: 0.3,
-                      color: 'white',
-                      background: active
-                        ? 'rgba(60, 130, 220, 0.55)'
-                        : 'rgba(255,255,255,0.05)',
+                      color: COLOR.charcoal,
+                      background: active ? COLOR.yellow : COLOR.cream,
                       border: 'none',
                       cursor: 'pointer',
                       fontFamily: 'inherit',
@@ -1380,6 +1404,7 @@ export function App() {
                 sorting by net hit−miss sum. Tapping flips between them. */}
             <button
               type="button"
+              className="arcade-btn"
               aria-label={
                 statsSort === 'name'
                   ? 'Sorted by name — tap to sort by hit − miss'
@@ -1392,18 +1417,13 @@ export function App() {
                 setStatsSort((s) => (s === 'name' ? 'sum' : 'name'))
               }
               style={{
+                ...buttonStyle(COLOR.cream),
                 width: 44,
+                padding: 0,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: 'white',
-                background: 'rgba(255,255,255,0.05)',
-                border: '1px solid rgba(255,255,255,0.25)',
-                borderRadius: 8,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
                 fontSize: 14,
-                fontWeight: 800,
                 letterSpacing: 0.5,
               }}
             >
@@ -1431,9 +1451,9 @@ export function App() {
               flex: 1,
               minHeight: 0,
               overflowY: 'auto',
-              background: 'rgba(0,0,0,0.35)',
-              border: '1px solid rgba(255,255,255,0.15)',
-              borderRadius: 8,
+              background: COLOR.cream,
+              border: border(2),
+              borderRadius: 12,
             }}
           >
             {statsRows.length === 0 ? (
@@ -1441,7 +1461,7 @@ export function App() {
                 style={{
                   padding: 24,
                   textAlign: 'center',
-                  opacity: 0.75,
+                  fontWeight: 600,
                   fontSize: 14,
                 }}
               >
@@ -1465,12 +1485,10 @@ export function App() {
                         gap: 10,
                         padding: '8px 12px',
                         width: '100%',
-                        background: active
-                          ? 'rgba(60, 130, 220, 0.35)'
-                          : 'rgba(255,255,255,0.05)',
+                        background: active ? COLOR.yellow : 'transparent',
                         border: 'none',
-                        borderBottom: '1px solid rgba(255,255,255,0.18)',
-                        color: 'white',
+                        borderBottom: border(2),
+                        color: COLOR.charcoal,
                         cursor: 'pointer',
                         textAlign: 'left',
                         fontFamily: 'inherit',
@@ -1491,18 +1509,18 @@ export function App() {
                           fontVariantNumeric: 'tabular-nums',
                           fontWeight: 700,
                           fontSize: 15,
-                          color: '#3fb84e',
+                          color: '#1E8E4A',
                         }}
                       >
                         {statsTotals.correct}
                       </span>
-                      <span style={{ opacity: 0.4 }}>/</span>
+                      <span style={{ fontWeight: 700 }}>/</span>
                       <span
                         style={{
                           fontVariantNumeric: 'tabular-nums',
                           fontWeight: 700,
                           fontSize: 15,
-                          color: '#e64545',
+                          color: COLOR.coral,
                         }}
                       >
                         {statsTotals.wrong}
@@ -1525,12 +1543,10 @@ export function App() {
                       gap: 10,
                       padding: '8px 12px',
                       width: '100%',
-                      background: active
-                        ? 'rgba(60, 130, 220, 0.35)'
-                        : 'transparent',
+                      background: active ? 'rgba(255,199,44,0.4)' : 'transparent',
                       border: 'none',
-                      borderBottom: '1px solid rgba(255,255,255,0.08)',
-                      color: 'white',
+                      borderBottom: '1px solid rgba(30,32,34,0.15)',
+                      color: COLOR.charcoal,
                       cursor: 'pointer',
                       textAlign: 'left',
                       fontFamily: 'inherit',

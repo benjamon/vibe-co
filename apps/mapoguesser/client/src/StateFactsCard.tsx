@@ -2,6 +2,7 @@ import type { Marker } from './store'
 import { usStateFlagUrl } from './usStateFlags'
 import { US_STATE_FACTS, usStatePopulationRank } from './usStateFacts'
 import { SlideUpCard, FactsGrid, FactRow } from './SlideUpCard'
+import { border } from './theme'
 
 // The US States mode's after-guess info card: flag + population/capital/
 // statehood facts for whichever state a round just resolved on (a correct
@@ -32,8 +33,8 @@ export function StateFactsCard({
                 width={42}
                 height={31}
                 style={{
-                  borderRadius: 3,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+                  borderRadius: 5,
+                  border: border(2),
                   flex: 'none',
                   objectFit: 'cover',
                 }}
@@ -50,7 +51,7 @@ export function StateFactsCard({
                     <>
                       {facts.population.toLocaleString()}
                       {rank !== null && (
-                        <span style={{ opacity: 0.6, fontWeight: 400 }}> (#{rank})</span>
+                        <span style={{ fontWeight: 500 }}> (#{rank})</span>
                       )}
                     </>
                   }
@@ -59,7 +60,7 @@ export function StateFactsCard({
                 <FactRow label="Statehood" value={facts.admitted} />
               </FactsGrid>
             ) : (
-              <div style={{ fontSize: 13, opacity: 0.6 }}>No facts available.</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>No facts available.</div>
             )}
           </>
         )

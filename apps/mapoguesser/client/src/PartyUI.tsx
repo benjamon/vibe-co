@@ -23,6 +23,7 @@ import { US_CITY_FOUNDED } from './usCityFacts'
 import { CityFactsCard, type CityFactsData } from './CityFactsCard'
 import { CountryFactsCard } from './CountryFactsCard'
 import { resolveSubMode, behavioralModeOf } from './gameModes'
+import { COLOR, FONT, border, hardShadow, panelStyle, pillStyle, buttonStyle, inputStyle, disabledLook } from './theme'
 import {
   subscribeParty,
   subscribePartyGuesses,
@@ -76,34 +77,8 @@ const milesFmt = (m: number) => `${Math.round(m).toLocaleString()} mi`
 
 // ---------- shared styles ----------
 
-const panelButton = {
-  padding: '12px 20px',
-  fontSize: 16,
-  fontWeight: 700,
-  color: 'white',
-  background: 'rgba(20, 60, 110, 0.9)',
-  border: '2px solid rgba(255,255,255,0.85)',
-  borderRadius: 10,
-  cursor: 'pointer',
-  fontFamily: 'system-ui, sans-serif',
-  letterSpacing: 0.3,
-  boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-} as const
-
-const disabledLook = { opacity: 0.45, cursor: 'not-allowed' } as const
-
-const inputStyle = {
-  padding: '10px 12px',
-  fontSize: 16,
-  borderRadius: 8,
-  border: '2px solid rgba(255,255,255,0.55)',
-  background: 'rgba(0,0,0,0.35)',
-  color: 'white',
-  fontFamily: 'system-ui, sans-serif',
-  outline: 'none',
-  width: '100%',
-  boxSizing: 'border-box',
-} as const
+// Pair with className="arcade-btn" for the press-depress :active state.
+const panelButton = buttonStyle(COLOR.cream)
 
 const Flag = ({
   code,
@@ -122,7 +97,7 @@ const Flag = ({
       alt=""
       width={Math.round((height * 4) / 3)}
       height={height}
-      style={{ borderRadius: 2, verticalAlign: 'middle', boxShadow: '0 1px 2px rgba(0,0,0,0.55)' }}
+      style={{ borderRadius: 4, verticalAlign: 'middle', border: border(1.5) }}
     />
   ) : null
 }
@@ -193,12 +168,13 @@ function ToastFeed({ myUserId }: { myUserId: string }) {
           style={{
             padding: '8px 16px',
             borderRadius: 999,
-            fontFamily: 'system-ui, sans-serif',
+            fontFamily: FONT,
             fontWeight: 700,
             fontSize: 15,
-            color: 'white',
-            background: t.correct ? 'rgba(63, 184, 78, 0.95)' : 'rgba(230, 69, 69, 0.95)',
-            boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+            color: t.correct ? COLOR.charcoal : COLOR.cream,
+            background: t.correct ? COLOR.green : COLOR.coral,
+            border: border(2),
+            boxShadow: hardShadow(3),
             whiteSpace: 'nowrap',
             animation: 'mpToastLife 3s ease forwards',
           }}
@@ -256,9 +232,10 @@ function Scoreboard({
               alignItems: 'center',
               gap: 10,
               padding: isTop ? '10px 14px' : '8px 12px',
-              borderRadius: 10,
-              background: isTop ? 'rgba(255, 200, 40, 0.22)' : 'rgba(255,255,255,0.06)',
-              border: isTop ? '2px solid #ffd23b' : '1px solid rgba(255,255,255,0.12)',
+              borderRadius: 12,
+              background: isTop ? COLOR.yellow : COLOR.cream,
+              border: border(2),
+              boxShadow: isTop ? hardShadow(3) : undefined,
               animation: isTop ? 'mpWinnerPulse 1.4s ease-in-out infinite' : undefined,
             }}
           >
@@ -270,22 +247,22 @@ function Scoreboard({
                 flex: 1,
                 fontSize: isTop ? 18 : 15,
                 fontWeight: isTop ? 800 : 600,
-                color: 'white',
+                color: COLOR.charcoal,
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
               }}
             >
               {p.name}
-              {p.userId === myUserId && <span style={{ opacity: 0.6 }}> (you)</span>}
-              {p.userId === hostId && <span style={{ opacity: 0.6 }}> · host</span>}
+              {p.userId === myUserId && <span style={{ fontWeight: 600 }}> (you)</span>}
+              {p.userId === hostId && <span style={{ fontWeight: 600 }}> · host</span>}
             </span>
             <span
               style={{
                 fontVariantNumeric: 'tabular-nums',
                 fontWeight: 800,
                 fontSize: isTop ? 20 : 16,
-                color: isTop ? '#ffd23b' : '#7eff8e',
+                color: isTop ? COLOR.charcoal : '#1E8E4A',
               }}
             >
               {isCapitals ? milesFmt(snap.capitalTotals[p.userId] ?? 0) : p.score}
@@ -317,18 +294,20 @@ function FriendsPanel({
       <PanelShell title="Play With Friends">
         <button
           type="button"
+          className="arcade-btn"
           onClick={() => setStep('create')}
-          style={{ ...panelButton, width: '100%', background: 'rgba(40, 120, 70, 0.9)' }}
+          style={{ ...buttonStyle(COLOR.green), width: '100%' }}
         >
           Create Party
         </button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', opacity: 0.6, fontSize: 13 }}>
-          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.2)' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', fontSize: 13, fontWeight: 700 }}>
+          <div style={{ flex: 1, height: 2, background: COLOR.charcoal }} />
           or
-          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.2)' }} />
+          <div style={{ flex: 1, height: 2, background: COLOR.charcoal }} />
         </div>
         <button
           type="button"
+          className="arcade-btn"
           onClick={() => setStep('join')}
           style={{ ...panelButton, width: '100%' }}
         >
@@ -336,8 +315,9 @@ function FriendsPanel({
         </button>
         <button
           type="button"
+          className="arcade-btn"
           onClick={onMainMenu}
-          style={{ ...panelButton, width: '100%', background: 'rgba(255,255,255,0.08)' }}
+          style={{ ...panelButton, width: '100%' }}
         >
           ← Main Menu
         </button>
@@ -428,7 +408,7 @@ function NameEntry({
       title={mode === 'create' ? 'Create Party' : 'Join Party'}
       onClose={onClose}
     >
-      <label style={{ fontSize: 13, opacity: 0.8, alignSelf: 'flex-start' }}>
+      <label style={{ fontSize: 13, fontWeight: 700, alignSelf: 'flex-start' }}>
         Your name
       </label>
       <input
@@ -442,7 +422,7 @@ function NameEntry({
 
       {mode === 'join' && (
         <>
-          <label style={{ fontSize: 13, opacity: 0.8, alignSelf: 'flex-start' }}>
+          <label style={{ fontSize: 13, fontWeight: 700, alignSelf: 'flex-start' }}>
             Room code
           </label>
           <input
@@ -465,12 +445,12 @@ function NameEntry({
 
       <button
         type="button"
+        className="arcade-btn"
         onClick={submit}
         disabled={actionDisabled}
         style={{
-          ...panelButton,
+          ...buttonStyle(mode === 'create' ? COLOR.green : COLOR.yellow),
           width: '100%',
-          background: mode === 'create' ? 'rgba(40, 120, 70, 0.9)' : 'rgba(20, 60, 110, 0.9)',
           ...(actionDisabled ? disabledLook : {}),
         }}
       >
@@ -489,14 +469,15 @@ function NameEntry({
 
       <button
         type="button"
+        className="arcade-btn"
         onClick={onBack}
         disabled={busy}
-        style={{ ...panelButton, width: '100%', background: 'rgba(255,255,255,0.08)', ...(busy ? disabledLook : {}) }}
+        style={{ ...panelButton, width: '100%', ...(busy ? disabledLook : {}) }}
       >
         Back
       </button>
 
-      {error && <div style={{ color: '#ff9c9c', fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ color: COLOR.coral, fontWeight: 700, fontSize: 13 }}>{error}</div>}
     </PanelShell>
   )
 }
@@ -527,11 +508,9 @@ function LobbyRoster({
             alignItems: 'center',
             gap: 10,
             padding: '8px 12px',
-            borderRadius: 10,
-            background: p.ready ? 'rgba(63, 184, 78, 0.18)' : 'rgba(255,255,255,0.06)',
-            border: p.ready
-              ? '1px solid rgba(63, 184, 78, 0.6)'
-              : '1px solid rgba(255,255,255,0.12)',
+            borderRadius: 12,
+            background: p.ready ? COLOR.green : COLOR.cream,
+            border: border(2),
           }}
         >
           <span
@@ -539,21 +518,21 @@ function LobbyRoster({
               flex: 1,
               fontSize: 15,
               fontWeight: 600,
-              color: 'white',
+              color: COLOR.charcoal,
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}
           >
             {p.name}
-            {p.userId === myUserId && <span style={{ opacity: 0.6 }}> (you)</span>}
-            {p.userId === hostId && <span style={{ opacity: 0.6 }}> · host</span>}
+            {p.userId === myUserId && <span style={{ fontWeight: 600 }}> (you)</span>}
+            {p.userId === hostId && <span style={{ fontWeight: 600 }}> · host</span>}
           </span>
           <span
             style={{
               fontSize: 13,
               fontWeight: 700,
-              color: p.ready ? '#7eff8e' : 'rgba(255,255,255,0.65)',
+              color: COLOR.charcoal,
             }}
           >
             {p.ready ? '✓ Ready' : 'Waiting…'}
@@ -580,7 +559,7 @@ function VoteCards({ snap }: { snap: PartySnapshot }) {
       <div
         style={{
           fontSize: 13,
-          opacity: 0.8,
+          fontWeight: 700,
           textAlign: 'center',
           marginBottom: 8,
           letterSpacing: 0.3,
@@ -604,23 +583,19 @@ function VoteCards({ snap }: { snap: PartySnapshot }) {
                 flexDirection: 'column',
                 alignItems: 'center',
                 gap: 4,
-                padding: '12px 8px',
+                padding: '12px 6px',
                 borderRadius: 12,
                 cursor: 'pointer',
-                fontFamily: 'system-ui, sans-serif',
-                color: 'white',
-                background: selected
-                  ? 'rgba(40, 120, 70, 0.9)'
-                  : 'rgba(255,255,255,0.06)',
-                border: selected
-                  ? '2px solid #7eff8e'
-                  : '2px solid rgba(255,255,255,0.18)',
-                boxShadow: selected ? '0 0 12px rgba(126,255,142,0.35)' : 'none',
+                fontFamily: FONT,
+                color: COLOR.charcoal,
+                background: selected ? COLOR.green : COLOR.cream,
+                border: border(2),
+                boxShadow: selected ? hardShadow(3) : 'none',
               }}
             >
               <span style={{ fontSize: 30, lineHeight: 1 }}>{meta.icon}</span>
               <span style={{ fontSize: 16, fontWeight: 800 }}>{meta.label}</span>
-              <span style={{ fontSize: 11, opacity: 0.8, textAlign: 'center', minHeight: 28 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, textAlign: 'center', minHeight: 28 }}>
                 {meta.blurb}
               </span>
               <span
@@ -630,7 +605,8 @@ function VoteCards({ snap }: { snap: PartySnapshot }) {
                   marginTop: 2,
                   padding: '2px 10px',
                   borderRadius: 999,
-                  background: 'rgba(0,0,0,0.35)',
+                  background: COLOR.yellow,
+                  border: border(1.5),
                 }}
               >
                 {votes} vote{votes === 1 ? '' : 's'}
@@ -654,19 +630,18 @@ function Lobby({ snap }: { snap: PartySnapshot }) {
       {/* Room code pinned to the top of the screen. */}
       <div
         style={{
+          ...pillStyle,
           position: 'absolute',
           top: 16,
           left: '50%',
           transform: 'translateX(-50%)',
-          textAlign: 'center',
-          fontFamily: 'system-ui, sans-serif',
-          color: 'white',
-          textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+          flexDirection: 'column',
+          padding: '8px 24px',
           pointerEvents: 'none',
           zIndex: 20,
         }}
       >
-        <div style={{ fontSize: 13, letterSpacing: 1, opacity: 0.8 }}>ROOM CODE</div>
+        <div style={{ fontSize: 13, letterSpacing: 1, fontWeight: 700 }}>ROOM CODE</div>
         <div style={{ fontSize: 44, fontWeight: 900, letterSpacing: 10 }}>{room?.code}</div>
       </div>
 
@@ -674,7 +649,7 @@ function Lobby({ snap }: { snap: PartySnapshot }) {
         <LobbyRoster players={players} myUserId={myUserId} hostId={room?.hostId} />
         {/* Mode vote, side by side, above the ready-up controls. */}
         <VoteCards snap={snap} />
-        <div style={{ fontSize: 13, opacity: 0.75, textAlign: 'center' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, textAlign: 'center' }}>
           {canReady
             ? ready
               ? 'Waiting for everyone to ready up…'
@@ -684,19 +659,20 @@ function Lobby({ snap }: { snap: PartySnapshot }) {
         <div style={{ display: 'flex', gap: 8, width: '100%' }}>
           <button
             type="button"
+            className="arcade-btn"
             onClick={() => leaveParty()}
-            style={{ ...panelButton, flex: 1, background: 'rgba(110, 40, 40, 0.85)' }}
+            style={{ ...buttonStyle(COLOR.coral, COLOR.cream), flex: 1 }}
           >
             Leave
           </button>
           <button
             type="button"
+            className="arcade-btn"
             onClick={() => setReady(!ready)}
             disabled={!canReady}
             style={{
-              ...panelButton,
+              ...buttonStyle(ready ? COLOR.yellow : COLOR.green),
               flex: 2,
-              background: ready ? 'rgba(150, 110, 20, 0.9)' : 'rgba(40, 120, 70, 0.9)',
               ...(!canReady ? disabledLook : {}),
             }}
           >
@@ -724,6 +700,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
   const countryPopulations = useGameStore((s) => s.countryPopulations)
   const cities = useGameStore((s) => s.cities)
   const commitPartyCapitalGuess = useGameStore((s) => s.commitPartyCapitalGuess)
+  const clearRoundMarkers = useGameStore((s) => s.clearRoundMarkers)
   const revealName = useGameStore((s) => s.revealName)
   const revealFlag = useGameStore((s) => s.revealFlag)
   const hintCircle = useGameStore((s) => s.hintCircle)
@@ -827,23 +804,20 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
       {/* Top centre: question progress, target, countdown. */}
       <div
         style={{
+          ...pillStyle,
           position: 'absolute',
           top: 56,
           left: '50%',
           transform: 'translateX(-50%)',
-          display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
           gap: 8,
-          fontFamily: 'system-ui, sans-serif',
-          color: 'white',
-          textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+          padding: '10px 20px',
           pointerEvents: 'none',
           zIndex: 20,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 14, opacity: 0.75 }}>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>
             {Math.min(question + 1, rounds)} / {rounds}
           </span>
           <span
@@ -853,8 +827,9 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
               fontSize: 20,
               padding: '2px 12px',
               borderRadius: 999,
-              background: lowTime ? 'rgba(230,69,69,0.9)' : 'rgba(0,0,0,0.45)',
-              border: '2px solid rgba(255,255,255,0.7)',
+              background: lowTime ? COLOR.coral : COLOR.yellow,
+              color: COLOR.charcoal,
+              border: border(2),
             }}
           >
             {secondsLeft}s
@@ -865,13 +840,13 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
           // behind the lifelines.
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ opacity: 0.7, fontSize: 18 }}>City:</span>
+              <span style={{ fontWeight: 700, fontSize: 18 }}>City:</span>
               <span style={{ fontSize: 28, fontWeight: 800 }}>
                 {target ? cities[target]?.city ?? '…' : '…'}
               </span>
             </div>
             {(revealFlag || revealName) && target && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16, opacity: 0.9 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16 }}>
                 {revealFlag && cities[target] && (
                   <Flag
                     code={countryCodes[cities[target].country]}
@@ -885,7 +860,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
               </div>
             )}
             {!partyAnswered && (
-              <span style={{ fontSize: 13, opacity: 0.85, fontWeight: 600 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>
                 {roundGuess === null
                   ? 'Guess 1 of 2'
                   : 'Guess 2 of 2 — closer one counts'}
@@ -894,7 +869,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 26, fontWeight: 700 }}>
-            <span style={{ opacity: 0.7 }}>Find:</span>
+            <span>Find:</span>
             <Flag code={target ? countryCodes[target] : undefined} height={22} />
             <span>{target ?? '…'}</span>
           </div>
@@ -906,12 +881,8 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
               fontWeight: 700,
               padding: '4px 14px',
               borderRadius: 999,
-              // City modes read as a neutral "your distance" note (grey); country
-              // modes keep the blue "locked in" chip.
-              background: isCapitals
-                ? 'rgba(90,90,90,0.85)'
-                : 'rgba(20,60,110,0.85)',
-              border: '1px solid rgba(255,255,255,0.4)',
+              background: isCapitals ? COLOR.cream : COLOR.yellow,
+              border: border(2),
             }}
           >
             {myDistanceLabel
@@ -921,7 +892,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
         )}
       </div>
 
-      <CityFactsCard info={lastCityInfo} seed={room?.code ?? null} />
+      <CityFactsCard info={lastCityInfo} seed={room?.code ?? null} onDismiss={clearRoundMarkers} />
       <CountryFactsCard
         marker={lastResolvedCountryMarker}
         countryCodes={countryCodes}
@@ -947,27 +918,38 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
         >
           {(
             [
-              { key: 'name', label: '🏳️ Show country name', used: revealName },
-              { key: 'flag', label: '🚩 Show country flag', used: revealFlag },
-              { key: 'circle', label: '⭕ Draw circle', used: hintCircle !== null },
+              { key: 'name', icon: '🏳️', text: 'Name', title: 'Show country name', used: revealName },
+              { key: 'flag', icon: '🚩', text: 'Flag', title: 'Show country flag', used: revealFlag },
+              { key: 'circle', icon: '⭕', text: 'Circle', title: 'Draw circle', used: hintCircle !== null },
             ] as const
           ).map((l) => (
             <button
               key={l.key}
               type="button"
+              className="arcade-btn"
+              title={l.title}
               disabled={l.used}
               onClick={() => useLifeline(l.key)}
               style={{
                 ...panelButton,
-                padding: '8px 14px',
-                fontSize: 14,
-                whiteSpace: 'nowrap',
-                cursor: l.used ? 'not-allowed' : 'pointer',
-                opacity: l.used ? 0.45 : 1,
+                // Narrow + stacked so the label wraps down the button instead
+                // of stretching wide into the centre of the map.
+                width: 70,
+                boxSizing: 'border-box',
+                padding: '6px 6px',
+                fontSize: 13,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 2,
+                lineHeight: 1.15,
                 textDecoration: l.used ? 'line-through' : 'none',
+                ...(l.used ? disabledLook : {}),
               }}
             >
-              {l.label} (-{HINT_PENALTY[l.key]})
+              <span style={{ fontSize: 18 }}>{l.icon}</span>
+              <span>{l.text}</span>
+              <span style={{ fontSize: 11, fontWeight: 600 }}>-{HINT_PENALTY[l.key]}</span>
             </button>
           ))}
         </div>
@@ -976,15 +958,13 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
       {/* Live scoreboard, bottom-left, out of the way of the globe. */}
       <div
         style={{
+          ...panelStyle,
           position: 'absolute',
           left: 12,
           bottom: 56,
           width: 'min(240px, 70vw)',
           padding: 10,
-          borderRadius: 12,
-          background: 'rgba(8, 18, 32, 0.82)',
-          border: '1px solid rgba(255,255,255,0.18)',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+          borderRadius: 14,
           zIndex: 20,
         }}
       >
@@ -996,23 +976,19 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
       {!isCapitals && guess && (
         <div
           style={{
+            ...pillStyle,
             position: 'absolute',
             bottom: 18,
             left: '50%',
             transform: 'translateX(-50%)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            fontFamily: 'system-ui, sans-serif',
-            color: 'white',
+            padding: '6px 16px',
             fontSize: 18,
-            fontWeight: 500,
-            textShadow: '0 1px 2px rgba(0,0,0,0.85)',
+            fontWeight: 600,
             pointerEvents: 'none',
             zIndex: 20,
           }}
         >
-          <span style={{ opacity: 0.75 }}>Guessed:</span>
+          <span style={{ fontWeight: 700 }}>Guessed:</span>
           <Flag code={countryCodes[guess]} height={16} />
           <span>{guess}</span>
         </div>
@@ -1049,16 +1025,15 @@ function Results({ snap, onExit }: { snap: PartySnapshot; onExit: () => void }) 
   return (
     <PanelShell title="Final Scores" anchor="center">
       {celebrate && <Confetti intensity="full" onDone={() => setCelebrate(false)} />}
-      <div style={{ fontSize: 13, opacity: 0.75, letterSpacing: 0.3 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.3 }}>
         {modeMeta(room?.mode ?? '').icon} {modeMeta(room?.mode ?? '').label}
       </div>
       <div
         style={{
           fontSize: 22,
           fontWeight: 900,
-          color: '#ffd23b',
+          color: COLOR.coral,
           textAlign: 'center',
-          textShadow: '0 1px 6px rgba(0,0,0,0.7)',
         }}
       >
         {winners.length === 0
@@ -1072,13 +1047,15 @@ function Results({ snap, onExit }: { snap: PartySnapshot; onExit: () => void }) 
           seed). Any player can trigger it; the reducer is idempotent. */}
       <button
         type="button"
+        className="arcade-btn"
         onClick={() => restartParty(generatePartySeed())}
-        style={{ ...panelButton, width: '100%', background: 'rgba(40, 120, 70, 0.9)' }}
+        style={{ ...buttonStyle(COLOR.green), width: '100%' }}
       >
         🔁 Play Again
       </button>
       <button
         type="button"
+        className="arcade-btn"
         onClick={() => {
           leaveParty()
           onExit()
@@ -1111,20 +1088,16 @@ function PanelShell({
   return (
     <div
       style={{
+        ...panelStyle,
         position: 'absolute',
         ...pos,
         width: 'min(360px, 92vw)',
-        background: 'rgba(8, 18, 32, 0.94)',
-        border: '1px solid rgba(255,255,255,0.2)',
-        borderRadius: 14,
+        borderRadius: 16,
         padding: 18,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         gap: 10,
-        fontFamily: 'system-ui, sans-serif',
-        color: 'white',
-        boxShadow: '0 8px 30px rgba(0,0,0,0.6)',
         pointerEvents: 'auto',
         zIndex: 25,
       }}
@@ -1139,8 +1112,9 @@ function PanelShell({
             style={{
               background: 'transparent',
               border: 'none',
-              color: 'white',
+              color: COLOR.charcoal,
               fontSize: 24,
+              fontWeight: 700,
               cursor: 'pointer',
               lineHeight: 1,
               padding: 0,
@@ -1209,12 +1183,13 @@ function LifelineFeed() {
           style={{
             padding: '8px 16px',
             borderRadius: 999,
-            fontFamily: 'system-ui, sans-serif',
+            fontFamily: FONT,
             fontWeight: 700,
             fontSize: 15,
-            color: 'white',
-            background: 'rgba(120, 80, 190, 0.95)',
-            boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+            color: COLOR.cream,
+            background: COLOR.charcoal,
+            border: border(2),
+            boxShadow: hardShadow(3),
             whiteSpace: 'nowrap',
             animation: 'mpToastLife 4s ease forwards',
           }}
@@ -1272,8 +1247,8 @@ export function PartyOverlay({
           100% { opacity: 0; transform: translateY(0) scale(1); }
         }
         @keyframes mpWinnerPulse {
-          0%, 100% { box-shadow: 0 0 0 0 rgba(255, 210, 59, 0.5); }
-          50%      { box-shadow: 0 0 16px 4px rgba(255, 210, 59, 0.55); }
+          0%, 100% { transform: scale(1); }
+          50%      { transform: scale(1.03); }
         }
       `}</style>
 

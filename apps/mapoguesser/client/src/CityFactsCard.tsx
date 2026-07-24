@@ -1,4 +1,5 @@
 import { SlideUpCard, FactsGrid, FactRow } from './SlideUpCard'
+import { border } from './theme'
 
 export interface CityFactsData {
   // ne_id of the city, doubling as the trigger key (a new value each round).
@@ -24,17 +25,20 @@ const popFmt = (p: number) => p.toLocaleString()
 export function CityFactsCard({
   info,
   seed,
+  onDismiss,
 }: {
   // The just-completed round's city facts (null between rounds / outside
   // capitals mode).
   info: CityFactsData | null
   seed: string | null
+  onDismiss?: () => void
 }) {
   return (
     <SlideUpCard
       triggerKey={info?.key ?? null}
       data={info}
       seed={seed}
+      onDismiss={onDismiss}
       renderContent={(d) => (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
@@ -45,8 +49,8 @@ export function CityFactsCard({
                 width={63}
                 height={47}
                 style={{
-                  borderRadius: 4,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+                  borderRadius: 6,
+                  border: border(2),
                   flex: 'none',
                   objectFit: 'cover',
                 }}
@@ -57,7 +61,7 @@ export function CityFactsCard({
                 {d.city}
                 {d.isCapital && ' 🏛️'}
               </div>
-              <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.75 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>
                 {d.place}
               </div>
             </div>
@@ -69,7 +73,7 @@ export function CityFactsCard({
                 <>
                   {popFmt(d.pop)}
                   {d.rank !== null && (
-                    <span style={{ opacity: 0.6, fontWeight: 400 }}> (#{d.rank})</span>
+                    <span style={{ fontWeight: 500 }}> (#{d.rank})</span>
                   )}
                 </>
               }
