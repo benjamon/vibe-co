@@ -12,6 +12,10 @@ import {
   cityFlagUrl,
   usPopulationRank,
   subModeProgress,
+  poolForSubMode,
+  itemWeightKey,
+  MIN_ITEM_WEIGHT,
+  DEFAULT_ITEM_WEIGHT,
   capitalPointTierMilesFor,
   type AttemptResult,
 } from './store'
@@ -20,6 +24,7 @@ import { usStateFlagUrl } from './usStateFlags'
 import { StateFactsCard } from './StateFactsCard'
 import { CountryFactsCard } from './CountryFactsCard'
 import { CityFactsCard, type CityFactsData } from './CityFactsCard'
+import { ItemDetailCard } from './ItemDetailCard'
 import {
   fetchStats,
   releaseStats,
@@ -110,6 +115,64 @@ const FlagIcon = ({
   )
 }
 
+// Three-line hamburger/list icon for the "view item list" button next to each
+// sub-mode in the region picker.
+const HamburgerIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    aria-hidden="true"
+  >
+    <line x1="4" y1="6" x2="20" y2="6" />
+    <line x1="4" y1="12" x2="20" y2="12" />
+    <line x1="4" y1="18" x2="20" y2="18" />
+  </svg>
+)
+
+// Per-item mastery status, driven off the adaptive-difficulty weight (see
+// store.ts's nextWeightEntry): floored to the minimum = mastered/solved,
+// below the 1.0 default but not floored = improving, exactly the untouched
+// default = new, above default = struggling (missed more than it's hit).
+type ItemStatus = 'solved' | 'under' | 'exact' | 'over'
+const STATUS_COLOR: Record<ItemStatus, string> = {
+  solved: COLOR.green,
+  under: COLOR.yellow,
+  exact: COLOR.grey,
+  over: COLOR.coral,
+}
+// Mastery sort order: least-mastered first (struggling items are the ones
+// worth surfacing) down to fully solved.
+const STATUS_RANK: Record<ItemStatus, number> = {
+  over: 0,
+  exact: 1,
+  under: 2,
+  solved: 3,
+}
+const statusOf = (weight: number): ItemStatus => {
+  if (weight <= MIN_ITEM_WEIGHT) return 'solved'
+  if (weight < DEFAULT_ITEM_WEIGHT) return 'under'
+  if (weight === DEFAULT_ITEM_WEIGHT) return 'exact'
+  return 'over'
+}
+const StatusDot = ({ status }: { status: ItemStatus }) => (
+  <span
+    style={{
+      width: 12,
+      height: 12,
+      borderRadius: '50%',
+      background: STATUS_COLOR[status],
+      border: border(1.5),
+      flex: 'none',
+      display: 'inline-block',
+    }}
+  />
+)
+
 const Checkbox = ({
   result,
   code,
@@ -160,6 +223,18 @@ const scoreColour = (sum: number): string => {
   if (sum > 0) return '#1E8E4A'
   if (sum < 0) return COLOR.coral
   return COLOR.charcoal
+}
+
+// End-of-match "N mastered" message: singular/plural noun per family, keyed
+// off the just-played sub-mode's family (see subFamily below).
+const MASTERED_NOUN: Record<'countries' | 'states' | 'cities', [string, string]> = {
+  countries: ['country', 'countries'],
+  states: ['state', 'states'],
+  cities: ['city', 'cities'],
+}
+const masteredLabel = (family: keyof typeof MASTERED_NOUN, count: number): string => {
+  const [singular, plural] = MASTERED_NOUN[family]
+  return `${count} ${count === 1 ? singular : plural} mastered`
 }
 
 // Hamburger / menu / stats / start-screen all share this button look so the
@@ -218,6 +293,7 @@ export function App() {
   // country one), so it gets its own readiness gate.
   const statesReady = useGameStore((s) => s.states.length > 0)
   const perfectStreak = useGameStore((s) => s.perfectStreak)
+  const masteredThisMatch = useGameStore((s) => s.masteredThisMatch)
   const multiplayer = useGameStore((s) => s.multiplayer)
   // Adaptive-difficulty pool source for the mode-menu "solved" counts
   // (subModeProgress) — a narrow slice rather than subscribing to the whole
@@ -253,6 +329,28 @@ export function App() {
   >(null)
   const [statsOpen, setStatsOpen] = useState(false)
   const [statsSort, setStatsSort] = useState<'name' | 'sum'>('name')
+  // Sub-mode whose full item list (weights + mastery status) the "view list"
+  // button is showing, or null when that panel is closed.
+  const [weightsSub, setWeightsSub] = useState<SubMode | null>(null)
+  const [weightsSort, setWeightsSort] = useState<'name' | 'mastery'>('name')
+  // The item (country/state name, or city key) currently drilled into from
+  // the item-list panel — null shows the list, non-null shows its detail card
+  // (see ItemDetailCard) and hides the list, per weightsSub's browse flow.
+  const [weightsItem, setWeightsItem] = useState<string | null>(null)
+  const setBrowseTarget = useGameStore((s) => s.setBrowseTarget)
+  const setBrowseSubMode = useGameStore((s) => s.setBrowseSubMode)
+  // Close the item-list panel's detail view (if any) and clear its flag pin.
+  const closeWeightsItem = () => {
+    setWeightsItem(null)
+    setBrowseTarget(null)
+  }
+  // Open/close the item-list panel itself, mirroring the sub-mode id into the
+  // store so WorldViewer can show the US state lines while a states/US-cities
+  // list is open (see browseSubModeId).
+  const updateWeightsSub = (sub: SubMode | null) => {
+    setWeightsSub(sub)
+    setBrowseSubMode(sub?.id ?? null)
+  }
   const [showConfetti, setShowConfetti] = useState(false)
   const [confettiIntensity, setConfettiIntensity] = useState<'small' | 'full'>(
     'full',
@@ -333,6 +431,54 @@ export function App() {
     }
     return { correct, wrong: total - correct, total }
   }, [activeAgg])
+
+  // Full item list (+ weight/status) for whichever sub-mode's "view list"
+  // button was clicked. `item` is a country/state name for those families, or
+  // a city dataset key for the cities family (see poolForSubMode).
+  const weightsRows = useMemo(() => {
+    if (!weightsSub) return []
+    const pool = poolForSubMode(poolSource, weightsSub)
+    const rows = pool.map((item) => {
+      const weight =
+        poolSource.itemWeights[itemWeightKey(weightsSub.family, item)]
+          ?.weight ?? DEFAULT_ITEM_WEIGHT
+      const city = weightsSub.family === 'cities' ? cities[item] : undefined
+      const label =
+        weightsSub.family === 'cities'
+          ? city
+            ? `${city.city}, ${cityRevealName(city, weightsSub.id)}`
+            : item
+          : item
+      const flagCode =
+        weightsSub.family === 'countries'
+          ? countryCodes[item]
+          : city
+            ? countryCodes[city.country]
+            : undefined
+      const flagSrc =
+        weightsSub.family === 'states'
+          ? usStateFlagUrl(item)
+          : city
+            ? cityFlagUrl(city, weightsSub.id)
+            : undefined
+      return {
+        key: item,
+        label,
+        percent: Math.round(weight * 100),
+        status: statusOf(weight),
+        flagCode,
+        flagSrc,
+      }
+    })
+    rows.sort((a, b) =>
+      weightsSort === 'mastery'
+        ? STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
+          b.percent - a.percent ||
+          a.label.localeCompare(b.label)
+        : a.label.localeCompare(b.label),
+    )
+    return rows
+  }, [weightsSub, weightsSort, poolSource, cities, countryCodes])
 
   // The per-guess log and the click markers grow together (one of each per
   // click), so they pair 1:1 in order — guess i was the country of click marker
@@ -670,6 +816,8 @@ export function App() {
   const handleStartSubMode = (sub: SubMode) => {
     setMenuOpen(false)
     setSubmenu(null)
+    updateWeightsSub(null)
+    closeWeightsItem()
     startGame(undefined, sub.id)
   }
   // Drop ?seed= from the URL so the auto-start effect doesn't immediately
@@ -692,6 +840,8 @@ export function App() {
   const handleMainMenu = () => {
     setMenuOpen(false)
     setSubmenu(null)
+    updateWeightsSub(null)
+    closeWeightsItem()
     // Back to the unseeded URL + the idle main-menu screen. Without clearing the
     // seed, the auto-start effect would just replay the same match.
     clearSeedFromUrl()
@@ -701,6 +851,8 @@ export function App() {
   // the join/create screen's Main Menu button drops you all the way out.
   const handleFriendsMainMenu = () => {
     setFriendsOpen(false)
+    updateWeightsSub(null)
+    closeWeightsItem()
     clearSeedFromUrl()
     resetGame()
   }
@@ -939,7 +1091,9 @@ export function App() {
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            gap: 12,
+            // Cut 40% off the gap between the round/score row and the target
+            // title below it (12 → 7).
+            gap: 7,
           }}
         >
           {isCapitals ? (
@@ -1038,6 +1192,11 @@ export function App() {
                   <span>
                     Score: {totalCapitalPoints} / {MAX_CAPITAL_POINTS}
                   </span>
+                  {masteredThisMatch > 0 && (
+                    <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
+                      🎓 {masteredLabel(subFamily, masteredThisMatch)}
+                    </span>
+                  )}
                   {totalCapitalPoints >= MAX_CAPITAL_POINTS && (
                     <span
                       style={{
@@ -1084,6 +1243,11 @@ export function App() {
                 <span>
                   Score: {correctCount} / {ROUNDS}
                 </span>
+                {masteredThisMatch > 0 && (
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
+                    🎓 {masteredLabel(subFamily, masteredThisMatch)}
+                  </span>
+                )}
                 {correctCount >= ROUNDS && (
                   <span
                     style={{
@@ -1144,6 +1308,10 @@ export function App() {
                 Main Menu
               </button>
             </>
+          ) : weightsSub ? (
+            // The item-list panel (below) owns the screen while browsing —
+            // hide the region picker underneath it entirely.
+            null
           ) : submenu ? (
             // Region picker for the chosen family. Each entry is a data-driven
             // sub-mode (see gameModes.ts); picking one starts that match.
@@ -1173,48 +1341,77 @@ export function App() {
                   ? subModeProgress(poolSource, sub)
                   : null
                 return (
-                  <button
-                    key={sub.id}
-                    type="button"
-                    className="arcade-btn"
-                    onClick={() => handleStartSubMode(sub)}
-                    disabled={!subReady}
-                    style={{
-                      ...menuButtonStyle,
-                      minWidth: 220,
-                      cursor: subReady ? 'pointer' : 'wait',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 10,
-                      ...(subReady ? {} : disabledLook),
-                    }}
-                  >
-                    <span>
-                      {subReady ? `${sub.icon} ${sub.label}` : 'Loading…'}
-                    </span>
-                    {progress && progress.total > 0 && (
-                      <span
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 700,
-                          whiteSpace: 'nowrap',
-                          background: COLOR.yellow,
-                          border: border(1.5),
-                          borderRadius: 999,
-                          padding: '2px 8px',
-                        }}
-                      >
-                        {progress.solved}/{progress.total}
+                  <div key={sub.id} style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      type="button"
+                      className="arcade-btn"
+                      onClick={() => handleStartSubMode(sub)}
+                      disabled={!subReady}
+                      style={{
+                        ...menuButtonStyle,
+                        minWidth: 176,
+                        cursor: subReady ? 'pointer' : 'wait',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 10,
+                        ...(subReady ? {} : disabledLook),
+                      }}
+                    >
+                      <span>
+                        {subReady ? `${sub.icon} ${sub.label}` : 'Loading…'}
                       </span>
-                    )}
-                  </button>
+                      {progress && progress.total > 0 && (
+                        <span
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            whiteSpace: 'nowrap',
+                            background: COLOR.yellow,
+                            border: border(1.5),
+                            borderRadius: 999,
+                            padding: '2px 8px',
+                          }}
+                        >
+                          {progress.solved}/{progress.total}
+                        </span>
+                      )}
+                    </button>
+                    {/* Opens the full item list (weight + mastery status) for
+                        this sub-mode — see the weightsSub panel below. */}
+                    <button
+                      type="button"
+                      className="arcade-btn"
+                      aria-label={`View ${sub.label} item list`}
+                      title="View item list"
+                      onClick={() => {
+                        closeWeightsItem()
+                        updateWeightsSub(sub)
+                      }}
+                      disabled={!subReady}
+                      style={{
+                        ...menuButtonStyle,
+                        width: 44,
+                        padding: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: subReady ? 'pointer' : 'wait',
+                        ...(subReady ? {} : disabledLook),
+                      }}
+                    >
+                      <HamburgerIcon />
+                    </button>
+                  </div>
                 )
               })}
               <button
                 type="button"
                 className="arcade-btn"
-                onClick={() => setSubmenu(null)}
+                onClick={() => {
+                  setSubmenu(null)
+                  updateWeightsSub(null)
+                }}
                 style={menuButtonStyle}
               >
                 ← Back
@@ -1398,6 +1595,33 @@ export function App() {
               Close
             </button>
           </div>
+          {typeof selectedStatsCountryId === 'number' ? (
+            // A specific country is selected: hide the list and show its
+            // detail card instead, with an X that clears the selection (and
+            // the flag/dots on the globe) and brings the list back.
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                background: COLOR.cream,
+                border: border(2),
+                borderRadius: 12,
+                padding: 14,
+              }}
+            >
+              <ItemDetailCard
+                family="countries"
+                item={idToName[selectedStatsCountryId] ?? ''}
+                cities={cities}
+                countryCodes={countryCodes}
+                countryPopulations={countryPopulations}
+                subModeId={subMode}
+                onClose={() => selectStatsCountry(null)}
+              />
+            </div>
+          ) : (
+            <>
           {/* Segmented My / Global toggle, with a single sort-toggle icon to its
               right. Switching mode wipes the current selection (handled in
               setStatsMode) so dots from one dataset don't linger. */}
@@ -1568,21 +1792,18 @@ export function App() {
                   )
                 })()}
                 {statsRows.map((row) => {
-                const active = selectedStatsCountryId === row.id
                 return (
                   <button
                     key={row.id}
                     type="button"
-                    onClick={() =>
-                      selectStatsCountry(active ? null : row.id)
-                    }
+                    onClick={() => selectStatsCountry(row.id)}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       gap: 10,
                       padding: '8px 12px',
                       width: '100%',
-                      background: active ? 'rgba(255,199,44,0.4)' : 'transparent',
+                      background: 'transparent',
                       border: 'none',
                       borderBottom: '1px solid rgba(30,32,34,0.15)',
                       color: COLOR.charcoal,
@@ -1611,6 +1832,215 @@ export function App() {
               </>
             )}
           </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {weightsSub && (
+        <div
+          style={{
+            ...panelStyle,
+            position: 'absolute',
+            top: 16,
+            bottom: 16,
+            right: 16,
+            width: 'min(340px, 92vw)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            padding: 14,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+            }}
+          >
+            <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 0.3 }}>
+              {weightsSub.icon} {weightsSub.label}
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {/* Toggles between alphabetical and worst-mastery-first, mirroring
+                  the My Stats sort button (AZ text / funnel icon). */}
+              <button
+                type="button"
+                className="arcade-btn"
+                aria-label={
+                  weightsSort === 'name'
+                    ? 'Sorted by name — tap to sort by mastery'
+                    : 'Sorted by mastery — tap to sort by name'
+                }
+                title={
+                  weightsSort === 'name' ? 'Sort by mastery' : 'Sort by name'
+                }
+                onClick={() =>
+                  setWeightsSort((s) => (s === 'name' ? 'mastery' : 'name'))
+                }
+                style={{
+                  ...buttonStyle(COLOR.cream),
+                  width: 44,
+                  padding: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 14,
+                  letterSpacing: 0.5,
+                }}
+              >
+                {weightsSort === 'name' ? (
+                  'AZ'
+                ) : (
+                  <svg
+                    width="17"
+                    height="17"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                  </svg>
+                )}
+              </button>
+              <button
+                type="button"
+                className="arcade-btn"
+                onClick={() => {
+                  closeWeightsItem()
+                  updateWeightsSub(null)
+                }}
+                style={{ ...buttonStyle(COLOR.coral, COLOR.cream), padding: '6px 10px', fontSize: 14 }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          {weightsItem && weightsSub ? (
+            // A row was picked: hide the list and show its detail card. The
+            // card's own X (onClose) clears weightsItem, bringing the list
+            // (and the flag on the globe) back.
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                background: COLOR.cream,
+                border: border(2),
+                borderRadius: 12,
+                padding: 14,
+              }}
+            >
+              <ItemDetailCard
+                family={weightsSub.family}
+                item={weightsItem}
+                cities={cities}
+                countryCodes={countryCodes}
+                countryPopulations={countryPopulations}
+                subModeId={weightsSub.id}
+                onClose={closeWeightsItem}
+              />
+            </div>
+          ) : (
+            <>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '4px 12px',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <StatusDot status="solved" /> Mastered
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <StatusDot status="under" /> Improving
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <StatusDot status="exact" /> New
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <StatusDot status="over" /> Struggling
+            </span>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              background: COLOR.cream,
+              border: border(2),
+              borderRadius: 12,
+            }}
+          >
+            {weightsRows.length === 0 ? (
+              <div
+                style={{
+                  padding: 24,
+                  textAlign: 'center',
+                  fontWeight: 600,
+                  fontSize: 14,
+                }}
+              >
+                No items in this pool yet.
+              </div>
+            ) : (
+              weightsRows.map((row) => (
+                <button
+                  key={row.key}
+                  type="button"
+                  onClick={() => {
+                    if (!weightsSub) return
+                    setWeightsItem(row.key)
+                    setBrowseTarget({ family: weightsSub.family, item: row.key })
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '8px 12px',
+                    width: '100%',
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom: '1px solid rgba(30,32,34,0.15)',
+                    color: COLOR.charcoal,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  <StatusDot status={row.status} />
+                  {(row.flagCode || row.flagSrc) && (
+                    <FlagIcon code={row.flagCode} src={row.flagSrc} height={18} />
+                  )}
+                  <span style={{ flex: 1, fontSize: 14 }}>{row.label}</span>
+                  <span
+                    style={{
+                      fontVariantNumeric: 'tabular-nums',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      minWidth: 44,
+                      textAlign: 'right',
+                    }}
+                  >
+                    {row.percent}%
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+            </>
+          )}
         </div>
       )}
     </>

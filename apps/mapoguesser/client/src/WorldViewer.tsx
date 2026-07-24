@@ -328,6 +328,14 @@ export function WorldViewer() {
     const statsDots = new CustomDataSource('statsDots')
     viewer.dataSources.add(statsDots)
 
+    // Browse flag — the single flag pin dropped when a player picks an item
+    // out of the item-list panel (see App.tsx's weightsSub UI / browseTarget).
+    // Its own data source, independent of statsDots, so the item-list panel
+    // and the stats sidebar can each hold their own selection without one
+    // clearing the other's pin.
+    const browseFlag = new CustomDataSource('browseFlag')
+    viewer.dataSources.add(browseFlag)
+
     // Capitals-mode overlays: the "draw circle" hint and the pin→answer line.
     // Its own data source so it can be cleared/redrawn each round independently
     // of the game markers.
@@ -1153,24 +1161,14 @@ export function WorldViewer() {
     let revealRaf: number | null = null
     let revealHoldTimeout: number | null = null
 
-    const flyToCountry = (
-      name: string,
-      onDone: (e: CountryEntry) => void,
-      entries: CountryEntry[] | null = countryEntries,
+    // Cinematic camera fly to a raw (lat, lon), used both by flyToCountry
+    // (below) and by the item-list "browse" flow, which flies to a city's
+    // exact coordinates rather than a country/state centroid.
+    const flyToHeadingPitch = (
+      targetLat: number,
+      targetLon: number,
+      onDone: () => void,
     ) => {
-      const entry = entries?.find((c) => c.name === name)
-      if (!entry) {
-        onDone({
-          name,
-          bbox: [0, 0, 0, 0],
-          centroid: { lat: 0, lon: 0 },
-          polygons: [],
-          area: 0,
-          aliases: [],
-        })
-        return
-      }
-
       stopMomentum()
       if (revealRaf !== null) cancelAnimationFrame(revealRaf)
       cinematic = true
@@ -1179,10 +1177,10 @@ export function WorldViewer() {
       // subpoint_lat = -pitch. Inverting gives the camera angles needed to
       // place a (lat, lon) at the centre of the screen.
       const targetHeading = CesiumMath.zeroToTwoPi(
-        -CesiumMath.toRadians(entry.centroid.lon) - Math.PI / 2,
+        -CesiumMath.toRadians(targetLon) - Math.PI / 2,
       )
       const targetPitch = clamp(
-        -CesiumMath.toRadians(entry.centroid.lat),
+        -CesiumMath.toRadians(targetLat),
         PITCH_MIN,
         PITCH_MAX,
       )
@@ -1207,10 +1205,32 @@ export function WorldViewer() {
         } else {
           revealRaf = null
           cinematic = false
-          onDone(entry)
+          onDone()
         }
       }
       revealRaf = requestAnimationFrame(step)
+    }
+
+    const flyToCountry = (
+      name: string,
+      onDone: (e: CountryEntry) => void,
+      entries: CountryEntry[] | null = countryEntries,
+    ) => {
+      const entry = entries?.find((c) => c.name === name)
+      if (!entry) {
+        onDone({
+          name,
+          bbox: [0, 0, 0, 0],
+          centroid: { lat: 0, lon: 0 },
+          polygons: [],
+          area: 0,
+          aliases: [],
+        })
+        return
+      }
+      flyToHeadingPitch(entry.centroid.lat, entry.centroid.lon, () =>
+        onDone(entry),
+      )
     }
 
     // Shortest signed angular delta in (-π, π], for unwrapping heading
@@ -1414,6 +1434,8 @@ export function WorldViewer() {
     let prevStatsMode = useGameStore.getState().statsMode
     let prevGlobalGuesses = useGameStore.getState().globalGuesses
     let prevSubMode = useGameStore.getState().subMode
+    let prevBrowseSubModeId = useGameStore.getState().browseSubModeId
+    let prevBrowseTarget = useGameStore.getState().browseTarget
     let endingHoldTimeout: number | null = null
 
     // Reverse-lookup a country name from its local integer ID.
@@ -1534,6 +1556,73 @@ export function WorldViewer() {
     // Mount-time replay in case a selection already exists.
     renderStatsDots()
 
+    // Drop the single browse-flag pin at whatever `browseTarget` currently
+    // points to — a country/state's flagPointFor anchor, or (for a city) its
+    // exact coordinates. Async (flag image load), guarded by browseGen against
+    // a selection that changed before it resolved.
+    let browseGen = 0
+    const renderBrowseFlag = (): void => {
+      browseGen++
+      const gen = browseGen
+      browseFlag.entities.removeAll()
+      const st = useGameStore.getState()
+      const bt = st.browseTarget
+      if (!bt) return
+
+      const place = (
+        lat: number,
+        lon: number,
+        label: string,
+        code: string | undefined,
+        flagUrl: string | undefined,
+      ) => {
+        buildFlagPin(flagUrl ?? (code ? flagCdnUrl(code) : undefined), 'stats').then(
+          (image) => {
+            if (gen !== browseGen || destroyed || viewer.isDestroyed()) return
+            if (!image) return
+            browseFlag.entities.add({
+              position: Cartesian3.fromDegrees(lon, lat),
+              billboard: {
+                image,
+                verticalOrigin: VerticalOrigin.BOTTOM,
+                horizontalOrigin: HorizontalOrigin.LEFT,
+                pixelOffset: new Cartesian2(-POLE_W / 2, 0),
+                heightReference: HeightReference.CLAMP_TO_GROUND,
+              },
+              label: {
+                text: label,
+                font: 'bold 15px sans-serif',
+                fillColor: Color.WHITE,
+                outlineColor: Color.BLACK,
+                outlineWidth: 3,
+                style: LabelStyle.FILL_AND_OUTLINE,
+                verticalOrigin: VerticalOrigin.BOTTOM,
+                horizontalOrigin: HorizontalOrigin.CENTER,
+                pixelOffset: new Cartesian2(POLE_W / 2 + FLAG_W / 2, -(POLE_H + 2)),
+                heightReference: HeightReference.CLAMP_TO_GROUND,
+              },
+            })
+          },
+        )
+      }
+
+      if (bt.family === 'cities') {
+        const city = st.cities[bt.item]
+        if (!city) return
+        place(city.lat, city.lon, city.city, st.countryCodes[city.country], undefined)
+        return
+      }
+      const entries = bt.family === 'states' ? stateEntries : countryEntries
+      const entry = entries?.find((c) => c.name === bt.item)
+      if (!entry) return
+      const pt = flagPointFor(entry)
+      if (bt.family === 'states') {
+        place(pt.lat, pt.lon, bt.item, undefined, usStateFlagUrl(bt.item))
+      } else {
+        place(pt.lat, pt.lon, bt.item, st.countryCodes[bt.item], undefined)
+      }
+    }
+
     // Replay any markers already in the store at mount time. This is the
     // resume path: a returning player with a saved match already has markers
     // before the viewer subscribes.
@@ -1543,12 +1632,19 @@ export function WorldViewer() {
 
     const unsub = useGameStore.subscribe((state) => {
       // Show/hide the US state lines when the active sub-mode changes (the
-      // North America cities mode and the US States mode request them). No-op
+      // North America cities mode and the US States mode request them), or
+      // when the item-list panel opens/closes on one of those sub-modes
+      // (browseSubModeId overrides subMode while it's set, so browsing the
+      // list shows the lines even with no matching match in progress). No-op
       // until the layer loads; its initial visibility is set from the current
       // sub-mode at load time.
-      if (state.subMode !== prevSubMode) {
+      if (
+        state.subMode !== prevSubMode ||
+        state.browseSubModeId !== prevBrowseSubModeId
+      ) {
         prevSubMode = state.subMode
-        const want = wantStateLines(state.subMode)
+        prevBrowseSubModeId = state.browseSubModeId
+        const want = wantStateLines(state.browseSubModeId ?? state.subMode)
         if (want) loadStateLines() // lazy: fetch the first time it's needed
         if (stateLinesDS) stateLinesDS.show = want
       }
@@ -1724,6 +1820,32 @@ export function WorldViewer() {
           else renderStatsDots()
         } else {
           renderStatsDots()
+        }
+      }
+
+      // Item-list "browse" flag: a new (or cleared) browseTarget re-flies the
+      // camera to the item and drops/removes its flag pin. Countries/states
+      // fly to their flagPointFor anchor; cities fly straight to their
+      // coordinates (they have no polygon to anchor inside of).
+      if (state.browseTarget !== prevBrowseTarget) {
+        const bt = state.browseTarget
+        prevBrowseTarget = bt
+        browseFlag.entities.removeAll()
+        if (bt) {
+          if (bt.family === 'cities') {
+            const city = state.cities[bt.item]
+            if (city) {
+              flyToHeadingPitch(city.lat, city.lon, () => renderBrowseFlag())
+            }
+          } else {
+            const entries = bt.family === 'states' ? stateEntries : countryEntries
+            const entry = entries?.find((c) => c.name === bt.item)
+            if (entry) {
+              flyToHeadingPitch(entry.centroid.lat, entry.centroid.lon, () =>
+                renderBrowseFlag(),
+              )
+            }
+          }
         }
       }
     })

@@ -178,7 +178,16 @@ export interface WeightEntry {
 }
 export type ItemWeights = Record<string, WeightEntry>
 
-const DEFAULT_ITEM_WEIGHT = 1
+// An item selected for "browsing" from the item-list panel — see
+// GameState.browseTarget. `item` is a country/state name for those families,
+// or a city dataset key (matching poolForSubMode's cities-family output) for
+// the cities family.
+export interface BrowseTarget {
+  family: ModeFamily
+  item: string
+}
+
+export const DEFAULT_ITEM_WEIGHT = 1
 export const MIN_ITEM_WEIGHT = 0.1
 const MAX_ITEM_WEIGHT = 20
 const MASTERY_STREAK = 3
@@ -222,6 +231,12 @@ const nextWeightEntry = (
   return { weight, streak }
 }
 
+// Whether a weight update just crossed into "mastered" (floored to
+// MIN_ITEM_WEIGHT) for the first time — i.e. it wasn't already there. Drives
+// GameState.masteredThisMatch, the end-of-match "N mastered" message.
+const isNewlyMastered = (prevWeight: number, nextWeight: number): boolean =>
+  prevWeight > MIN_ITEM_WEIGHT && nextWeight <= MIN_ITEM_WEIGHT
+
 interface SavedMatch {
   seed: string
   // Which pool the saved draw came from. A seed alone isn't enough to resume —
@@ -263,6 +278,10 @@ interface SavedMatch {
   // Capitals mode only: the in-progress first guess of the current capital (the
   // player has one guess left), or null/absent when between rounds.
   roundGuess?: RoundGuess | null
+  // Count of items freshly mastered (weight dropped to MIN_ITEM_WEIGHT) so far
+  // this match — see GameState.masteredThisMatch. Optional so legacy saves
+  // without it just resume at 0.
+  masteredThisMatch?: number
 }
 
 const isSavedMatch = (v: unknown): v is SavedMatch => {
@@ -495,6 +514,32 @@ interface GameState {
   // `handleCapitalGuess`). Drives `drawWeightedUniqueTargets` in `startGame`
   // and the per-mode "solved" counts (`subModeProgress`).
   itemWeights: ItemWeights
+
+  // Count of items whose adaptive-difficulty weight dropped to MIN_ITEM_WEIGHT
+  // (freshly mastered) so far in the current single-player match — reset by
+  // `startGame`, bumped by `handleGlobeClick`/`handleCapitalGuess` whenever a
+  // correct guess pushes an item's weight into the mastered floor for the
+  // first time. Drives the "N countries/cities/states mastered" end-of-match
+  // message. Never incremented for multiplayer (party guesses don't touch
+  // itemWeights at all).
+  masteredThisMatch: number
+
+  // The item currently being "browsed" from the item-list panel (see
+  // App.tsx's weightsSub UI) — drives WorldViewer's fly-to + flag-pin so the
+  // player can see where it is on the globe, and the detail card shown in
+  // place of the list. null = nothing being browsed. (The My Stats country
+  // list has its own, pre-existing fly-to/flag mechanism — see
+  // selectedStatsCountryId below.)
+  browseTarget: BrowseTarget | null
+  setBrowseTarget: (t: BrowseTarget | null) => void
+
+  // The sub-mode id of whichever item-list panel is currently open (see
+  // App.tsx's weightsSub), or null when it's closed. While open, this
+  // overrides `subMode` for deciding whether WorldViewer shows the US state
+  // boundary lines — e.g. opening the US States or United States (cities)
+  // item list shows them even though no match of that sub-mode is running.
+  browseSubModeId: string | null
+  setBrowseSubMode: (id: string | null) => void
 
   // Which row in the stats sidebar is currently selected. Drives the dots the
   // WorldViewer paints at the player's past guess locations for that country.
@@ -1044,6 +1089,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   stats: loadStats(),
   itemWeights: loadItemWeights(),
+  masteredThisMatch: 0,
+
+  browseTarget: null,
+  setBrowseTarget: (t) => set({ browseTarget: t }),
+
+  browseSubModeId: null,
+  setBrowseSubMode: (id) => set({ browseSubModeId: id }),
 
   selectedStatsCountryId: null,
   selectStatsCountry: (id) => {
@@ -1263,6 +1315,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
     const targetIndex = restore?.targetIndex ?? 0
     const roundGuess = restore?.roundGuess ?? null
+    const masteredThisMatch = restore?.masteredThisMatch ?? 0
     // Capitals mode records one distance per completed capital, so it finishes
     // once every capital has a recorded distance; classic mode finishes on
     // the guess budget.
@@ -1296,6 +1349,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       endingTarget: null,
       multiplayer: false,
       partyAnswered: false,
+      masteredThisMatch,
       // Settle the intro camera before the first click can land.
       inputLockUntil: finished ? 0 : lockUntil(),
     })
@@ -1326,6 +1380,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       revealTarget: null,
       endingTarget: null,
       multiplayer: false,
+      masteredThisMatch: 0,
       partyAnswered: false,
     }),
 
@@ -1445,13 +1500,15 @@ export const useGameStore = create<GameState>((set, get) => ({
       // weight now — halved if nailed on the first try, unchanged on the
       // second (see `nextWeightEntry`).
       const key = itemWeightKey(family, s.target)
-      const itemWeights = {
-        ...s.itemWeights,
-        [key]: nextWeightEntry(
-          s.itemWeights[key],
-          s.consecutiveWrong === 0 ? 'first' : 'second',
-        ),
-      }
+      const prevWeight = s.itemWeights[key]?.weight ?? DEFAULT_ITEM_WEIGHT
+      const nextEntry = nextWeightEntry(
+        s.itemWeights[key],
+        s.consecutiveWrong === 0 ? 'first' : 'second',
+      )
+      const itemWeights = { ...s.itemWeights, [key]: nextEntry }
+      const masteredThisMatch =
+        s.masteredThisMatch +
+        (isNewlyMastered(prevWeight, nextEntry.weight) ? 1 : 0)
       // On the final guess, hand the camera to the viewer for a celebratory pan.
       // Phase stays 'playing' until finishGame() fires after the hold.
       set({
@@ -1463,6 +1520,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         // New target next — brief lock so a double-click doesn't burn a guess.
         inputLockUntil: finished ? s.inputLockUntil : lockUntil(),
         itemWeights,
+        masteredThisMatch,
       })
       return
     }
@@ -1668,16 +1726,19 @@ export const useGameStore = create<GameState>((set, get) => ({
           ? 'second'
           : 'miss'
     const weightKey = itemWeightKey('cities', s.target)
-    const itemWeights = {
-      ...s.itemWeights,
-      [weightKey]: nextWeightEntry(s.itemWeights[weightKey], outcome),
-    }
+    const prevWeight = s.itemWeights[weightKey]?.weight ?? DEFAULT_ITEM_WEIGHT
+    const nextEntry = nextWeightEntry(s.itemWeights[weightKey], outcome)
+    const itemWeights = { ...s.itemWeights, [weightKey]: nextEntry }
+    const masteredThisMatch =
+      s.masteredThisMatch +
+      (isNewlyMastered(prevWeight, nextEntry.weight) ? 1 : 0)
     set({
       distances,
       capitalPoints,
       capitalBonus,
       capitalHintPenalty,
       itemWeights,
+      masteredThisMatch,
       // Both guess dots (the closer one yellow) plus the reveal pin: the
       // country's flag with a two-line "City,\nCountry" label above it (flag from
       // the explicit `code`, since the label text isn't a plain country name).
@@ -1826,6 +1887,7 @@ useGameStore.subscribe((state, prev) => {
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,
     roundGuess: state.roundGuess,
+    masteredThisMatch: state.masteredThisMatch,
   })
 })
 
