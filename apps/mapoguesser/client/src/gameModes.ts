@@ -9,6 +9,8 @@ import type { GameMode } from './store'
 //   - 'cities'    family → locate the CAPITAL city (5 rounds, golf-scored)
 //   - 'states'    family → locate the US STATE on the globe (same behaviour as
 //                          'countries', just a different polygon dataset)
+//   - 'draw'      family → freehand-DRAW the country's outline from memory (5
+//                          rounds, scored by % overlap with the real shape)
 //
 // To add or reshape a mode, edit the `pool` array here — nothing else needs to
 // change. Country names MUST match Natural Earth's NAME field exactly (the same
@@ -16,7 +18,7 @@ import type { GameMode } from './store'
 // typo just drops that one entry rather than breaking the mode.
 // ---------------------------------------------------------------------------
 
-export type ModeFamily = 'countries' | 'cities' | 'states'
+export type ModeFamily = 'countries' | 'cities' | 'states' | 'draw'
 
 // How a 'cities'-family sub-mode picks which cities are in play. Cities come
 // from the population-ranked populated-places dataset, so a region mode is just
@@ -61,7 +63,7 @@ export interface SubMode {
 
 // The behaviour (round count, scoring, HUD, map label) each family maps onto.
 export const behavioralModeOf = (sm: SubMode): GameMode =>
-  sm.family === 'cities' ? 'capitals' : 'classic'
+  sm.family === 'cities' ? 'capitals' : sm.family === 'draw' ? 'draw' : 'classic'
 
 // ---- COUNTRIES: locate the country on the globe. --------------------------
 const COUNTRY_SUBMODES: SubMode[] = [
@@ -210,10 +212,34 @@ const STATE_SUBMODES: SubMode[] = [
   },
 ]
 
+// ---- DRAW: freehand-trace the country's outline from memory. ---------------
+// A curated list rather than "All" or a region — picked for shapes that are
+// distinctive enough to draw from memory and geometrically simple enough for
+// a freehand-drawn loop to score meaningfully against (no razor-thin slivers,
+// no sprawling archipelagos, nothing that crosses the antimeridian).
+const DRAW_SUBMODES: SubMode[] = [
+  {
+    id: 'draw-countries',
+    label: 'Draw the Border',
+    icon: '✏️',
+    blurb: 'Freehand-trace a country’s outline from memory',
+    family: 'draw',
+    pool: [
+      'Egypt', 'Italy', 'Spain', 'Portugal', 'France', 'United Kingdom',
+      'Ireland', 'Norway', 'Iceland', 'Greece', 'India', 'China', 'Japan',
+      'South Korea', 'Thailand', 'Saudi Arabia', 'Turkey', 'Sri Lanka',
+      'United States of America', 'Canada', 'Mexico', 'Brazil', 'Argentina',
+      'Chile', 'Cuba', 'South Africa', 'Madagascar', 'Somalia', 'Kenya',
+      'Australia', 'New Zealand',
+    ],
+  },
+]
+
 export const SUB_MODES: SubMode[] = [
   ...COUNTRY_SUBMODES,
   ...CITY_SUBMODES,
   ...STATE_SUBMODES,
+  ...DRAW_SUBMODES,
 ]
 
 export const subModesFor = (family: ModeFamily): SubMode[] =>

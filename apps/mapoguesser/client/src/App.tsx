@@ -6,6 +6,7 @@ import {
   useGameStore,
   ROUNDS,
   CAPITAL_ROUNDS,
+  DRAW_ROUNDS,
   MAX_CAPITAL_POINTS,
   HINT_PENALTY,
   cityRevealName,
@@ -323,6 +324,12 @@ export function App() {
   const capitalPoints = useGameStore((s) => s.capitalPoints)
   const capitalBonus = useGameStore((s) => s.capitalBonus)
   const capitalHintPenalty = useGameStore((s) => s.capitalHintPenalty)
+  const drawScores = useGameStore((s) => s.drawScores)
+  const drawReveal = useGameStore((s) => s.drawReveal)
+  const advanceDrawRound = useGameStore((s) => s.advanceDrawRound)
+  const drawShapeCount = useGameStore((s) => s.drawShapeCount)
+  const requestDrawSubmit = useGameStore((s) => s.requestDrawSubmit)
+  const requestDrawUndo = useGameStore((s) => s.requestDrawUndo)
   const targets = useGameStore((s) => s.targets)
   const cities = useGameStore((s) => s.cities)
   const revealName = useGameStore((s) => s.revealName)
@@ -379,7 +386,7 @@ export function App() {
   // menu (volume, tiny-island toggle, View Stats), not a region picker, but
   // shares the same "navigate in / ← Back" slot.
   const [submenu, setSubmenu] = useState<
-    null | 'countries' | 'cities' | 'states' | 'settings'
+    null | 'countries' | 'cities' | 'states' | 'draw' | 'settings'
   >(null)
   // Settings menu: master SFX volume. Seeded once from sfx.ts's persisted
   // value; setVolume() both applies it live and re-persists it.
@@ -690,6 +697,12 @@ export function App() {
 
   const correctCount = attempts.filter((a) => a === 'correct').length
   const isCapitals = mode === 'capitals'
+  const isDraw = mode === 'draw'
+  // Draw mode's running/final score: the mean of each round's overlap %,
+  // rounded for display. 0 (not shown) until the first round's submitted.
+  const avgDrawScore = drawScores.length
+    ? Math.round(drawScores.reduce((sum, p) => sum + p, 0) / drawScores.length)
+    : 0
   // Capitals mode: the great-circle miss of the round just finished — still
   // needed to gate the after-guess facts card below (the score itself is now
   // only shown via the point pop-down toasts, not this HUD).
@@ -772,6 +785,14 @@ export function App() {
         setShowConfetti(false)
         setShowFireworks(false)
       }
+      return
+    }
+    if (isDraw) {
+      // No confetti/fireworks tiers for Draw mode — just a scaled end
+      // jingle, mapped onto the same 0–9 scale sfxEndJingle expects.
+      sfxEndJingle(Math.round((avgDrawScore / 100) * ROUNDS))
+      setShowConfetti(false)
+      setShowFireworks(false)
       return
     }
     sfxEndJingle(correctCount)
@@ -1172,6 +1193,25 @@ export function App() {
               </span>
               <span>Score: {totalCapitalPoints}</span>
             </div>
+          ) : isDraw ? (
+            <div
+              style={{
+                display: 'flex',
+                gap: 12,
+                alignItems: 'baseline',
+                fontSize: 16,
+                fontWeight: 600,
+              }}
+            >
+              <span>
+                Round{' '}
+                {phase === 'playing'
+                  ? Math.min(drawScores.length + 1, DRAW_ROUNDS)
+                  : DRAW_ROUNDS}{' '}
+                / {DRAW_ROUNDS}
+              </span>
+              {drawScores.length > 0 && <span>Avg: {avgDrawScore}%</span>}
+            </div>
           ) : (
             <div style={{ display: 'flex', gap: 4 }}>
               {guessBoxes.map((b, i) => (
@@ -1249,7 +1289,7 @@ export function App() {
                   <span>
                     Score: {totalCapitalPoints} / {MAX_CAPITAL_POINTS}
                   </span>
-                  {masteredThisMatch > 0 && (
+                  {masteredThisMatch > 0 && subFamily !== 'draw' && (
                     <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
                       🎓 {masteredLabel(subFamily, masteredThisMatch)}
                     </span>
@@ -1264,6 +1304,68 @@ export function App() {
                       }}
                     >
                       Perfect Score!
+                    </span>
+                  )}
+                </div>
+              ) : null
+            ) : isDraw ? (
+              drawReveal ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 30,
+                      fontWeight: 800,
+                      color: drawReveal.percent >= 50 ? COLOR.coral : COLOR.charcoal,
+                    }}
+                  >
+                    {drawReveal.percent}% match!
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 16,
+                      fontWeight: 700,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <FlagIcon code={countryCodes[drawReveal.target]} height={20} />
+                    {drawReveal.target}
+                  </span>
+                </div>
+              ) : phase === 'playing' && target ? (
+                <>
+                  <span style={{ fontWeight: 700 }}>Draw:</span>
+                  <FlagIcon code={countryCodes[target]} height={22} />
+                  <span>{target}</span>
+                </>
+              ) : phase === 'finished' ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <span>Avg Match: {avgDrawScore}%</span>
+                  {avgDrawScore >= 70 && (
+                    <span
+                      style={{
+                        fontSize: 19,
+                        fontWeight: 800,
+                        color: COLOR.coral,
+                        letterSpacing: 0.5,
+                      }}
+                    >
+                      Great Shapes!
                     </span>
                   )}
                 </div>
@@ -1300,7 +1402,7 @@ export function App() {
                 <span>
                   Score: {correctCount} / {ROUNDS}
                 </span>
-                {masteredThisMatch > 0 && (
+                {masteredThisMatch > 0 && subFamily !== 'draw' && (
                   <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
                     🎓 {masteredLabel(subFamily, masteredThisMatch)}
                   </span>
@@ -1493,35 +1595,42 @@ export function App() {
                   ? '🌍 Countries'
                   : submenu === 'cities'
                     ? '🏙️ Cities'
-                    : '🗺️ States'}
+                    : submenu === 'states'
+                      ? '🗺️ States'
+                      : '✏️ Draw'}
               </div>
               {subModesFor(submenu).map((sub) => {
+                // Draw mode doesn't track per-item weights (see
+                // store.ts's submitDrawGuess) — no mastery to show, so its
+                // row skips the progress badge and the item-list donut
+                // button entirely, and the Play button takes their space.
+                const hasMastery = sub.family !== 'draw'
                 const subReady =
                   sub.family === 'cities'
                     ? capitalsReady
                     : sub.family === 'states'
                       ? statesReady
                       : ready
-                const progress = subReady
-                  ? subModeProgress(poolSource, sub)
-                  : null
+                const progress =
+                  subReady && hasMastery ? subModeProgress(poolSource, sub) : null
                 // Mastery mix for the donut icon below, matching the item
                 // list's own 4-status legend (solved/under/exact/over).
-                const donut = subReady
-                  ? poolForSubMode(poolSource, sub).reduce(
-                      (acc, item) => {
-                        const weight =
-                          poolSource.itemWeights[itemWeightKey(sub.family, item)]
-                            ?.weight ?? DEFAULT_ITEM_WEIGHT
-                        if (weight <= MIN_ITEM_WEIGHT) acc.mastered++
-                        else if (weight < DEFAULT_ITEM_WEIGHT) acc.working++
-                        else if (weight === DEFAULT_ITEM_WEIGHT) acc.at++
-                        else acc.above++
-                        return acc
-                      },
-                      { mastered: 0, working: 0, at: 0, above: 0 },
-                    )
-                  : null
+                const donut =
+                  subReady && hasMastery
+                    ? poolForSubMode(poolSource, sub).reduce(
+                        (acc, item) => {
+                          const weight =
+                            poolSource.itemWeights[itemWeightKey(sub.family, item)]
+                              ?.weight ?? DEFAULT_ITEM_WEIGHT
+                          if (weight <= MIN_ITEM_WEIGHT) acc.mastered++
+                          else if (weight < DEFAULT_ITEM_WEIGHT) acc.working++
+                          else if (weight === DEFAULT_ITEM_WEIGHT) acc.at++
+                          else acc.above++
+                          return acc
+                        },
+                        { mastered: 0, working: 0, at: 0, above: 0 },
+                      )
+                    : null
                 return (
                   <div key={sub.id} style={{ display: 'flex', gap: 8 }}>
                     <button
@@ -1531,7 +1640,7 @@ export function App() {
                       disabled={!subReady}
                       style={{
                         ...menuButtonStyle,
-                        minWidth: 176,
+                        minWidth: hasMastery ? 176 : 220,
                         cursor: subReady ? 'pointer' : 'wait',
                         display: 'flex',
                         alignItems: 'center',
@@ -1561,34 +1670,36 @@ export function App() {
                     </button>
                     {/* Opens the full item list (weight + mastery status) for
                         this sub-mode — see the weightsSub panel below. */}
-                    <button
-                      type="button"
-                      className="arcade-btn"
-                      aria-label={`View ${sub.label} item list`}
-                      title="View item list"
-                      onClick={() => {
-                        closeWeightsItem()
-                        updateWeightsSub(sub)
-                      }}
-                      disabled={!subReady}
-                      style={{
-                        ...menuButtonStyle,
-                        width: 44,
-                        padding: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: subReady ? 'pointer' : 'wait',
-                        ...(subReady ? {} : disabledLook),
-                      }}
-                    >
-                      <DonutIcon
-                        mastered={donut?.mastered ?? 0}
-                        working={donut?.working ?? 0}
-                        at={donut?.at ?? 0}
-                        above={donut?.above ?? 0}
-                      />
-                    </button>
+                    {hasMastery && (
+                      <button
+                        type="button"
+                        className="arcade-btn"
+                        aria-label={`View ${sub.label} item list`}
+                        title="View item list"
+                        onClick={() => {
+                          closeWeightsItem()
+                          updateWeightsSub(sub)
+                        }}
+                        disabled={!subReady}
+                        style={{
+                          ...menuButtonStyle,
+                          width: 44,
+                          padding: 0,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: subReady ? 'pointer' : 'wait',
+                          ...(subReady ? {} : disabledLook),
+                        }}
+                      >
+                        <DonutIcon
+                          mastered={donut?.mastered ?? 0}
+                          working={donut?.working ?? 0}
+                          at={donut?.at ?? 0}
+                          above={donut?.above ?? 0}
+                        />
+                      </button>
+                    )}
                   </div>
                 )
               })}
@@ -1652,6 +1763,20 @@ export function App() {
               <button
                 type="button"
                 className="arcade-btn"
+                onClick={() => setSubmenu('draw')}
+                disabled={!ready}
+                style={{
+                  ...menuButtonStyle,
+                  minWidth: 220,
+                  cursor: ready ? 'pointer' : 'wait',
+                  ...(ready ? {} : disabledLook),
+                }}
+              >
+                ✏️ Draw the Border
+              </button>
+              <button
+                type="button"
+                className="arcade-btn"
                 onClick={() => {
                   clearSeedFromUrl()
                   resetGame()
@@ -1703,6 +1828,83 @@ export function App() {
         </div>
       )}
 
+      {isDraw && !partyUI && phase === 'playing' && !drawReveal && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 56,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            gap: 10,
+            pointerEvents: 'auto',
+          }}
+        >
+          {/* Multiple shapes are allowed per round (e.g. one loop per island)
+              — Undo drops only the single most-recently completed one, no
+              deeper history. Both disabled until at least one shape exists. */}
+          <button
+            type="button"
+            className="arcade-btn"
+            onClick={() => requestDrawUndo()}
+            disabled={drawShapeCount === 0}
+            style={{
+              ...menuButtonStyle,
+              cursor: drawShapeCount > 0 ? 'pointer' : 'not-allowed',
+              ...(drawShapeCount > 0 ? {} : disabledLook),
+            }}
+          >
+            ↺ Undo
+          </button>
+          <button
+            type="button"
+            className="arcade-btn"
+            onClick={() => requestDrawSubmit()}
+            disabled={drawShapeCount === 0}
+            style={{
+              ...buttonStyle(COLOR.yellow),
+              whiteSpace: 'nowrap',
+              cursor: drawShapeCount > 0 ? 'pointer' : 'not-allowed',
+              ...(drawShapeCount > 0 ? {} : disabledLook),
+            }}
+          >
+            Submit ✓
+          </button>
+        </div>
+      )}
+
+      {isDraw && !partyUI && drawReveal && (
+        // The centering transform lives on this wrapper, not the button
+        // itself — .arcade-btn:active applies its own `transform` with
+        // !important for the press-depress effect, which would otherwise
+        // *replace* (not compose with) a translateX(-50%) on the button,
+        // making it jump sideways by half its own width on click.
+        <div
+          style={{
+            position: 'absolute',
+            // Lifted clear of the bottom footers (the "mapoguesser" label and
+            // the map-tile attribution credits), same clearance as the
+            // "Guessed:" pill other modes show in this spot.
+            bottom: 56,
+            left: '50%',
+            transform: 'translateX(-50%)',
+          }}
+        >
+          <button
+            type="button"
+            className="arcade-btn"
+            onClick={() => advanceDrawRound()}
+            style={{
+              ...buttonStyle(COLOR.yellow),
+              whiteSpace: 'nowrap',
+              pointerEvents: 'auto',
+            }}
+          >
+            {drawScores.length >= DRAW_ROUNDS ? 'See Results →' : 'Next Country →'}
+          </button>
+        </div>
+      )}
+
       {!partyUI && (
         <>
           <StateFactsCard marker={lastResolvedStateMarker} seed={seed} />
@@ -1735,6 +1937,11 @@ export function App() {
           // Capitals edition: swap the "o" for a map pin.
           <>
             map<span style={{ fontSize: '0.85em' }}>📍</span>guesser
+          </>
+        ) : isDraw ? (
+          // Draw edition: swap the "o" for a pencil.
+          <>
+            map<span style={{ fontSize: '0.85em' }}>✏️</span>guesser
           </>
         ) : subFamily === 'states' ? (
           // US States edition: swap the "o" for a map.

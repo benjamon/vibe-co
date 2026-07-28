@@ -31,7 +31,7 @@ export type GamePhase = 'idle' | 'playing' | 'finished'
 // Which country pool the match draws from. 'classic' = every playable country
 // (or a named regional subset — see gameModes.ts); 'capitals' = guess the
 // capital city of a country, scored golf-style by distance (URL `cap=1`).
-export type GameMode = 'classic' | 'capitals'
+export type GameMode = 'classic' | 'capitals' | 'draw'
 
 // A city and its coordinates. Populated by WorldViewer from the Natural Earth
 // populated-places dataset (50m ≈ 1250 cities with population). Drives the
@@ -92,6 +92,10 @@ export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // budget for classic.
 export const CAPITAL_ROUNDS = 5
 export const CAPITAL_GUESSES_PER_ROUND = 2
+// Draw mode: freehand-trace a country's border from memory, scored by %
+// overlap with the real shape. Shorter than classic — each round takes
+// longer (a whole drawing gesture vs. a single click).
+export const DRAW_ROUNDS = 5
 // A city-mode guess scores its great-circle miss in miles (lower is better).
 // Used as the miss penalty for a round a player never answers (multiplayer
 // only) — a skipped round costs exactly this many miles, no cap on an actual
@@ -130,9 +134,10 @@ export const GUESS_LOCK_MS = 1000
 const lockUntil = (): number => Date.now() + GUESS_LOCK_MS
 
 // How many rounds a given mode runs for. Must match the server's roundsForMode
-// so single-player and party matches agree on when the match ends.
+// so single-player and party matches agree on when the match ends. ('draw' is
+// single-player only — see gameModes.ts — so it has no server-side match.)
 export const roundsForMode = (mode: GameMode): number =>
-  mode === 'capitals' ? CAPITAL_ROUNDS : ROUNDS
+  mode === 'capitals' ? CAPITAL_ROUNDS : mode === 'draw' ? DRAW_ROUNDS : ROUNDS
 
 // Single-slot save: a returning player can resume one in-progress match.
 // Starting a different seed overwrites it.
@@ -285,6 +290,8 @@ interface SavedMatch {
   // this match — see GameState.masteredThisMatch. Optional so legacy saves
   // without it just resume at 0.
   masteredThisMatch?: number
+  // Draw mode only: the % overlap score for each completed round.
+  drawScores?: number[]
 }
 
 const isSavedMatch = (v: unknown): v is SavedMatch => {
@@ -647,6 +654,33 @@ interface GameState {
   // Capitals mode only: total lifeline point cost deducted from each
   // completed round's score, parallel to `capitalPoints` (see HINT_PENALTY).
   capitalHintPenalty: number[]
+
+  // Draw mode only: the % overlap between the player's freehand shape and
+  // the real country, one per completed round. Purely a per-match score —
+  // not persisted or fed into itemWeights (see submitDrawGuess).
+  drawScores: number[]
+  // Draw mode only: the just-completed round's outcome, while WorldViewer is
+  // showing the "here's the real border" reveal — null between rounds.
+  // Recording the score (submitDrawGuess) and clearing the reveal + advancing
+  // the round (advanceDrawRound) are split so the reveal has time to be seen.
+  drawReveal: { target: string; percent: number } | null
+  submitDrawGuess: (percent: number) => void
+  advanceDrawRound: () => void
+
+  // Draw mode only: how many shapes the player has committed so far this
+  // round (before hitting Submit) — mirrored from WorldViewer's local shape
+  // list (which owns the actual stroke geometry) purely so the Submit/Undo
+  // buttons (App.tsx) know when they're usable. Reset to 0 whenever a round
+  // starts.
+  drawShapeCount: number
+  setDrawShapeCount: (n: number) => void
+  // Bumped by the Submit/Undo buttons; WorldViewer diffs these nonces to
+  // trigger the actual submit/undo, since it — not the store — owns the
+  // drawn shapes' geometry and rendering.
+  drawSubmitNonce: number
+  requestDrawSubmit: () => void
+  drawUndoNonce: number
+  requestDrawUndo: () => void
 
   // Capitals lifelines, usable every round at a points cost (see
   // HINT_PENALTY). `revealName`/`revealFlag` show the hidden country
@@ -1200,6 +1234,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   capitalPoints: [],
   capitalBonus: [],
   capitalHintPenalty: [],
+  drawScores: [],
+  drawReveal: null,
+  drawShapeCount: 0,
+  setDrawShapeCount: (n) => set({ drawShapeCount: n }),
+  drawSubmitNonce: 0,
+  requestDrawSubmit: () => set((s) => ({ drawSubmitNonce: s.drawSubmitNonce + 1 })),
+  drawUndoNonce: 0,
+  requestDrawUndo: () => set((s) => ({ drawUndoNonce: s.drawUndoNonce + 1 })),
   revealName: false,
   revealFlag: false,
   hintCircle: null,
@@ -1305,6 +1347,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       capitalPoints: [],
       capitalBonus: [],
       capitalHintPenalty: [],
+      drawScores: [],
+      drawReveal: null,
+      drawShapeCount: 0,
       revealName: false,
       revealFlag: false,
       hintCircle: null,
@@ -1327,8 +1372,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const pool = poolForSubMode(state, sub)
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
-    // Capitals mode is a shorter, 5-capital match; classic mode uses ROUNDS.
-    const roundCount = mode === 'capitals' ? CAPITAL_ROUNDS : ROUNDS
+    const roundCount = roundsForMode(mode)
 
     // Resume only if the seed AND the sub-mode match the saved match — the same
     // seed draws a different sequence per sub-mode. A different seed/sub-mode
@@ -1356,18 +1400,21 @@ export const useGameStore = create<GameState>((set, get) => ({
     const capitalPoints = restore?.capitalPoints ?? []
     const capitalBonus = restore?.capitalBonus ?? []
     const capitalHintPenalty = restore?.capitalHintPenalty ?? []
+    const drawScores = restore?.drawScores ?? []
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
     const targetIndex = restore?.targetIndex ?? 0
     const roundGuess = restore?.roundGuess ?? null
     const masteredThisMatch = restore?.masteredThisMatch ?? 0
-    // Capitals mode records one distance per completed capital, so it finishes
-    // once every capital has a recorded distance; classic mode finishes on
-    // the guess budget.
+    // Capitals mode records one distance per completed capital, and draw mode
+    // one score per completed round, so each finishes once that array fills;
+    // classic mode finishes on the guess budget.
     const finished =
       mode === 'capitals'
         ? distances.length >= CAPITAL_ROUNDS
-        : targetIndex >= ROUNDS
+        : mode === 'draw'
+          ? drawScores.length >= DRAW_ROUNDS
+          : targetIndex >= ROUNDS
 
     set({
       phase: finished ? 'finished' : 'playing',
@@ -1382,6 +1429,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       capitalPoints,
       capitalBonus,
       capitalHintPenalty,
+      drawScores,
+      drawReveal: null,
+      drawShapeCount: 0,
       revealName: false,
       revealFlag: false,
       hintCircle: null,
@@ -1414,6 +1464,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       capitalPoints: [],
       capitalBonus: [],
       capitalHintPenalty: [],
+      drawScores: [],
+      drawReveal: null,
+      drawShapeCount: 0,
       revealName: false,
       revealFlag: false,
       hintCircle: null,
@@ -1467,6 +1520,38 @@ export const useGameStore = create<GameState>((set, get) => ({
       endingTarget: null,
       perfectStreak: nextPerfectStreak(s.attempts, s.perfectStreak),
     })),
+
+  // Draw mode: WorldViewer calls this once a freehand shape is closed and
+  // scored (see WorldViewer's computeOverlapPercent). Just records the score
+  // and hands WorldViewer a `drawReveal` to show the real border against —
+  // `target`/`targetIndex`/`phase` don't move yet, so the reveal has time to
+  // be seen; advanceDrawRound below does the actual round advance.
+  submitDrawGuess: (percent) => {
+    const s = get()
+    if (s.mode !== 'draw' || s.phase !== 'playing' || s.target === null) return
+    if (s.drawReveal !== null) return
+    set({
+      drawScores: [...s.drawScores, percent],
+      drawReveal: { target: s.target, percent },
+    })
+  },
+
+  // Called by WorldViewer once the reveal has been shown for a bit: clears
+  // the reveal and moves on to the next target, or finishes the match if
+  // that was the last round.
+  advanceDrawRound: () => {
+    const s = get()
+    if (s.mode !== 'draw' || s.drawReveal === null) return
+    const targetIndex = s.targetIndex + 1
+    const finished = s.drawScores.length >= DRAW_ROUNDS
+    set({
+      drawReveal: null,
+      drawShapeCount: 0,
+      targetIndex,
+      target: finished ? null : targetAt(s.targets, targetIndex),
+      phase: finished ? 'finished' : 'playing',
+    })
+  },
 
   handleGlobeClick: (clicked, lat, lon) => {
     set({ country: clicked })
@@ -1912,6 +1997,7 @@ useGameStore.subscribe((state, prev) => {
     state.capitalPoints === prev.capitalPoints &&
     state.capitalBonus === prev.capitalBonus &&
     state.capitalHintPenalty === prev.capitalHintPenalty &&
+    state.drawScores === prev.drawScores &&
     state.targetIndex === prev.targetIndex &&
     state.markers === prev.markers &&
     state.consecutiveWrong === prev.consecutiveWrong &&
@@ -1928,6 +2014,7 @@ useGameStore.subscribe((state, prev) => {
     capitalPoints: state.capitalPoints,
     capitalBonus: state.capitalBonus,
     capitalHintPenalty: state.capitalHintPenalty,
+    drawScores: state.drawScores,
     targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,
