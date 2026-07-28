@@ -1036,6 +1036,54 @@ export function WorldViewer() {
       return (dist / Re) * ((2 * Math.tan(fovy / 2)) / h)
     }
 
+    // Countries at or below this polygon area (deg²) get an expanded click
+    // hitbox (see nearestTinyCountry) — small island nations and city-states
+    // are otherwise all but unclickable at a normal zoom level. A bit larger
+    // than store.ts's MIN_TARGET_AREA (which only gates whether one can be a
+    // target at all): this also helps small-but-legitimately-sized islands
+    // that already pass that bar (Malta, Singapore, Barbados, …).
+    const TINY_HITBOX_MAX_AREA = 1.0
+    // Snap radius for the expanded hitbox, in screen pixels — converted to
+    // degrees per-click via surfaceRadiansPerPixel so it stays a constant
+    // *visual* size regardless of zoom.
+    const TINY_HIT_PIXEL_RADIUS = 18
+
+    // Fallback hit-test for a click that missed every polygon outright: snap
+    // to the nearest tiny country's flag anchor (the same point its pin
+    // renders at) if the click landed within TINY_HIT_PIXEL_RADIUS screen
+    // pixels of it. Only considers countries under TINY_HITBOX_MAX_AREA, so
+    // normal-sized countries still require an exact click.
+    const nearestTinyCountry = (
+      list: CountryEntry[],
+      lat: number,
+      lon: number,
+    ): string | null => {
+      const radiusDeg =
+        surfaceRadiansPerPixel() * TINY_HIT_PIXEL_RADIUS * (180 / Math.PI)
+      const cosLat = Math.cos(CesiumMath.toRadians(lat))
+      let bestName: string | null = null
+      let bestDist = Infinity
+      for (const c of list) {
+        if (c.area > TINY_HITBOX_MAX_AREA) continue
+        if (
+          lon < c.bbox[0] - radiusDeg ||
+          lon > c.bbox[2] + radiusDeg ||
+          lat < c.bbox[1] - radiusDeg ||
+          lat > c.bbox[3] + radiusDeg
+        )
+          continue
+        const pt = flagPointFor(c)
+        const dLat = lat - pt.lat
+        const dLon = (lon - pt.lon) * cosLat
+        const dist = Math.hypot(dLat, dLon)
+        if (dist <= radiusDeg && dist < bestDist) {
+          bestDist = dist
+          bestName = c.name
+        }
+      }
+      return bestName
+    }
+
     const lookupCountryName = (lat: number, lon: number): string | null => {
       const list = countryEntries
       if (!list) return null
@@ -1051,7 +1099,7 @@ export function WorldViewer() {
           if (pointInSubPolygon(lon, lat, poly)) return c.name
         }
       }
-      return null
+      return nearestTinyCountry(list, lat, lon)
     }
 
     // Same point-in-polygon lookup as lookupCountryName, against stateEntries
