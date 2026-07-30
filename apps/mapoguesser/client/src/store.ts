@@ -292,6 +292,11 @@ interface SavedMatch {
   masteredThisMatch?: number
   // Draw mode only: the % overlap score for each completed round.
   drawScores?: number[]
+  // Draw mode only: which target's post-match reveal is showing, if any —
+  // see GameState.drawRevealIndex. A resumed reveal loses its fill overlay
+  // (WorldViewer doesn't persist raw stroke geometry) but still shows the
+  // real border and re-arms the hold timer.
+  drawRevealIndex?: number | null
 }
 
 const isSavedMatch = (v: unknown): v is SavedMatch => {
@@ -524,6 +529,17 @@ interface GameState {
   countryAreas: Record<string, number>
   setCountryAreas: (areas: Record<string, number>) => void
 
+  // Name → polygon centroid. Populated alongside countries; used only to
+  // pick Draw mode's 5-country cluster (see pickAdjacentCluster) — the
+  // curated DRAW_SUBMODES pool doesn't carry geographic position otherwise.
+  countryCentroids: Record<string, { lat: number; lon: number }>
+  setCountryCentroids: (centroids: Record<string, { lat: number; lon: number }>) => void
+
+  // Same idea as countryCentroids, but for US states — feeds the "Draw a US
+  // State" mode's (family 'draw-states') cluster pick.
+  stateCentroids: Record<string, { lat: number; lon: number }>
+  setStateCentroids: (centroids: Record<string, { lat: number; lon: number }>) => void
+
   // Settings-menu preference: when true, the "All" countries pool excludes
   // countries below MIN_TARGET_AREA (Vatican, Monaco, Tuvalu, Nauru, …).
   // Persisted; defaults to true (exclude them).
@@ -655,15 +671,20 @@ interface GameState {
   // completed round's score, parallel to `capitalPoints` (see HINT_PENALTY).
   capitalHintPenalty: number[]
 
-  // Draw mode only: the % overlap between the player's freehand shape and
-  // the real country, one per completed round. Purely a per-match score —
-  // not persisted or fed into itemWeights (see submitDrawGuess).
+  // Draw mode only: the % overlap between the player's freehand shapes and
+  // the real country, one per round — appended as each of the DRAW_ROUNDS
+  // targets is submitted, all of them *before* any reveal is shown (see
+  // drawRevealIndex). Purely a per-match score — not persisted beyond the
+  // current match's save, not fed into itemWeights.
   drawScores: number[]
-  // Draw mode only: the just-completed round's outcome, while WorldViewer is
-  // showing the "here's the real border" reveal — null between rounds.
-  // Recording the score (submitDrawGuess) and clearing the reveal + advancing
-  // the round (advanceDrawRound) are split so the reveal has time to be seen.
-  drawReveal: { target: string; percent: number } | null
+  // Draw mode only: which of the DRAW_ROUNDS targets (by index into
+  // `targets`/`drawScores`) the post-match reveal sequence is currently
+  // showing, or null while still drawing (or once the sequence has finished
+  // and the match is over). Set to 0 the moment the 5th shape is submitted;
+  // WorldViewer steps it forward once each reveal has been shown a while
+  // (advanceDrawRound), walking through all 5 in the same order they were
+  // drawn before finally finishing the match.
+  drawRevealIndex: number | null
   submitDrawGuess: (percent: number) => void
   advanceDrawRound: () => void
 
@@ -873,6 +894,37 @@ const drawWeightedUniqueTargets = (
   return out
 }
 
+// Draw mode: pick `n` countries from `pool` that are geographically close to
+// each other — a seed country chosen deterministically from `seed`, plus its
+// n-1 nearest neighbors by straight centroid distance. This is an
+// approximation of "adjacent" (the curated DRAW_SUBMODES pool is only ~30
+// countries worldwide, so it rarely contains a true land-adjacent n-clique
+// for an arbitrary seed) but keeps the group visually close enough to frame
+// together in one shot. Countries missing a centroid (dataset still loading)
+// are skipped; if fewer than n remain, returns whatever's available.
+const pickAdjacentCluster = (
+  pool: string[],
+  centroids: Record<string, { lat: number; lon: number }>,
+  seed: string,
+  n: number,
+): string[] => {
+  const withCentroid = pool.filter((name) => centroids[name])
+  if (withCentroid.length <= n) return withCentroid
+  const rng = mulberry32(hashSeed(seed))
+  const seedName = withCentroid[Math.floor(rng() * withCentroid.length)]
+  const seedC = centroids[seedName]
+  const dist2 = (name: string): number => {
+    const c = centroids[name]
+    const dLat = c.lat - seedC.lat
+    const dLon = c.lon - seedC.lon
+    return dLat * dLat + dLon * dLon
+  }
+  const rest = withCentroid
+    .filter((name) => name !== seedName)
+    .sort((a, b) => dist2(a) - dist2(b))
+  return [seedName, ...rest.slice(0, n - 1)]
+}
+
 // 6 char base36 → 36⁶ ≈ 2.2 billion possible seeds. Plenty for sharing.
 export const generateSeed = (): string =>
   Math.floor(Math.random() * 36 ** 6)
@@ -927,6 +979,11 @@ export const poolForSubMode = (s: PoolSource, sub: SubMode): string[] => {
     return [...keys].sort((a, b) => s.cities[b].pop - s.cities[a].pop || (a < b ? -1 : 1))
   }
   if (sub.family === 'states') return s.states
+  if (sub.family === 'draw-states') {
+    if (sub.pool === 'all') return s.states
+    const playableStates = new Set(s.states)
+    return (sub.pool as string[]).filter((n) => playableStates.has(n))
+  }
   if (sub.pool === 'all') {
     if (!s.hideTinyIslands) return s.countries
     return s.countries.filter(
@@ -1144,6 +1201,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   countryAreas: {},
   setCountryAreas: (countryAreas) => set({ countryAreas }),
 
+  countryCentroids: {},
+  setCountryCentroids: (countryCentroids) => set({ countryCentroids }),
+
+  stateCentroids: {},
+  setStateCentroids: (stateCentroids) => set({ stateCentroids }),
+
   hideTinyIslands: loadHideTinyIslands(),
   setHideTinyIslands: (hide) => set({ hideTinyIslands: hide }),
 
@@ -1235,7 +1298,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   capitalBonus: [],
   capitalHintPenalty: [],
   drawScores: [],
-  drawReveal: null,
+  drawRevealIndex: null,
   drawShapeCount: 0,
   setDrawShapeCount: (n) => set({ drawShapeCount: n }),
   drawSubmitNonce: 0,
@@ -1348,7 +1411,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       capitalBonus: [],
       capitalHintPenalty: [],
       drawScores: [],
-      drawReveal: null,
+      drawRevealIndex: null,
       drawShapeCount: 0,
       revealName: false,
       revealFlag: false,
@@ -1393,7 +1456,16 @@ export const useGameStore = create<GameState>((set, get) => ({
     const targets =
       restore?.targets && restore.targets.length > 0
         ? restore.targets
-        : drawWeightedUniqueTargets(pool, weightOf, matchSeed, roundCount)
+        : mode === 'draw'
+          ? pickAdjacentCluster(
+              pool,
+              sub.family === 'draw-states'
+                ? state.stateCentroids
+                : state.countryCentroids,
+              matchSeed,
+              roundCount,
+            )
+          : drawWeightedUniqueTargets(pool, weightOf, matchSeed, roundCount)
     if (targets.length === 0) return
     const attempts = restore?.attempts ?? []
     const distances = restore?.distances ?? []
@@ -1401,19 +1473,22 @@ export const useGameStore = create<GameState>((set, get) => ({
     const capitalBonus = restore?.capitalBonus ?? []
     const capitalHintPenalty = restore?.capitalHintPenalty ?? []
     const drawScores = restore?.drawScores ?? []
+    const drawRevealIndex = restore?.drawRevealIndex ?? null
     const markers = restore?.markers ?? []
     const consecutiveWrong = restore?.consecutiveWrong ?? 0
     const targetIndex = restore?.targetIndex ?? 0
     const roundGuess = restore?.roundGuess ?? null
     const masteredThisMatch = restore?.masteredThisMatch ?? 0
     // Capitals mode records one distance per completed capital, and draw mode
-    // one score per completed round, so each finishes once that array fills;
-    // classic mode finishes on the guess budget.
+    // one score per completed round, so each finishes once that array fills —
+    // except draw mode also has to have finished walking through its
+    // post-match reveal sequence (drawRevealIndex back to null); classic mode
+    // finishes on the guess budget.
     const finished =
       mode === 'capitals'
         ? distances.length >= CAPITAL_ROUNDS
         : mode === 'draw'
-          ? drawScores.length >= DRAW_ROUNDS
+          ? drawScores.length >= DRAW_ROUNDS && drawRevealIndex === null
           : targetIndex >= ROUNDS
 
     set({
@@ -1430,7 +1505,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       capitalBonus,
       capitalHintPenalty,
       drawScores,
-      drawReveal: null,
+      drawRevealIndex,
       drawShapeCount: 0,
       revealName: false,
       revealFlag: false,
@@ -1465,7 +1540,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       capitalBonus: [],
       capitalHintPenalty: [],
       drawScores: [],
-      drawReveal: null,
+      drawRevealIndex: null,
       drawShapeCount: 0,
       revealName: false,
       revealFlag: false,
@@ -1521,35 +1596,44 @@ export const useGameStore = create<GameState>((set, get) => ({
       perfectStreak: nextPerfectStreak(s.attempts, s.perfectStreak),
     })),
 
-  // Draw mode: WorldViewer calls this once a freehand shape is closed and
-  // scored (see WorldViewer's computeOverlapPercent). Just records the score
-  // and hands WorldViewer a `drawReveal` to show the real border against —
-  // `target`/`targetIndex`/`phase` don't move yet, so the reveal has time to
-  // be seen; advanceDrawRound below does the actual round advance.
+  // Records one of the DRAW_ROUNDS targets' scores (WorldViewer calls this
+  // once the player hits Submit — see computeOverlapPercent). The first
+  // DRAW_ROUNDS-1 submissions just advance to the next target to draw — no
+  // reveal yet, no camera move (WorldViewer keeps framing the whole cluster
+  // and only resets the *current* round's shape state). The final
+  // submission instead starts the reveal sequence from the first target
+  // (drawRevealIndex: 0) — see advanceDrawRound, which steps through the
+  // rest in the same order they were drawn.
   submitDrawGuess: (percent) => {
     const s = get()
     if (s.mode !== 'draw' || s.phase !== 'playing' || s.target === null) return
-    if (s.drawReveal !== null) return
+    if (s.drawRevealIndex !== null) return
+    const drawScores = [...s.drawScores, percent]
+    if (drawScores.length >= DRAW_ROUNDS) {
+      set({ drawScores, drawRevealIndex: 0, drawShapeCount: 0 })
+      return
+    }
+    const targetIndex = s.targetIndex + 1
     set({
-      drawScores: [...s.drawScores, percent],
-      drawReveal: { target: s.target, percent },
+      drawScores,
+      targetIndex,
+      target: targetAt(s.targets, targetIndex),
+      drawShapeCount: 0,
     })
   },
 
-  // Called by WorldViewer once the reveal has been shown for a bit: clears
-  // the reveal and moves on to the next target, or finishes the match if
-  // that was the last round.
+  // Called by WorldViewer once the current reveal step has been shown a
+  // while: steps to the next of the 5 targets' reveal, or — after the last
+  // one — finishes the match.
   advanceDrawRound: () => {
     const s = get()
-    if (s.mode !== 'draw' || s.drawReveal === null) return
-    const targetIndex = s.targetIndex + 1
-    const finished = s.drawScores.length >= DRAW_ROUNDS
+    if (s.mode !== 'draw' || s.drawRevealIndex === null) return
+    const next = s.drawRevealIndex + 1
+    const finished = next >= DRAW_ROUNDS
     set({
-      drawReveal: null,
-      drawShapeCount: 0,
-      targetIndex,
-      target: finished ? null : targetAt(s.targets, targetIndex),
+      drawRevealIndex: finished ? null : next,
       phase: finished ? 'finished' : 'playing',
+      target: finished ? null : s.target,
     })
   },
 
@@ -1998,6 +2082,7 @@ useGameStore.subscribe((state, prev) => {
     state.capitalBonus === prev.capitalBonus &&
     state.capitalHintPenalty === prev.capitalHintPenalty &&
     state.drawScores === prev.drawScores &&
+    state.drawRevealIndex === prev.drawRevealIndex &&
     state.targetIndex === prev.targetIndex &&
     state.markers === prev.markers &&
     state.consecutiveWrong === prev.consecutiveWrong &&
@@ -2015,6 +2100,7 @@ useGameStore.subscribe((state, prev) => {
     capitalBonus: state.capitalBonus,
     capitalHintPenalty: state.capitalHintPenalty,
     drawScores: state.drawScores,
+    drawRevealIndex: state.drawRevealIndex,
     targetIndex: state.targetIndex,
     consecutiveWrong: state.consecutiveWrong,
     markers: state.markers,

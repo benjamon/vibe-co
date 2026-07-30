@@ -325,7 +325,7 @@ export function App() {
   const capitalBonus = useGameStore((s) => s.capitalBonus)
   const capitalHintPenalty = useGameStore((s) => s.capitalHintPenalty)
   const drawScores = useGameStore((s) => s.drawScores)
-  const drawReveal = useGameStore((s) => s.drawReveal)
+  const drawRevealIndex = useGameStore((s) => s.drawRevealIndex)
   const advanceDrawRound = useGameStore((s) => s.advanceDrawRound)
   const drawShapeCount = useGameStore((s) => s.drawShapeCount)
   const requestDrawSubmit = useGameStore((s) => s.requestDrawSubmit)
@@ -371,7 +371,11 @@ export function App() {
   // Whether the just-played mode's pool is loaded, gating the "Play Again"
   // button the same way the start-screen pickers gate their own buttons.
   const playAgainReady =
-    mode === 'capitals' ? capitalsReady : subFamily === 'states' ? statesReady : ready
+    mode === 'capitals'
+      ? capitalsReady
+      : subFamily === 'states' || subFamily === 'draw-states'
+        ? statesReady
+        : ready
 
   // True whenever a party (lobby/in-game/results) owns the screen — used to
   // suppress all the single-player overlays while Party.tsx drives the UI.
@@ -384,9 +388,13 @@ export function App() {
   // Which mode-family sub-menu the idle start screen is showing (null = the
   // top-level Countries / Cities / … picker). 'settings' is the Settings
   // menu (volume, tiny-island toggle, View Stats), not a region picker, but
-  // shares the same "navigate in / ← Back" slot.
+  // shares the same "navigate in / ← Back" slot. 'border-artist' is the
+  // combined Draw-mode picker — it shows both the 'draw' (countries) and
+  // 'draw-states' families' sub-modes together (see the border-artist branch
+  // below), even though they stay separate ModeFamily values everywhere else
+  // (dataset selection in store.ts/WorldViewer.tsx cares which one it is).
   const [submenu, setSubmenu] = useState<
-    null | 'countries' | 'cities' | 'states' | 'draw' | 'settings'
+    null | 'countries' | 'cities' | 'states' | 'border-artist' | 'settings'
   >(null)
   // Settings menu: master SFX volume. Seeded once from sfx.ts's persisted
   // value; setVolume() both applies it live and re-persists it.
@@ -648,9 +656,10 @@ export function App() {
         ? resolveSubMode('capitals')
         : resolveSubMode('classic')
     // City sub-modes need the capitals dataset before the draw can reproduce;
-    // states sub-modes need the state polygon dataset.
+    // states/draw-states sub-modes need the state polygon dataset.
     if (sub.family === 'cities' && !capitalsReady) return
-    if (sub.family === 'states' && !statesReady) return
+    if ((sub.family === 'states' || sub.family === 'draw-states') && !statesReady)
+      return
     startGame(urlSeed, sub.id)
   }, [ready, capitalsReady, statesReady, phase, startGame, partyUI])
 
@@ -703,6 +712,14 @@ export function App() {
   const avgDrawScore = drawScores.length
     ? Math.round(drawScores.reduce((sum, p) => sum + p, 0) / drawScores.length)
     : 0
+  // The post-match reveal sequence's current step (see store.ts's
+  // drawRevealIndex) — the target + score it's showing, or null while still
+  // drawing (all 5 targets/scores are already known by the time any reveal
+  // starts, so this is a plain lookup, not new data).
+  const drawReveal =
+    drawRevealIndex !== null
+      ? { target: targets[drawRevealIndex], percent: drawScores[drawRevealIndex] }
+      : null
   // Capitals mode: the great-circle miss of the round just finished — still
   // needed to gate the after-guess facts card below (the score itself is now
   // only shown via the point pop-down toasts, not this HUD).
@@ -1204,13 +1221,17 @@ export function App() {
               }}
             >
               <span>
-                Round{' '}
+                {/* Scores aren't shown until every target's been drawn and
+                    the reveal sequence starts stepping through them — no
+                    running average leaking through mid-match. */}
+                {drawRevealIndex !== null ? 'Reviewing' : 'Round'}{' '}
                 {phase === 'playing'
-                  ? Math.min(drawScores.length + 1, DRAW_ROUNDS)
+                  ? drawRevealIndex !== null
+                    ? drawRevealIndex + 1
+                    : Math.min(drawScores.length + 1, DRAW_ROUNDS)
                   : DRAW_ROUNDS}{' '}
                 / {DRAW_ROUNDS}
               </span>
-              {drawScores.length > 0 && <span>Avg: {avgDrawScore}%</span>}
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 4 }}>
@@ -1289,7 +1310,7 @@ export function App() {
                   <span>
                     Score: {totalCapitalPoints} / {MAX_CAPITAL_POINTS}
                   </span>
-                  {masteredThisMatch > 0 && subFamily !== 'draw' && (
+                  {masteredThisMatch > 0 && subFamily !== 'draw' && subFamily !== 'draw-states' && (
                     <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
                       🎓 {masteredLabel(subFamily, masteredThisMatch)}
                     </span>
@@ -1336,14 +1357,22 @@ export function App() {
                       gap: 8,
                     }}
                   >
-                    <FlagIcon code={countryCodes[drawReveal.target]} height={20} />
+                    <FlagIcon
+                      code={subFamily === 'draw-states' ? undefined : countryCodes[drawReveal.target]}
+                      src={subFamily === 'draw-states' ? usStateFlagUrl(drawReveal.target) : undefined}
+                      height={20}
+                    />
                     {drawReveal.target}
                   </span>
                 </div>
               ) : phase === 'playing' && target ? (
                 <>
                   <span style={{ fontWeight: 700 }}>Draw:</span>
-                  <FlagIcon code={countryCodes[target]} height={22} />
+                  <FlagIcon
+                    code={subFamily === 'draw-states' ? undefined : countryCodes[target]}
+                    src={subFamily === 'draw-states' ? usStateFlagUrl(target) : undefined}
+                    height={22}
+                  />
                   <span>{target}</span>
                 </>
               ) : phase === 'finished' ? (
@@ -1402,7 +1431,7 @@ export function App() {
                 <span>
                   Score: {correctCount} / {ROUNDS}
                 </span>
-                {masteredThisMatch > 0 && subFamily !== 'draw' && (
+                {masteredThisMatch > 0 && subFamily !== 'draw' && subFamily !== 'draw-states' && (
                   <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
                     🎓 {masteredLabel(subFamily, masteredThisMatch)}
                   </span>
@@ -1597,18 +1626,21 @@ export function App() {
                     ? '🏙️ Cities'
                     : submenu === 'states'
                       ? '🗺️ States'
-                      : '✏️ Draw'}
+                      : '🎨 Border Artist'}
               </div>
-              {subModesFor(submenu).map((sub) => {
+              {(submenu === 'border-artist'
+                ? [...subModesFor('draw'), ...subModesFor('draw-states')]
+                : subModesFor(submenu)
+              ).map((sub) => {
                 // Draw mode doesn't track per-item weights (see
                 // store.ts's submitDrawGuess) — no mastery to show, so its
                 // row skips the progress badge and the item-list donut
                 // button entirely, and the Play button takes their space.
-                const hasMastery = sub.family !== 'draw'
+                const hasMastery = sub.family !== 'draw' && sub.family !== 'draw-states'
                 const subReady =
                   sub.family === 'cities'
                     ? capitalsReady
-                    : sub.family === 'states'
+                    : sub.family === 'states' || sub.family === 'draw-states'
                       ? statesReady
                       : ready
                 const progress =
@@ -1763,16 +1795,16 @@ export function App() {
               <button
                 type="button"
                 className="arcade-btn"
-                onClick={() => setSubmenu('draw')}
-                disabled={!ready}
+                onClick={() => setSubmenu('border-artist')}
+                disabled={!ready || !statesReady}
                 style={{
                   ...menuButtonStyle,
                   minWidth: 220,
-                  cursor: ready ? 'pointer' : 'wait',
-                  ...(ready ? {} : disabledLook),
+                  cursor: ready && statesReady ? 'pointer' : 'wait',
+                  ...(ready && statesReady ? {} : disabledLook),
                 }}
               >
-                ✏️ Draw the Border
+                🎨 Border Artist
               </button>
               <button
                 type="button"
@@ -1900,7 +1932,9 @@ export function App() {
               pointerEvents: 'auto',
             }}
           >
-            {drawScores.length >= DRAW_ROUNDS ? 'See Results →' : 'Next Country →'}
+            {drawRevealIndex !== null && drawRevealIndex >= DRAW_ROUNDS - 1
+              ? 'See Results →'
+              : 'Next Reveal →'}
           </button>
         </div>
       )}

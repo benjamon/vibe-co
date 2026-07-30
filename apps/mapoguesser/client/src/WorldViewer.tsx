@@ -474,22 +474,12 @@ export function WorldViewer() {
       label?: LatLonPt
       // Normalised name variants, for matching this country to a capital city.
       aliases: string[]
-      // Natural Earth's CONTINENT property (e.g. "Asia", "North America") —
-      // empty for entries where it's absent (states have none at all). Used
-      // only by Draw mode's camera framing for large countries — see
-      // continentBBoxes/startDrawRound.
-      continent: string
     }
     let countryEntries: CountryEntry[] | null = null
     // Same shape, built from the US state polygon dataset — backs the US
     // States mode's hit-testing/reveal instead of countryEntries. States have
     // no capitals-matching aliases, so that field is always empty.
     let stateEntries: CountryEntry[] | null = null
-    // Draw mode: union bbox of every loaded country sharing a CONTINENT
-    // value, built once alongside countryEntries — lets a large country's
-    // camera framing zoom out to show its whole continent (see
-    // startDrawRound) without re-scanning every country per round.
-    const continentBBoxes = new Map<string, [number, number, number, number]>()
 
     // Capital cities keyed by normalised country name. Loaded from CAPITALS_URL;
     // empty until then (placement just falls back to centroid/label meanwhile).
@@ -707,8 +697,6 @@ export function WorldViewer() {
             }
             const popEst = Number(props.POP_EST)
             if (Number.isFinite(popEst) && popEst > 0) populations[name] = popEst
-            const continent =
-              typeof props.CONTINENT === 'string' ? props.CONTINENT : ''
             for (const key of [
               'NAME',
               'ADMIN',
@@ -731,23 +719,9 @@ export function WorldViewer() {
               area: computeArea(polygons),
               label,
               aliases: [...aliases],
-              continent,
             })
           }
           countryEntries = list
-          continentBBoxes.clear()
-          for (const c of list) {
-            if (!c.continent) continue
-            const existing = continentBBoxes.get(c.continent)
-            if (!existing) {
-              continentBBoxes.set(c.continent, [...c.bbox])
-              continue
-            }
-            existing[0] = Math.min(existing[0], c.bbox[0])
-            existing[1] = Math.min(existing[1], c.bbox[1])
-            existing[2] = Math.max(existing[2], c.bbox[2])
-            existing[3] = Math.max(existing[3], c.bbox[3])
-          }
           // Cities-mode pool: join places with countries (no-op until the places
           // have also loaded — publishCities guards on placesLoaded).
           publishCities()
@@ -762,10 +736,15 @@ export function WorldViewer() {
           // included these.
           const names = list.map((c) => c.name)
           const areas: Record<string, number> = {}
-          for (const c of list) areas[c.name] = c.area
+          const centroids: Record<string, { lat: number; lon: number }> = {}
+          for (const c of list) {
+            areas[c.name] = c.area
+            centroids[c.name] = c.centroid
+          }
           useGameStore.getState().registerCountries(names)
           useGameStore.getState().setCountries(names)
           useGameStore.getState().setCountryAreas(areas)
+          useGameStore.getState().setCountryCentroids(centroids)
         },
       )
       .catch(() => {
@@ -810,11 +789,13 @@ export function WorldViewer() {
               centroid: computeCentroid(polygons),
               area: computeArea(polygons),
               aliases: [],
-              continent: '',
             })
           }
           stateEntries = list
           useGameStore.getState().setStates(list.map((c) => c.name))
+          const stateCentroids: Record<string, { lat: number; lon: number }> = {}
+          for (const c of list) stateCentroids[c.name] = c.centroid
+          useGameStore.getState().setStateCentroids(stateCentroids)
         },
       )
       .catch(() => {
@@ -1337,7 +1318,6 @@ export function WorldViewer() {
           polygons: [],
           area: 0,
           aliases: [],
-          continent: '',
         })
         return
       }
@@ -1381,51 +1361,46 @@ export function WorldViewer() {
     // scoring (the live polyline itself can still have more) — bounds the
     // worst case for a very long, wiggly stroke.
     const DRAW_SCORE_MAX_POINTS = 500
-    // Size thresholds (total polygon area, deg² — see computeArea) beyond the
-    // base framing: below DRAW_SMALL_AREA (Sri Lanka/Cuba/Iceland-scale —
-    // half the earlier 3, so Ireland/Sri Lanka-ish no longer qualify), the
-    // standard 30% padding still feels cramped, so the zoom distance doubles.
-    // Above DRAW_LARGE_AREA (USA/Canada/China/Brazil/Australia-scale), the
-    // country's own bbox is zoomed past in favour of its continent's —
-    // approximate, since a shoelace degree-area isn't a true physical-area
-    // measure; retune here if a DRAW_SUBMODES entry looks mis-classified.
-    const DRAW_SMALL_AREA = 1.5
-    const DRAW_LARGE_AREA = 50
-    // Extra padding multiplier stacked on DRAW_FRAME_PADDING for very small
-    // countries — doubles the zoom distance (range - Re scales ~linearly
-    // with this) on top of the existing 30% padding.
-    const DRAW_SMALL_EXTRA_PADDING = 2
+    // One color per round (cycled if DRAW_ROUNDS ever exceeds this), so all
+    // 5 countries' strokes stay visually distinguishable while they're all
+    // kept on screen together through the whole match.
+    const DRAW_ROUND_COLORS = [
+      '#FF4D4D', // red
+      '#4D9DFF', // blue
+      '#4DDC84', // green
+      '#B24DFF', // purple
+      '#FFA64D', // orange
+    ]
 
-    // Fly the camera to frame `entry`'s bounding box with DRAW_FRAME_PADDING
-    // extra room on every side (more for very small countries; a whole
-    // continent's span for very large ones — see the size thresholds above).
-    // Always centred on the country's own bbox center, even when framing to
-    // the continent, so the target stays the visual focus rather than
-    // risking it landing off toward one edge of a big continent view.
-    // Inverts the same flat local-pinhole model surfaceRadiansPerPixel uses
-    // elsewhere: visible angular extent = 2 * (range - Re)/Re * tan(fovy/2)
-    // [* aspect for the horizontal axis] — solved here for the range that
-    // makes that extent match the padded span, taking whichever axis (lat/
-    // lon) needs more room.
-    const startDrawRound = (entry: CountryEntry): void => {
-      const [minLon, minLat, maxLon, maxLat] = entry.bbox
+    // Fly the camera ONCE, at match start, to frame every target's bbox
+    // together (the geographically-close cluster from pickAdjacentCluster in
+    // store.ts) with DRAW_FRAME_PADDING extra room on every side. The camera
+    // stays exactly here for the rest of the match — drawing/submitting each
+    // of the 5 targets never reframes it (see the round-advance handling
+    // below). Inverts the same flat local-pinhole model surfaceRadiansPerPixel
+    // uses elsewhere: visible angular extent = 2 * (range - Re)/Re *
+    // tan(fovy/2) [* aspect for the horizontal axis] — solved here for the
+    // range that makes that extent match the padded span, taking whichever
+    // axis (lat/lon) needs more room.
+    const startDrawMatch = (entries: CountryEntry[]): void => {
+      if (entries.length === 0) return
+      let minLon = Infinity
+      let minLat = Infinity
+      let maxLon = -Infinity
+      let maxLat = -Infinity
+      for (const e of entries) {
+        minLon = Math.min(minLon, e.bbox[0])
+        minLat = Math.min(minLat, e.bbox[1])
+        maxLon = Math.max(maxLon, e.bbox[2])
+        maxLat = Math.max(maxLat, e.bbox[3])
+      }
       const centerLat = (minLat + maxLat) / 2
       const centerLon = (minLon + maxLon) / 2
-      const continentBbox =
-        entry.area > DRAW_LARGE_AREA
-          ? continentBBoxes.get(entry.continent)
-          : undefined
-      const [spanMinLon, spanMinLat, spanMaxLon, spanMaxLat] =
-        continentBbox ?? entry.bbox
-      const padding =
-        entry.area < DRAW_SMALL_AREA
-          ? DRAW_FRAME_PADDING * DRAW_SMALL_EXTRA_PADDING
-          : DRAW_FRAME_PADDING
       const spanLatRad = CesiumMath.toRadians(
-        Math.max(spanMaxLat - spanMinLat, 0.01) * padding,
+        Math.max(maxLat - minLat, 0.01) * DRAW_FRAME_PADDING,
       )
       const spanLonRad = CesiumMath.toRadians(
-        Math.max(spanMaxLon - spanMinLon, 0.01) * padding,
+        Math.max(maxLon - minLon, 0.01) * DRAW_FRAME_PADDING,
       )
       const frustum = viewer.camera.frustum
       const fovy =
@@ -1453,31 +1428,49 @@ export function WorldViewer() {
       )
     }
 
-    // Draws the target's actual outline (each sub-polygon's outer ring, solid
-    // white, no outline-of-outline) into drawLayer, alongside whatever's
-    // already there — the player's own stroke, kept up so the two can be
-    // compared — plus a translucent red fill over the missed/extra area
-    // computed by finishStroke (see lastDrawFill).
-    const renderDrawReveal = (targetName: string): void => {
-      const entry = countryEntries?.find((c) => c.name === targetName)
+    // Which polygon dataset Draw mode's target lookups should use for the
+    // currently-selected sub-mode: 'draw-states' (the "Draw a US State"
+    // mode) uses the state polygons, everything else (the curated country
+    // list) uses countryEntries.
+    const drawEntriesFor = (subModeId: string): CountryEntry[] | null =>
+      resolveSubMode(subModeId).family === 'draw-states'
+        ? stateEntries
+        : countryEntries
+
+    // Draws one target's actual outline (each sub-polygon's outer ring, solid
+    // white, no outline-of-outline) plus a translucent red fill over its
+    // missed/extra area (fillCells — see computeDrawFillCells, computed and
+    // cached per round at Submit time in allRoundFillCells). Used by the
+    // post-match reveal sequence, one target at a time — every entity it
+    // creates is tracked in revealEntities so the next reveal step can clear
+    // just this overlay without touching the player's own (permanently kept)
+    // drawn strokes.
+    const renderDrawReveal = (
+      targetName: string,
+      fillCells: DrawFillCell[],
+    ): void => {
+      const subModeId = useGameStore.getState().subMode
+      const entry = drawEntriesFor(subModeId)?.find((c) => c.name === targetName)
       if (!entry) return
       for (const poly of entry.polygons) {
         const ring = poly[0]
         if (!ring || ring.length < 2) continue
         const positions = ring.map(([lon, lat]) => Cartesian3.fromDegrees(lon, lat))
         positions.push(positions[0])
-        drawLayer.entities.add({
-          polyline: {
-            positions,
-            width: 3,
-            material: Color.WHITE,
-            clampToGround: true,
-          },
-        })
+        revealEntities.push(
+          drawLayer.entities.add({
+            polyline: {
+              positions,
+              width: 3,
+              material: Color.WHITE,
+              clampToGround: true,
+            },
+          }),
+        )
       }
-      if (lastDrawFill) {
-        const missColor = Color.RED.withAlpha(0.35)
-        for (const cell of lastDrawFill) {
+      const missColor = Color.RED.withAlpha(0.35)
+      for (const cell of fillCells) {
+        revealEntities.push(
           drawLayer.entities.add({
             rectangle: {
               coordinates: Rectangle.fromDegrees(
@@ -1489,18 +1482,13 @@ export function WorldViewer() {
               material: missColor,
               height: 0,
             },
-          })
-        }
+          }),
+        )
       }
     }
 
     type DrawPoint = { lat: number; lon: number }
     type DrawFillCell = { west: number; south: number; east: number; north: number }
-    // Grid cells classified as "in the target but not drawn" (missed) or "drawn
-    // but not in the target" (over-drawn) by the most recent finishStroke —
-    // both shown the same translucent red in renderDrawReveal. Cleared when a
-    // new round starts.
-    let lastDrawFill: DrawFillCell[] | null = null
 
     // Even-odd ray-casting test, same algorithm as the module-level
     // pointInRing, adapted for the player's {lat,lon} point list (which,
@@ -1662,6 +1650,15 @@ export function WorldViewer() {
     let liveEntity: Entity | null = null
     let drawPointerId: number | null = null
     let lastDrawPx: { x: number; y: number } | null = null
+    // Missed/extra-area fill cells for each of the 5 targets, cached at
+    // Submit time (allRoundFillCells[roundIdx]) since scoring only happens
+    // once, up front — the post-match reveal sequence just plays each one
+    // back in order. Entities the reveal sequence itself creates (the white
+    // outline + red fill for whichever target is currently showing) are
+    // tracked separately in revealEntities so each step can clear only the
+    // *previous* reveal, never the player's own permanently-kept strokes.
+    let allRoundFillCells: DrawFillCell[][] = []
+    let revealEntities: Entity[] = []
 
     const sampleLatLon = (clientX: number, clientY: number): DrawPoint | null => {
       const anchor = pickAnchor(clientX, clientY)
@@ -1672,6 +1669,16 @@ export function WorldViewer() {
         lon: CesiumMath.toDegrees(carto.longitude),
       }
     }
+
+    // Which color the current round's shapes are drawn in — cycles through
+    // DRAW_ROUND_COLORS by targetIndex, so all 5 countries stay
+    // distinguishable while every round's strokes stay on screen at once.
+    const currentRoundColor = (): Color =>
+      Color.fromCssColorString(
+        DRAW_ROUND_COLORS[
+          useGameStore.getState().targetIndex % DRAW_ROUND_COLORS.length
+        ],
+      )
 
     const beginStroke = (clientX: number, clientY: number): void => {
       const p = sampleLatLon(clientX, clientY)
@@ -1689,7 +1696,7 @@ export function WorldViewer() {
             return pts.length >= 2 ? pts : [...pts, ...pts]
           }, false),
           width: 3.5,
-          material: Color.fromCssColorString('#FF4D4D'),
+          material: currentRoundColor(),
           clampToGround: true,
         },
       })
@@ -1735,7 +1742,7 @@ export function WorldViewer() {
           polyline: {
             positions,
             width: 3.5,
-            material: Color.fromCssColorString('#FF4D4D'),
+            material: currentRoundColor(),
             clampToGround: true,
           },
         }),
@@ -1766,16 +1773,19 @@ export function WorldViewer() {
       useGameStore.getState().setDrawShapeCount(shapes.length)
     }
 
-    // Score the union of every committed shape against the target, then hand
-    // off to submitDrawGuess (records the score and triggers the reveal).
+    // Score the union of every committed shape against the current target,
+    // caching the fill cells for this round's eventual reveal (shown only
+    // once all DRAW_ROUNDS targets are submitted — see the reveal-sequence
+    // handling below), then hand off to submitDrawGuess to record the score.
     const submitShapes = (): void => {
       if (shapes.length === 0) return
       const st = useGameStore.getState()
+      const roundIdx = st.targetIndex
       const entry = st.target
-        ? countryEntries?.find((c) => c.name === st.target)
+        ? drawEntriesFor(st.subMode)?.find((c) => c.name === st.target)
         : null
       const percent = entry ? computeOverlapPercent(entry, shapes) : 0
-      lastDrawFill = entry ? computeDrawFillCells(entry, shapes) : null
+      allRoundFillCells[roundIdx] = entry ? computeDrawFillCells(entry, shapes) : []
       st.submitDrawGuess(percent)
     }
 
@@ -1844,13 +1854,14 @@ export function WorldViewer() {
       if (cinematic) return
 
       // Draw mode: every pointer down/move/up is the freehand stroke, not a
-      // pan gesture — the globe stays locked in place the whole round (see
-      // startDrawRound). drawReveal !== null means we're mid-hold showing
-      // the answer; ignore input until the next round starts. Only the
-      // first finger down starts a stroke; extra touches are ignored.
+      // pan gesture — the globe stays locked in place for the whole match
+      // (see startDrawMatch). drawRevealIndex !== null means we're mid-hold
+      // showing the post-match reveal sequence; ignore input until it
+      // finishes. Only the first finger down starts a stroke; extra touches
+      // are ignored.
       const dst = useGameStore.getState()
       if (dst.mode === 'draw' && dst.phase === 'playing') {
-        if (dst.drawReveal !== null || drawPointerId !== null) return
+        if (dst.drawRevealIndex !== null || drawPointerId !== null) return
         if (!pickAnchor(e.clientX, e.clientY)) return
         drawPointerId = e.pointerId
         try {
@@ -2024,8 +2035,13 @@ export function WorldViewer() {
     let prevBrowseSubModeId = useGameStore.getState().browseSubModeId
     let prevBrowseTarget = useGameStore.getState().browseTarget
     let prevMode = useGameStore.getState().mode
+    // Draw mode tracking: prevDrawMatchSeed distinguishes "brand-new match"
+    // (reframe the camera on the whole cluster, wipe every shape) from
+    // "still the same match" (target/reveal-index changes within it, which
+    // only touch the current round's state — see the subscribe callback).
+    let prevDrawMatchSeed: string | null = null
     let prevDrawTarget = useGameStore.getState().target
-    let prevDrawReveal = useGameStore.getState().drawReveal
+    let prevDrawRevealIndex = useGameStore.getState().drawRevealIndex
     let prevDrawSubmitNonce = useGameStore.getState().drawSubmitNonce
     let prevDrawUndoNonce = useGameStore.getState().drawUndoNonce
     let endingHoldTimeout: number | null = null
@@ -2456,46 +2472,76 @@ export function WorldViewer() {
         }
       }
 
-      // Draw mode: reveal handling. A new (non-null) drawReveal means the
-      // player just submitted a shape — draw the real border alongside it
-      // and hold there before the round advances. advanceDrawRound (fired
-      // by the timeout) clears drawReveal and moves `target` on in the same
-      // set() call, which the round-start block below picks up.
-      if (state.drawReveal !== prevDrawReveal) {
-        prevDrawReveal = state.drawReveal
+      // Draw mode: match start. A new seed while in draw mode means a
+      // genuinely fresh match (including switching straight from a
+      // different one) — reframe the camera on the whole 5-country cluster
+      // once and wipe every shape/reveal artifact.
+      if (state.mode === 'draw' && state.seed !== prevDrawMatchSeed) {
+        prevDrawMatchSeed = state.seed
+        prevDrawTarget = state.target
+        prevDrawRevealIndex = state.drawRevealIndex
         if (drawHoldTimeout !== null) {
           clearTimeout(drawHoldTimeout)
           drawHoldTimeout = null
         }
-        if (state.drawReveal) {
-          renderDrawReveal(state.drawReveal.target)
-          drawHoldTimeout = window.setTimeout(() => {
-            drawHoldTimeout = null
-            useGameStore.getState().advanceDrawRound()
-          }, DRAW_REVEAL_HOLD_MS)
+        drawPoints = []
+        shapes = []
+        shapeEntities = []
+        liveEntity = null
+        allRoundFillCells = []
+        revealEntities = []
+        drawLayer.entities.removeAll()
+        if (state.phase === 'playing' && state.drawRevealIndex === null) {
+          const pool = drawEntriesFor(state.subMode)
+          const entries = state.targets
+            .map((name) => pool?.find((c) => c.name === name))
+            .filter((e): e is CountryEntry => !!e)
+          if (entries.length > 0) startDrawMatch(entries)
         }
-      }
-
-      // Draw mode: round start. Fires on the match's first target and on
-      // every subsequent advance (target changes, drawReveal is already
-      // null again by the time this runs — see advanceDrawRound). Frames
-      // the camera on the new country and clears the stroke layer for it.
-      if (state.mode === 'draw' && state.target !== prevDrawTarget) {
-        prevDrawTarget = state.target
-        if (state.drawReveal === null) {
-          drawPoints = []
-          shapes = []
-          shapeEntities = []
-          liveEntity = null
-          lastDrawFill = null
-          drawLayer.entities.removeAll()
-          if (state.target && state.phase === 'playing') {
-            const entry = countryEntries?.find((c) => c.name === state.target)
-            if (entry) startDrawRound(entry)
+      } else if (state.mode === 'draw') {
+        // Same match, already framed — either moving on to the next of the
+        // 5 targets to draw, or stepping through the post-match reveal
+        // sequence. Neither reframes the camera or touches earlier rounds'
+        // committed strokes.
+        if (state.target !== prevDrawTarget) {
+          prevDrawTarget = state.target
+          if (state.drawRevealIndex === null && state.phase === 'playing') {
+            drawPoints = []
+            shapes = []
+            shapeEntities = []
+            liveEntity = null
           }
         }
-      } else if (state.mode !== 'draw') {
+        if (state.drawRevealIndex !== prevDrawRevealIndex) {
+          prevDrawRevealIndex = state.drawRevealIndex
+          // Clear only the *previous* reveal step's outline/fill — the
+          // player's own drawn strokes (shapeEntities) are untouched.
+          for (const e of revealEntities) drawLayer.entities.remove(e)
+          revealEntities = []
+          if (drawHoldTimeout !== null) {
+            clearTimeout(drawHoldTimeout)
+            drawHoldTimeout = null
+          }
+          if (state.drawRevealIndex !== null) {
+            const revealTarget = state.targets[state.drawRevealIndex]
+            if (revealTarget) {
+              renderDrawReveal(
+                revealTarget,
+                allRoundFillCells[state.drawRevealIndex] ?? [],
+              )
+            }
+            drawHoldTimeout = window.setTimeout(() => {
+              drawHoldTimeout = null
+              useGameStore.getState().advanceDrawRound()
+            }, DRAW_REVEAL_HOLD_MS)
+          }
+        }
+      } else {
+        // Not in draw mode right now — the next time it becomes active is
+        // always a fresh match (see prevDrawMatchSeed above).
+        prevDrawMatchSeed = null
         prevDrawTarget = state.target
+        prevDrawRevealIndex = state.drawRevealIndex
       }
 
       // Left draw mode entirely (Abandon, Main Menu, switching to another
@@ -2507,7 +2553,8 @@ export function WorldViewer() {
         shapes = []
         shapeEntities = []
         liveEntity = null
-        lastDrawFill = null
+        allRoundFillCells = []
+        revealEntities = []
         if (drawHoldTimeout !== null) {
           clearTimeout(drawHoldTimeout)
           drawHoldTimeout = null

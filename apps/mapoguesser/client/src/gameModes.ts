@@ -11,6 +11,9 @@ import type { GameMode } from './store'
 //                          'countries', just a different polygon dataset)
 //   - 'draw'      family → freehand-DRAW the country's outline from memory (5
 //                          rounds, scored by % overlap with the real shape)
+//   - 'draw-states' family → same as 'draw', but for US states — a separate
+//                          family (like 'states' vs 'countries') because it
+//                          needs the state polygon dataset instead.
 //
 // To add or reshape a mode, edit the `pool` array here — nothing else needs to
 // change. Country names MUST match Natural Earth's NAME field exactly (the same
@@ -18,7 +21,12 @@ import type { GameMode } from './store'
 // typo just drops that one entry rather than breaking the mode.
 // ---------------------------------------------------------------------------
 
-export type ModeFamily = 'countries' | 'cities' | 'states' | 'draw'
+export type ModeFamily =
+  | 'countries'
+  | 'cities'
+  | 'states'
+  | 'draw'
+  | 'draw-states'
 
 // How a 'cities'-family sub-mode picks which cities are in play. Cities come
 // from the population-ranked populated-places dataset, so a region mode is just
@@ -63,7 +71,11 @@ export interface SubMode {
 
 // The behaviour (round count, scoring, HUD, map label) each family maps onto.
 export const behavioralModeOf = (sm: SubMode): GameMode =>
-  sm.family === 'cities' ? 'capitals' : sm.family === 'draw' ? 'draw' : 'classic'
+  sm.family === 'cities'
+    ? 'capitals'
+    : sm.family === 'draw' || sm.family === 'draw-states'
+      ? 'draw'
+      : 'classic'
 
 // ---- COUNTRIES: locate the country on the globe. --------------------------
 const COUNTRY_SUBMODES: SubMode[] = [
@@ -235,11 +247,42 @@ const DRAW_SUBMODES: SubMode[] = [
   },
 ]
 
+// ---- DRAW-STATES: freehand-trace a US state's outline from memory. --------
+// Unlike DRAW_SUBMODES' curated country list, this uses all 48 contiguous
+// states — real US states have a rich, dense adjacency graph (unlike the
+// sparse worldwide country pool), so pickAdjacentCluster's nearest-neighbor
+// approximation reliably lands on genuinely adjacent states. Alaska and
+// Hawaii are excluded: they aren't adjacent to anything in the pool, so
+// picking either as a seed (or a "nearest neighbor") would produce a cluster
+// spanning thousands of miles instead of a tight regional group.
+const DRAW_STATES_SUBMODES: SubMode[] = [
+  {
+    id: 'draw-us-states',
+    label: 'Draw a US State',
+    icon: '✏️',
+    blurb: 'Freehand-trace a US state’s outline from memory',
+    family: 'draw-states',
+    pool: [
+      'Alabama', 'Arizona', 'Arkansas', 'California', 'Colorado',
+      'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Idaho', 'Illinois',
+      'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine',
+      'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi',
+      'Missouri', 'Montana', 'Nebraska', 'Nevada', 'New Hampshire',
+      'New Jersey', 'New Mexico', 'New York', 'North Carolina',
+      'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania',
+      'Rhode Island', 'South Carolina', 'South Dakota', 'Tennessee', 'Texas',
+      'Utah', 'Vermont', 'Virginia', 'Washington', 'West Virginia',
+      'Wisconsin', 'Wyoming',
+    ],
+  },
+]
+
 export const SUB_MODES: SubMode[] = [
   ...COUNTRY_SUBMODES,
   ...CITY_SUBMODES,
   ...STATE_SUBMODES,
   ...DRAW_SUBMODES,
+  ...DRAW_STATES_SUBMODES,
 ]
 
 export const subModesFor = (family: ModeFamily): SubMode[] =>
