@@ -1763,6 +1763,17 @@ export function App() {
               >
                 ← Back
               </button>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  opacity: 0.6,
+                  letterSpacing: 0.3,
+                  textAlign: 'center',
+                }}
+              >
+                build {__COMMIT_SHA__}
+              </div>
             </>
           ) : submenu ? (
             // Region picker for the chosen family. Each entry is a data-driven

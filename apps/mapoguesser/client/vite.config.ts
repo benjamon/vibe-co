@@ -3,6 +3,20 @@ import react from '@vitejs/plugin-react'
 import serveStatic from 'serve-static'
 import fs from 'fs'
 import path from 'path'
+import { execSync } from 'child_process'
+
+// Short commit SHA, baked in at build time and shown in the Settings menu so
+// a bug report can be tied to an exact build. 'dev' when git isn't available
+// (e.g. a source tarball) rather than failing the build over it.
+const commitSha = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: __dirname })
+      .toString()
+      .trim()
+  } catch {
+    return 'dev'
+  }
+})()
 
 // npm hoists workspace deps to apps/mapoguesser/node_modules.
 const cesiumBuildPath = path.resolve(
@@ -68,6 +82,9 @@ function cesium(): Plugin {
 export default defineConfig({
   plugins: [react(), cesium()],
   base,
+  define: {
+    __COMMIT_SHA__: JSON.stringify(commitSha),
+  },
   resolve: {
     alias: {
       shared: path.resolve(__dirname, '../shared/src'),
