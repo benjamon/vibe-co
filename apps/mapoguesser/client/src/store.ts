@@ -83,10 +83,19 @@ export interface Marker {
   // Explicit flag image URL, taking precedence over `code`. Used for US state
   // flags (see cityFlagUrl), which aren't ISO country codes.
   flagUrl?: string
+  // Countries mode only: on a 'wrong' marker, the great-circle miss distance
+  // (to the target's centroid — an approximation of "how far off"), shown as
+  // a second label line above the pin. Undefined for every other marker kind.
+  distanceMi?: number
 }
 
 export const ROUNDS = 9
 export const WRONG_GUESSES_BEFORE_REVEAL = 2
+// Timed Mode (Settings menu): how long a single-player round has before it
+// auto-misses — see handleTimeout/handleCapitalTimeout. One window per
+// round, not per guess (App.tsx's timer effect keys off `target`, which
+// stays the same across capitals mode's two attempts on one city).
+export const TIMED_ROUND_MS = 5000
 // Capitals mode is shorter and scored golf-style: 5 capitals, two guesses each
 // (the closer guess scores). Kept separate from ROUNDS, which is the guess
 // budget for classic.
@@ -157,6 +166,9 @@ const ITEM_WEIGHTS_KEY = 'mapoguesser:itemWeights'
 // Settings-menu preference: whether the "All" countries pool excludes tiny
 // island nations / city-states. See MIN_TARGET_AREA / poolForSubMode.
 const HIDE_TINY_ISLANDS_KEY = 'mapoguesser:hideTinyIslands'
+// Settings-menu preference: Timed Mode — see TIMED_ROUND_MS / handleTimeout /
+// handleCapitalTimeout.
+const TIMED_MODE_KEY = 'mapoguesser:timedMode'
 
 // One guess on a target. `id` is the country the player actually clicked.
 // `lat`/`lon` are the exact click position on the globe — optional only
@@ -477,6 +489,16 @@ const loadHideTinyIslands = (): boolean => {
   }
 }
 
+const loadTimedMode = (): boolean => {
+  if (typeof localStorage === 'undefined') return false
+  try {
+    const raw = localStorage.getItem(TIMED_MODE_KEY)
+    return raw === null ? false : JSON.parse(raw) === true
+  } catch {
+    return false
+  }
+}
+
 // Given a finished match's per-guess log, return the next perfect-game streak:
 // +1 on a flawless run, reset to 0 otherwise. A perfect run is exactly ROUNDS
 // guesses that are all correct — any miss adds an extra 'wrong' entry, pushing
@@ -545,6 +567,14 @@ interface GameState {
   // Persisted; defaults to true (exclude them).
   hideTinyIslands: boolean
   setHideTinyIslands: (hide: boolean) => void
+
+  // Settings-menu preference: when true, single-player Countries/States/
+  // Capitals rounds auto-miss after TIMED_ROUND_MS of not being solved (see
+  // handleTimeout / handleCapitalTimeout) — a fresh window per round, not per
+  // guess (capitals mode's two attempts share the one window). Doesn't apply
+  // to Draw mode or multiplayer. Persisted; defaults to false.
+  timedMode: boolean
+  setTimedMode: (timed: boolean) => void
 
   // Name → stable integer ID. Grow-only across reloads so stats keyed by ID
   // stay valid as new countries appear in the dataset. WorldViewer calls
@@ -801,6 +831,14 @@ interface GameState {
     guessedCountry?: string | null,
     guessedState?: string | null,
   ) => void
+  // Timed Mode only (see `timedMode`): the current classic-mode round's
+  // TIMED_ROUND_MS window elapsed unsolved — forces the same reveal-and-
+  // advance the second miss on a country would (single-player only).
+  handleTimeout: () => void
+  // Timed Mode only: the current capitals-mode round's window elapsed —
+  // finalizes it using whatever guess (if any) was already dropped, same as
+  // if the player had used their second attempt on it (single-player only).
+  handleCapitalTimeout: () => void
   // Multiplayer city modes: lock in the current round's single pending guess as
   // the final answer (called when the round is about to end so a player who only
   // dropped one pin still gets that score, instead of it being thrown out).
@@ -1209,6 +1247,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   hideTinyIslands: loadHideTinyIslands(),
   setHideTinyIslands: (hide) => set({ hideTinyIslands: hide }),
+
+  timedMode: loadTimedMode(),
+  setTimedMode: (timed) => set({ timedMode: timed }),
 
   countryIds: loadCountryIds(),
   registerCountries: (names) => {
@@ -1772,6 +1813,48 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
   },
 
+  // Timed Mode: this round's TIMED_ROUND_MS elapsed with the target still
+  // unsolved. Forces the same reveal-and-advance the second miss on a
+  // country triggers above — regardless of how many (0 or 1) wrong clicks
+  // already happened this round, padding `attempts` with enough 'wrong'
+  // entries to reach that point so the guess budget stays honest (a
+  // never-attempted round still "costs" the full 2, same as a genuine
+  // double miss; one already-wrong click only needs 1 more).
+  handleTimeout: () => {
+    const s = get()
+    if (s.multiplayer || s.mode !== 'classic') return
+    if (s.phase !== 'playing' || s.target === null) return
+    if (s.revealTarget !== null || s.endingTarget !== null) return
+    if (s.targetIndex >= ROUNDS || s.attempts.length >= ROUNDS) return
+
+    const family = resolveSubMode(s.subMode).family
+    const needed = Math.min(
+      Math.max(1, WRONG_GUESSES_BEFORE_REVEAL - s.consecutiveWrong),
+      ROUNDS - s.attempts.length,
+    )
+    const attempts: AttemptResult[] = [
+      ...s.attempts,
+      ...(Array(needed).fill('wrong') as AttemptResult[]),
+    ]
+    const finished = attempts.length >= ROUNDS
+    const targetIndex = s.targetIndex + 1
+    const key = itemWeightKey(family, s.target)
+    const itemWeights = {
+      ...s.itemWeights,
+      [key]: nextWeightEntry(s.itemWeights[key], 'miss'),
+    }
+    sfxWrong()
+    set({
+      attempts,
+      targetIndex,
+      consecutiveWrong: 0,
+      revealTarget: s.target,
+      target: finished ? null : targetAt(s.targets, targetIndex),
+      phase: 'playing',
+      itemWeights,
+    })
+  },
+
   handleCapitalGuess: (lat, lon, guessedCountry, guessedState) => {
     const s = get()
     if (s.mode !== 'capitals') return
@@ -1988,6 +2071,112 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
   },
 
+  // Timed Mode: this round's TIMED_ROUND_MS elapsed. Finalizes it using
+  // whatever guess (if any) was already dropped — as if that were also the
+  // second attempt (no second pin to average against) — or, if the player
+  // never guessed at all, a full miss (MAX_CAPITAL_MILES, 0 points, still
+  // less any lifeline cost already spent this round).
+  handleCapitalTimeout: () => {
+    const s = get()
+    if (s.multiplayer || s.mode !== 'capitals') return
+    if (s.phase !== 'playing' || s.target === null) return
+    if (s.distances.length >= CAPITAL_ROUNDS) return
+    const cap = s.cities[s.target]
+    if (!cap) return
+
+    const pinFor = (
+      gLat: number,
+      gLon: number,
+      dist: number,
+      used = false,
+    ): Marker => ({
+      lat: gLat,
+      lon: gLon,
+      kind: used ? 'guess-best' : 'guess',
+      label: `${Math.round(dist).toLocaleString()} mi`,
+    })
+    const revealMarker: Marker = {
+      lat: cap.lat,
+      lon: cap.lon,
+      kind: 'reveal',
+      label: `${cap.city},\n${cityRevealName(cap, s.subMode)}`,
+      code: s.countryCodes[cap.country],
+      flagUrl: cityFlagUrl(cap, s.subMode),
+    }
+
+    const first = s.roundGuess
+    const best = first ? first.distance : MAX_CAPITAL_MILES
+    const bestRegionMatch = first ? first.regionMatch : false
+    const hintPenalty = hintPenaltyFor(s)
+    const points = first
+      ? pointsForDistance(best, capitalPointTierMilesFor(s.subMode)) +
+        (bestRegionMatch ? REGION_BONUS_POINTS : 0) -
+        hintPenalty
+      : -hintPenalty
+
+    if (first) {
+      recordCapitalGuess({
+        country: cap.country,
+        guessLat: first.lat,
+        guessLon: first.lon,
+        targetLat: cap.lat,
+        targetLon: cap.lon,
+        distanceMi: best,
+      })
+    }
+
+    const distances = [...s.distances, best]
+    const capitalPoints = [...s.capitalPoints, points]
+    const capitalBonus = [...s.capitalBonus, bestRegionMatch]
+    const capitalHintPenalty = [...s.capitalHintPenalty, hintPenalty]
+    const targetIndex = s.targetIndex + 1
+    const finished = distances.length >= CAPITAL_ROUNDS
+    // Only 'first' or 'miss' are possible here — there's no second attempt to
+    // potentially do better on, so the existing first-vs-second split from
+    // handleCapitalGuess collapses to just "was the one guess we got near?".
+    const outcome: WeightOutcome =
+      first && first.distance <= CAPITAL_NEAR_MI ? 'first' : 'miss'
+    const weightKey = itemWeightKey('cities', s.target)
+    const prevWeight = s.itemWeights[weightKey]?.weight ?? DEFAULT_ITEM_WEIGHT
+    const nextEntry = nextWeightEntry(s.itemWeights[weightKey], outcome)
+    const itemWeights = { ...s.itemWeights, [weightKey]: nextEntry }
+    const masteredThisMatch =
+      s.masteredThisMatch +
+      (isNewlyMastered(prevWeight, nextEntry.weight) ? 1 : 0)
+
+    if (outcome === 'first') sfxCorrect()
+    else sfxWrong()
+
+    set({
+      distances,
+      capitalPoints,
+      capitalBonus,
+      capitalHintPenalty,
+      itemWeights,
+      masteredThisMatch,
+      markers: first
+        ? [pinFor(first.lat, first.lon, first.distance, true), revealMarker]
+        : [revealMarker],
+      markerEpoch: s.markerEpoch + 1,
+      guessLine: first
+        ? {
+            fromLat: first.lat,
+            fromLon: first.lon,
+            toLat: cap.lat,
+            toLon: cap.lon,
+          }
+        : null,
+      hintCircle: null,
+      revealName: false,
+      revealFlag: false,
+      roundGuess: null,
+      targetIndex,
+      target: finished ? null : targetAt(s.targets, targetIndex),
+      phase: finished ? 'finished' : 'playing',
+      inputLockUntil: finished ? s.inputLockUntil : lockUntil(),
+    })
+  },
+
   commitPartyCapitalGuess: () => {
     const s = get()
     if (!s.multiplayer || s.mode !== 'capitals' || s.phase !== 'playing') return
@@ -2120,4 +2309,6 @@ useGameStore.subscribe((state, prev) => {
     writeJSON(ITEM_WEIGHTS_KEY, state.itemWeights)
   if (state.hideTinyIslands !== prev.hideTinyIslands)
     writeJSON(HIDE_TINY_ISLANDS_KEY, state.hideTinyIslands)
+  if (state.timedMode !== prev.timedMode)
+    writeJSON(TIMED_MODE_KEY, state.timedMode)
 })

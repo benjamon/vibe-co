@@ -29,6 +29,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css'
 import {
   useGameStore,
   capitalPointTierMilesFor,
+  haversineMiles,
   DRAW_ROUNDS,
   type Marker,
   type CityInfo,
@@ -1170,6 +1171,12 @@ export function WorldViewer() {
             outlineColor: Color.fromCssColorString('rgba(0,0,0,0.8)'),
             outlineWidth: 2,
             heightReference: HeightReference.CLAMP_TO_GROUND,
+            // Force depth testing against the globe unconditionally — left
+            // to Cesium's default (undefined) heuristic, some GPU/driver
+            // combos (seen on a Chrome/Windows box, not Firefox on the same
+            // machine) render this on top of the globe even from the far
+            // side instead of being occluded.
+            disableDepthTestDistance: 0,
           },
           label: m.label
             ? {
@@ -1183,6 +1190,7 @@ export function WorldViewer() {
                 horizontalOrigin: HorizontalOrigin.CENTER,
                 pixelOffset: new Cartesian2(0, -12),
                 heightReference: HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 0,
               }
             : undefined,
         })
@@ -1211,10 +1219,20 @@ export function WorldViewer() {
             horizontalOrigin: HorizontalOrigin.LEFT,
             pixelOffset: new Cartesian2(-POLE_W / 2, 0),
             heightReference: HeightReference.CLAMP_TO_GROUND,
+            // See the guess-dot point() above — forces correct occlusion
+            // behind the globe on GPU/driver combos where Cesium's default
+            // depth-test heuristic doesn't kick in.
+            disableDepthTestDistance: 0,
           },
           label: m.label
             ? {
-                text: m.label,
+                // A 'wrong' countries-mode guess gets a second line showing
+                // how far off it was (see emitLatLon) — "how much they were
+                // off by".
+                text:
+                  m.distanceMi !== undefined
+                    ? `${m.label}\n${Math.round(m.distanceMi).toLocaleString()} mi`
+                    : m.label,
                 font: 'bold 15px sans-serif',
                 fillColor: Color.WHITE,
                 outlineColor: Color.BLACK,
@@ -1230,6 +1248,7 @@ export function WorldViewer() {
                   -(POLE_H + 2),
                 ),
                 heightReference: HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 0,
               }
             : undefined,
         })
@@ -1438,16 +1457,17 @@ export function WorldViewer() {
         : countryEntries
 
     // Draws one target's actual outline (each sub-polygon's outer ring, solid
-    // white, no outline-of-outline) plus a translucent red fill over its
-    // missed/extra area (fillCells — see computeDrawFillCells, computed and
-    // cached per round at Submit time in allRoundFillCells). Used by the
-    // post-match reveal sequence, one target at a time — every entity it
-    // creates is tracked in revealEntities so the next reveal step can clear
-    // just this overlay without touching the player's own (permanently kept)
-    // drawn strokes.
+    // white, no outline-of-outline) plus translucent fills over the
+    // missed area (inside the target, not drawn — grey) and the extra area
+    // (drawn, outside the target — red). fillCells is computed and cached
+    // per round at Submit time in allRoundFillCells — see
+    // computeDrawFillCells. Used by the post-match reveal sequence, one
+    // target at a time — every entity it creates is tracked in
+    // revealEntities so the next reveal step can clear just this overlay
+    // without touching the player's own (permanently kept) drawn strokes.
     const renderDrawReveal = (
       targetName: string,
-      fillCells: DrawFillCell[],
+      fillCells: DrawFillCells,
     ): void => {
       const subModeId = useGameStore.getState().subMode
       const entry = drawEntriesFor(subModeId)?.find((c) => c.name === targetName)
@@ -1468,27 +1488,36 @@ export function WorldViewer() {
           }),
         )
       }
-      const missColor = Color.RED.withAlpha(0.35)
-      for (const cell of fillCells) {
-        revealEntities.push(
-          drawLayer.entities.add({
-            rectangle: {
-              coordinates: Rectangle.fromDegrees(
-                cell.west,
-                cell.south,
-                cell.east,
-                cell.north,
-              ),
-              material: missColor,
-              height: 0,
-            },
-          }),
-        )
+      const addCells = (cells: DrawFillCell[], color: Color) => {
+        for (const cell of cells) {
+          revealEntities.push(
+            drawLayer.entities.add({
+              rectangle: {
+                coordinates: Rectangle.fromDegrees(
+                  cell.west,
+                  cell.south,
+                  cell.east,
+                  cell.north,
+                ),
+                material: color,
+                height: 0,
+              },
+            }),
+          )
+        }
       }
+      addCells(fillCells.hit, Color.GREEN.withAlpha(0.35))
+      addCells(fillCells.missed, Color.GRAY.withAlpha(0.4))
+      addCells(fillCells.extra, Color.RED.withAlpha(0.35))
     }
 
     type DrawPoint = { lat: number; lon: number }
     type DrawFillCell = { west: number; south: number; east: number; north: number }
+    type DrawFillCells = {
+      hit: DrawFillCell[]
+      missed: DrawFillCell[]
+      extra: DrawFillCell[]
+    }
 
     // Even-odd ray-casting test, same algorithm as the module-level
     // pointInRing, adapted for the player's {lat,lon} point list (which,
@@ -1604,22 +1633,25 @@ export function WorldViewer() {
     }
 
     // Same union-bbox raster idea as computeOverlapPercent, but at
-    // DRAW_FILL_RESOLUTION and returning every cell that's on ONE side only
-    // (in the target but not drawn, or drawn but not in the target) as a
-    // small lon/lat rectangle — the reveal's "here's what you missed / drew
-    // extra" fill. Deliberately not derived from computeOverlapPercent's
-    // grid: this one instantiates an entity per cell, so it uses a coarser
-    // resolution to keep the entity count down.
+    // DRAW_FILL_RESOLUTION and returning every cell bucketed by target/drawn
+    // membership as a small lon/lat rectangle — "hit" (inside the target AND
+    // drawn — rendered green), "missed" (inside the target, not drawn —
+    // rendered grey), and "extra" (drawn, outside the target — rendered red)
+    // so the reveal can color them differently. Deliberately not derived
+    // from computeOverlapPercent's grid: this one instantiates an entity per
+    // cell, so it uses a coarser resolution to keep the entity count down.
     const computeDrawFillCells = (
       entry: CountryEntry,
       rawShapes: DrawPoint[][],
-    ): DrawFillCell[] => {
+    ): DrawFillCells => {
       const shapes = rawShapes.map(decimateForScoring)
       const [lon0, lat0, lon1, lat1] = unionBBox(entry, shapes)
       const lonStep = (lon1 - lon0) / DRAW_FILL_RESOLUTION
       const latStep = (lat1 - lat0) / DRAW_FILL_RESOLUTION
-      if (lonStep <= 0 || latStep <= 0) return []
-      const cells: DrawFillCell[] = []
+      if (lonStep <= 0 || latStep <= 0) return { hit: [], missed: [], extra: [] }
+      const hit: DrawFillCell[] = []
+      const missed: DrawFillCell[] = []
+      const extra: DrawFillCell[] = []
       for (let i = 0; i < DRAW_FILL_RESOLUTION; i++) {
         const west = lon0 + i * lonStep
         const east = west + lonStep
@@ -1630,10 +1662,12 @@ export function WorldViewer() {
           const lat = south + latStep / 2
           const inTarget = insideCountry(entry, lat, lon)
           const inDrawn = pointInAnyShape(lon, lat, shapes)
-          if (inTarget !== inDrawn) cells.push({ west, south, east, north })
+          if (inTarget && inDrawn) hit.push({ west, south, east, north })
+          else if (inTarget && !inDrawn) missed.push({ west, south, east, north })
+          else if (inDrawn && !inTarget) extra.push({ west, south, east, north })
         }
       }
-      return cells
+      return { hit, missed, extra }
     }
 
     // Live stroke state, plus every shape the player has committed so far
@@ -1657,7 +1691,7 @@ export function WorldViewer() {
     // outline + red fill for whichever target is currently showing) are
     // tracked separately in revealEntities so each step can clear only the
     // *previous* reveal, never the player's own permanently-kept strokes.
-    let allRoundFillCells: DrawFillCell[][] = []
+    let allRoundFillCells: DrawFillCells[] = []
     let revealEntities: Entity[] = []
 
     const sampleLatLon = (clientX: number, clientY: number): DrawPoint | null => {
@@ -1785,7 +1819,9 @@ export function WorldViewer() {
         ? drawEntriesFor(st.subMode)?.find((c) => c.name === st.target)
         : null
       const percent = entry ? computeOverlapPercent(entry, shapes) : 0
-      allRoundFillCells[roundIdx] = entry ? computeDrawFillCells(entry, shapes) : []
+      allRoundFillCells[roundIdx] = entry
+        ? computeDrawFillCells(entry, shapes)
+        : { hit: [], missed: [], extra: [] }
       st.submitDrawGuess(percent)
     }
 
@@ -1840,11 +1876,31 @@ export function WorldViewer() {
       // which would corrupt the right/wrong determination.
       if (state.phase === 'playing' && name !== null && state.revealTarget === null) {
         const correct = state.target === name
+        // Countries mode only: on a miss, show how far off the click was —
+        // great-circle distance to the target's centroid (an approximation;
+        // there's no cheap "distance to the actual border" available here).
+        let distanceMi: number | undefined
+        if (
+          !correct &&
+          state.target &&
+          resolveSubMode(state.subMode).family === 'countries'
+        ) {
+          const targetEntry = countryEntries?.find((c) => c.name === state.target)
+          if (targetEntry) {
+            distanceMi = haversineMiles(
+              lat,
+              lon,
+              targetEntry.centroid.lat,
+              targetEntry.centroid.lon,
+            )
+          }
+        }
         state.addMarker({
           lat,
           lon,
           kind: correct ? 'correct' : 'wrong',
           label: name,
+          distanceMi,
         })
       }
       useGameStore.getState().handleGlobeClick(name, lat, lon)
@@ -2035,6 +2091,7 @@ export function WorldViewer() {
     let prevBrowseSubModeId = useGameStore.getState().browseSubModeId
     let prevBrowseTarget = useGameStore.getState().browseTarget
     let prevMode = useGameStore.getState().mode
+    let prevPhase = useGameStore.getState().phase
     // Draw mode tracking: prevDrawMatchSeed distinguishes "brand-new match"
     // (reframe the camera on the whole cluster, wipe every shape) from
     // "still the same match" (target/reveal-index changes within it, which
@@ -2066,8 +2123,10 @@ export function WorldViewer() {
           outlineColor: Color.fromCssColorString('rgba(0,0,0,0.7)'),
           outlineWidth: 1.5,
           heightReference: HeightReference.CLAMP_TO_GROUND,
-          // Leave the depth test enabled (default) so the globe occludes dots
-          // on its far side — otherwise back-of-globe guesses bleed through.
+          // Force depth testing against the globe unconditionally — some
+          // GPU/driver combos don't apply Cesium's default depth-test
+          // heuristic, letting back-of-globe dots bleed through.
+          disableDepthTestDistance: 0,
         },
       })
     }
@@ -2092,6 +2151,7 @@ export function WorldViewer() {
             horizontalOrigin: HorizontalOrigin.LEFT,
             pixelOffset: new Cartesian2(-POLE_W / 2, 0),
             heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: 0,
           },
           label: {
             text: name,
@@ -2104,6 +2164,7 @@ export function WorldViewer() {
             horizontalOrigin: HorizontalOrigin.CENTER,
             pixelOffset: new Cartesian2(POLE_W / 2 + FLAG_W / 2, -(POLE_H + 2)),
             heightReference: HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: 0,
           },
         })
       })
@@ -2197,6 +2258,7 @@ export function WorldViewer() {
                 horizontalOrigin: HorizontalOrigin.LEFT,
                 pixelOffset: new Cartesian2(-POLE_W / 2, 0),
                 heightReference: HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 0,
               },
               label: {
                 text: label,
@@ -2209,6 +2271,7 @@ export function WorldViewer() {
                 horizontalOrigin: HorizontalOrigin.CENTER,
                 pixelOffset: new Cartesian2(POLE_W / 2 + FLAG_W / 2, -(POLE_H + 2)),
                 heightReference: HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 0,
               },
             })
           },
@@ -2250,6 +2313,29 @@ export function WorldViewer() {
         const showLines = state.mode !== 'draw'
         if (bordersDS) bordersDS.show = showLines
         if (coastlineDS) coastlineDS.show = showLines
+      }
+
+      // Draw mode also reveals the relevant overlay — country borders/
+      // coastline for the countries variant, US state lines for the states
+      // variant — once the results phase finishes (phase === 'finished'), as
+      // a locating aid for comparing drawn strokes to the real shape. Hidden
+      // again the moment a new match starts (phase leaves 'finished') or the
+      // player leaves Draw mode entirely (handled by the mode-change block
+      // above).
+      if (state.phase !== prevPhase) {
+        prevPhase = state.phase
+        if (state.mode === 'draw') {
+          const isDrawStates =
+            resolveSubMode(state.subMode).family === 'draw-states'
+          const showFinishedLines = state.phase === 'finished'
+          if (isDrawStates) {
+            if (showFinishedLines) loadStateLines() // lazy: fetch if needed
+            if (stateLinesDS) stateLinesDS.show = showFinishedLines
+          } else {
+            if (bordersDS) bordersDS.show = showFinishedLines
+            if (coastlineDS) coastlineDS.show = showFinishedLines
+          }
+        }
       }
 
       // Show/hide the US state lines when the active sub-mode changes (the
@@ -2527,7 +2613,11 @@ export function WorldViewer() {
             if (revealTarget) {
               renderDrawReveal(
                 revealTarget,
-                allRoundFillCells[state.drawRevealIndex] ?? [],
+                allRoundFillCells[state.drawRevealIndex] ?? {
+                  hit: [],
+                  missed: [],
+                  extra: [],
+                },
               )
             }
             drawHoldTimeout = window.setTimeout(() => {

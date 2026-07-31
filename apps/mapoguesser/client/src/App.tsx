@@ -7,6 +7,7 @@ import {
   ROUNDS,
   CAPITAL_ROUNDS,
   DRAW_ROUNDS,
+  TIMED_ROUND_MS,
   MAX_CAPITAL_POINTS,
   HINT_PENALTY,
   cityRevealName,
@@ -360,6 +361,8 @@ export function App() {
   const countryAreas = useGameStore((s) => s.countryAreas)
   const hideTinyIslands = useGameStore((s) => s.hideTinyIslands)
   const setHideTinyIslands = useGameStore((s) => s.setHideTinyIslands)
+  const timedMode = useGameStore((s) => s.timedMode)
+  const setTimedMode = useGameStore((s) => s.setTimedMode)
   const poolSource = useMemo(
     () => ({ cities, states, countries, itemWeights, countryAreas, hideTinyIslands }),
     [cities, states, countries, itemWeights, countryAreas, hideTinyIslands],
@@ -886,6 +889,48 @@ export function App() {
   // play on iOS/Safari (which keeps the audio context suspended until then).
   useEffect(() => installAudioUnlock(), [])
 
+  // Timed Mode (Settings menu): one TIMED_ROUND_MS window per round —
+  // capitals mode's two attempts share it, since `target` (this effect's key
+  // dependency) doesn't change between them, only after the round completes.
+  // Single-player Classic/Capitals only; Draw mode has its own separate
+  // timing, and multiplayer rounds are server-paced. The actual timeout is
+  // this one setTimeout (independent of the display tick below, so a slow
+  // frame doesn't delay it); `timedDeadline` just drives the countdown badge.
+  const [timedDeadline, setTimedDeadline] = useState<number | null>(null)
+  useEffect(() => {
+    const active =
+      timedMode &&
+      !multiplayer &&
+      !partyUI &&
+      phase === 'playing' &&
+      target !== null &&
+      (mode === 'classic' || mode === 'capitals')
+    if (!active) {
+      setTimedDeadline(null)
+      return
+    }
+    setTimedDeadline(Date.now() + TIMED_ROUND_MS)
+    const timer = window.setTimeout(() => {
+      const st = useGameStore.getState()
+      if (st.mode === 'capitals') st.handleCapitalTimeout()
+      else st.handleTimeout()
+    }, TIMED_ROUND_MS)
+    return () => window.clearTimeout(timer)
+  }, [timedMode, multiplayer, partyUI, phase, target, mode])
+
+  // Ticks the countdown badge's display only — doesn't drive the timeout
+  // itself (the setTimeout above does that independently).
+  const [timedNow, setTimedNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (timedDeadline === null) return
+    const id = window.setInterval(() => setTimedNow(Date.now()), 200)
+    return () => window.clearInterval(id)
+  }, [timedDeadline])
+  const timedSecondsLeft =
+    timedDeadline !== null
+      ? Math.max(0, Math.ceil((timedDeadline - timedNow) / 1000))
+      : null
+
   const handleShareSeed = async () => {
     if (!seed) return
     const url = new URL(window.location.href)
@@ -1191,6 +1236,17 @@ export function App() {
             gap: 7,
           }}
         >
+          {timedSecondsLeft !== null && (
+            <span
+              style={{
+                fontSize: 15,
+                fontWeight: 800,
+                color: timedSecondsLeft <= 2 ? COLOR.coral : COLOR.charcoal,
+              }}
+            >
+              ⏱️ {timedSecondsLeft}s
+            </span>
+          )}
           {isCapitals ? (
             <div
               style={{
@@ -1593,6 +1649,43 @@ export function App() {
                   }}
                 >
                   {hideTinyIslands && (
+                    <span style={{ color: COLOR.cream, fontWeight: 900, fontSize: 14, lineHeight: 1 }}>
+                      ✓
+                    </span>
+                  )}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="arcade-btn"
+                role="checkbox"
+                aria-checked={timedMode}
+                onClick={() => setTimedMode(!timedMode)}
+                style={{
+                  ...menuButtonStyle,
+                  minWidth: 220,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                }}
+              >
+                <span>⏱️ Timed mode</span>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 22,
+                    height: 22,
+                    flex: 'none',
+                    borderRadius: 6,
+                    border: border(2),
+                    background: timedMode ? COLOR.forestGreen : COLOR.cream,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {timedMode && (
                     <span style={{ color: COLOR.cream, fontWeight: 900, fontSize: 14, lineHeight: 1 }}>
                       ✓
                     </span>
