@@ -11,13 +11,8 @@ import {
 } from "spacetimedb";
 
 export default __t.row({
-  id: __t.u64().primaryKey(),
-  userId: __t.string().name("user_id"),
-  country: __t.string(),
-  guessLat: __t.f64().name("guess_lat"),
-  guessLon: __t.f64().name("guess_lon"),
-  targetLat: __t.f64().name("target_lat"),
-  targetLon: __t.f64().name("target_lon"),
-  distanceMi: __t.f64().name("distance_mi"),
-  timestamp: __t.u64(),
+  code: __t.string().primaryKey(),
+  accountId: __t.string().name("account_id"),
+  createdAt: __t.u64().name("created_at"),
+  expiresAt: __t.u64().name("expires_at"),
 });

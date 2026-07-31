@@ -35,7 +35,6 @@ import {
   type CityInfo,
 } from './store'
 import { resolveSubMode } from './gameModes'
-import { ALL_GUESSES } from './stats'
 import { usStateFlagUrl } from './usStateFlags'
 
 // Cesium would otherwise reach Cesium ion for default assets; blank the token
@@ -132,10 +131,10 @@ const STATE_POLYGONS_URL =
 
 // Reveal animation duration when the player misses twice on the same target.
 const REVEAL_MS = 1200
-// Camera pan duration for the My Stats / item-list "browse" row clicks — 50%
-// quicker than the in-game reveal/ending pan, since the marker is already on
-// screen by the time this fly starts (see the browseTarget/selectedStatsCountryId
-// handling below) and a snappier pan reads better for a plain lookup.
+// Camera pan duration for the item-list "browse" row clicks — 50% quicker
+// than the in-game reveal/ending pan, since the marker is already on screen
+// by the time this fly starts (see the browseTarget handling below) and a
+// snappier pan reads better for a plain lookup.
 const BROWSE_FLY_MS = REVEAL_MS * 0.5
 
 // Multiplier on the (physically-calibrated) drag sensitivity. 1.0 tracks the
@@ -332,17 +331,8 @@ export function WorldViewer() {
     const gameMarkers = new CustomDataSource('gameMarkers')
     viewer.dataSources.add(gameMarkers)
 
-    // Stats highlight dots — driven by the sidebar's selected country. Lives
-    // in a separate data source so picking a different row can wipe it with
-    // a single removeAll() without disturbing the in-match game markers.
-    const statsDots = new CustomDataSource('statsDots')
-    viewer.dataSources.add(statsDots)
-
     // Browse flag — the single flag pin dropped when a player picks an item
     // out of the item-list panel (see App.tsx's weightsSub UI / browseTarget).
-    // Its own data source, independent of statsDots, so the item-list panel
-    // and the stats sidebar can each hold their own selection without one
-    // clearing the other's pin.
     const browseFlag = new CustomDataSource('browseFlag')
     viewer.dataSources.add(browseFlag)
 
@@ -742,7 +732,6 @@ export function WorldViewer() {
             areas[c.name] = c.area
             centroids[c.name] = c.centroid
           }
-          useGameStore.getState().registerCountries(names)
           useGameStore.getState().setCountries(names)
           useGameStore.getState().setCountryAreas(areas)
           useGameStore.getState().setCountryCentroids(centroids)
@@ -2084,9 +2073,6 @@ export function WorldViewer() {
     let prevMarkerEpoch = useGameStore.getState().markerEpoch
     let prevCircle = useGameStore.getState().hintCircle
     let prevGuessLine = useGameStore.getState().guessLine
-    let prevStatsSelection = useGameStore.getState().selectedStatsCountryId
-    let prevStatsMode = useGameStore.getState().statsMode
-    let prevGlobalGuesses = useGameStore.getState().globalGuesses
     let prevSubMode = useGameStore.getState().subMode
     let prevBrowseSubModeId = useGameStore.getState().browseSubModeId
     let prevBrowseTarget = useGameStore.getState().browseTarget
@@ -2103,128 +2089,6 @@ export function WorldViewer() {
     let prevDrawUndoNonce = useGameStore.getState().drawUndoNonce
     let endingHoldTimeout: number | null = null
     let drawHoldTimeout: number | null = null
-
-    // Reverse-lookup a country name from its local integer ID.
-    const nameForId = (id: number): string | null => {
-      const ids = useGameStore.getState().countryIds
-      for (const k in ids) if (ids[k] === id) return k
-      return null
-    }
-
-    // Add one dot at a guess location. Correct guesses draw green, misses red.
-    const addStatsDot = (lat: number, lon: number, isCorrect: boolean): void => {
-      statsDots.entities.add({
-        position: Cartesian3.fromDegrees(lon, lat),
-        point: {
-          pixelSize: 9,
-          color: isCorrect
-            ? Color.fromCssColorString('#3fb84e')
-            : Color.fromCssColorString('#e64545'),
-          outlineColor: Color.fromCssColorString('rgba(0,0,0,0.7)'),
-          outlineWidth: 1.5,
-          heightReference: HeightReference.CLAMP_TO_GROUND,
-          // Force depth testing against the globe unconditionally — some
-          // GPU/driver combos don't apply Cesium's default depth-test
-          // heuristic, letting back-of-globe dots bleed through.
-          disableDepthTestDistance: 0,
-        },
-      })
-    }
-
-    // Drop a blue flag pin on the selected country to confirm where it is —
-    // alongside the guess dots, not replacing them. Async (flag image load), so
-    // guarded by statsGen against a selection that changed before it resolved.
-    let statsGen = 0
-    const addStatsFlagPin = (name: string, gen: number): void => {
-      const entry = countryEntries?.find((c) => c.name === name)
-      if (!entry) return
-      const pt = flagPointFor(entry)
-      const code = useGameStore.getState().countryCodes[name]
-      buildFlagPin(code ? flagCdnUrl(code) : undefined, 'stats').then((image) => {
-        if (gen !== statsGen || destroyed || viewer.isDestroyed()) return
-        if (!image) return
-        statsDots.entities.add({
-          position: Cartesian3.fromDegrees(pt.lon, pt.lat),
-          billboard: {
-            image,
-            verticalOrigin: VerticalOrigin.BOTTOM,
-            horizontalOrigin: HorizontalOrigin.LEFT,
-            pixelOffset: new Cartesian2(-POLE_W / 2, 0),
-            heightReference: HeightReference.CLAMP_TO_GROUND,
-            disableDepthTestDistance: 0,
-          },
-          label: {
-            text: name,
-            font: 'bold 15px sans-serif',
-            fillColor: Color.WHITE,
-            outlineColor: Color.BLACK,
-            outlineWidth: 3,
-            style: LabelStyle.FILL_AND_OUTLINE,
-            verticalOrigin: VerticalOrigin.BOTTOM,
-            horizontalOrigin: HorizontalOrigin.CENTER,
-            pixelOffset: new Cartesian2(POLE_W / 2 + FLAG_W / 2, -(POLE_H + 2)),
-            heightReference: HeightReference.CLAMP_TO_GROUND,
-            disableDepthTestDistance: 0,
-          },
-        })
-      })
-    }
-
-    // Replace the stats-highlight dot layer to match the current selection.
-    // In 'mine' mode dots come from the player's local guess history (keyed by
-    // the target's local ID); 'all' paints every local guess at once. In
-    // 'global' mode they come from the up-to-200 server guesses loaded for the
-    // selected country (global 'all' paints nothing — far too many to show).
-    // A specific country (either mode) also gets a flag pin marking its location.
-    const renderStatsDots = (): void => {
-      statsGen++
-      const gen = statsGen
-      statsDots.entities.removeAll()
-      const st = useGameStore.getState()
-      const sel = st.selectedStatsCountryId
-      if (sel === null) return
-
-      if (typeof sel === 'number') {
-        const pinName = nameForId(sel)
-        if (pinName) addStatsFlagPin(pinName, gen)
-      }
-
-      if (st.statsMode === 'global') {
-        const gg = st.globalGuesses
-        // 'all' paints the most-recent guesses across every country; a specific
-        // row paints just that country's. In both cases gg.country must match
-        // what the store currently holds, so stale dots from a previous
-        // selection (loaded async) aren't shown against the new one.
-        if (sel === 'all') {
-          if (gg.country === ALL_GUESSES) {
-            for (const d of gg.dots) addStatsDot(d.lat, d.lon, d.correct)
-          }
-          return
-        }
-        const name = nameForId(sel)
-        if (!name || gg.country !== name) return
-        for (const d of gg.dots) addStatsDot(d.lat, d.lon, d.correct)
-        return
-      }
-
-      const stats = st.stats
-      const targetIds =
-        sel === 'all'
-          ? Object.keys(stats).map(Number)
-          : stats[sel]
-            ? [sel]
-            : []
-      for (const targetId of targetIds) {
-        const entry = stats[targetId]
-        if (!entry) continue
-        for (const g of entry.guesses) {
-          if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
-          addStatsDot(g.lat, g.lon, g.id === targetId)
-        }
-      }
-    }
-    // Mount-time replay in case a selection already exists.
-    renderStatsDots()
 
     // Drop the single browse-flag pin at whatever `browseTarget` currently
     // points to — a country/state's flagPointFor anchor, or (for a city) its
@@ -2503,30 +2367,6 @@ export function WorldViewer() {
         )
       }
       prevEnding = state.endingTarget
-
-      // Stats sidebar: repaint the dot layer when the selection, the mode, or
-      // the loaded global guesses change. A brand-new country selection also
-      // pans the camera; mode toggles and async guess arrivals just repaint in
-      // place (no fly-to).
-      const selChanged = state.selectedStatsCountryId !== prevStatsSelection
-      const modeChanged = state.statsMode !== prevStatsMode
-      const guessesChanged = state.globalGuesses !== prevGlobalGuesses
-      if (selChanged || modeChanged || guessesChanged) {
-        const newId = state.selectedStatsCountryId
-        prevStatsSelection = newId
-        prevStatsMode = state.statsMode
-        prevGlobalGuesses = state.globalGuesses
-        if (selChanged && typeof newId === 'number') {
-          const name = nameForId(newId)
-          // Place the flag pin (+ any already-loaded dots) immediately, then
-          // pan the camera to it — the marker shouldn't wait on the flight.
-          // renderStatsDots() clears the previous selection's dots itself.
-          renderStatsDots()
-          if (name) flyToCountry(name, () => {}, countryEntries, BROWSE_FLY_MS)
-        } else {
-          renderStatsDots()
-        }
-      }
 
       // Item-list "browse" flag: a new (or cleared) browseTarget drops/removes
       // its flag pin immediately, then flies the camera to it. Countries/

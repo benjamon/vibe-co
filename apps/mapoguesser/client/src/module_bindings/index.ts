@@ -36,11 +36,12 @@ import {
 // Import all reducer arg schemas
 import AdvanceQuestionReducer from "./advance_question_reducer";
 import CreatePartyReducer from "./create_party_reducer";
+import GenerateLoginCodeReducer from "./generate_login_code_reducer";
 import JoinPartyReducer from "./join_party_reducer";
 import LeavePartyReducer from "./leave_party_reducer";
-import RecordCapitalGuessReducer from "./record_capital_guess_reducer";
-import RecordGuessReducer from "./record_guess_reducer";
+import RedeemLoginCodeReducer from "./redeem_login_code_reducer";
 import RestartPartyReducer from "./restart_party_reducer";
+import SaveProgressReducer from "./save_progress_reducer";
 import SetReadyReducer from "./set_ready_reducer";
 import SetVoteReducer from "./set_vote_reducer";
 import SubmitPartyGuessReducer from "./submit_party_guess_reducer";
@@ -49,9 +50,7 @@ import UsePartyLifelineReducer from "./use_party_lifeline_reducer";
 // Import all procedure arg schemas
 
 // Import all table schema definitions
-import CapitalGuessRow from "./capital_guess_table";
-import CountryStatRow from "./country_stat_table";
-import GuessRow from "./guess_table";
+import LoginCodeRow from "./login_code_table";
 import PartyRow from "./party_table";
 import PartyCapitalRow from "./party_capital_table";
 import PartyConfigRow from "./party_config_table";
@@ -59,57 +58,23 @@ import PartyEventRow from "./party_event_table";
 import PartyGuessRow from "./party_guess_table";
 import PartyPlayerRow from "./party_player_table";
 import PartyVoteRow from "./party_vote_table";
-import UserCountryStatRow from "./user_country_stat_table";
+import ProgressRow from "./progress_table";
 
 /** Type-only namespace exports for generated type groups. */
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
-  capital_guess: __table({
-    name: 'capital_guess',
+  login_code: __table({
+    name: 'login_code',
     indexes: [
-      { accessor: 'byCountry', name: 'capital_guess_country_idx_btree', algorithm: 'btree', columns: [
-        'country',
-      ] },
-      { accessor: 'id', name: 'capital_guess_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'byUser', name: 'capital_guess_user_id_idx_btree', algorithm: 'btree', columns: [
-        'userId',
+      { accessor: 'code', name: 'login_code_code_idx_btree', algorithm: 'btree', columns: [
+        'code',
       ] },
     ],
     constraints: [
-      { name: 'capital_guess_id_key', constraint: 'unique', columns: ['id'] },
+      { name: 'login_code_code_key', constraint: 'unique', columns: ['code'] },
     ],
-  }, CapitalGuessRow),
-  country_stat: __table({
-    name: 'country_stat',
-    indexes: [
-      { accessor: 'country', name: 'country_stat_country_idx_btree', algorithm: 'btree', columns: [
-        'country',
-      ] },
-    ],
-    constraints: [
-      { name: 'country_stat_country_key', constraint: 'unique', columns: ['country'] },
-    ],
-  }, CountryStatRow),
-  guess: __table({
-    name: 'guess',
-    indexes: [
-      { accessor: 'id', name: 'guess_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'byTarget', name: 'guess_target_idx_btree', algorithm: 'btree', columns: [
-        'target',
-      ] },
-      { accessor: 'byUser', name: 'guess_user_id_idx_btree', algorithm: 'btree', columns: [
-        'userId',
-      ] },
-    ],
-    constraints: [
-      { name: 'guess_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, GuessRow),
+  }, LoginCodeRow),
   party: __table({
     name: 'party',
     indexes: [
@@ -202,31 +167,29 @@ const tablesSchema = __schema({
       { name: 'party_vote_key_key', constraint: 'unique', columns: ['key'] },
     ],
   }, PartyVoteRow),
-  user_country_stat: __table({
-    name: 'user_country_stat',
+  progress: __table({
+    name: 'progress',
     indexes: [
-      { accessor: 'key', name: 'user_country_stat_key_idx_btree', algorithm: 'btree', columns: [
-        'key',
-      ] },
-      { accessor: 'byUser', name: 'user_country_stat_user_id_idx_btree', algorithm: 'btree', columns: [
-        'userId',
+      { accessor: 'account_id', name: 'progress_account_id_idx_btree', algorithm: 'btree', columns: [
+        'accountId',
       ] },
     ],
     constraints: [
-      { name: 'user_country_stat_key_key', constraint: 'unique', columns: ['key'] },
+      { name: 'progress_account_id_key', constraint: 'unique', columns: ['accountId'] },
     ],
-  }, UserCountryStatRow),
+  }, ProgressRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
   __reducerSchema("advance_question", AdvanceQuestionReducer),
   __reducerSchema("create_party", CreatePartyReducer),
+  __reducerSchema("generate_login_code", GenerateLoginCodeReducer),
   __reducerSchema("join_party", JoinPartyReducer),
   __reducerSchema("leave_party", LeavePartyReducer),
-  __reducerSchema("record_capital_guess", RecordCapitalGuessReducer),
-  __reducerSchema("record_guess", RecordGuessReducer),
+  __reducerSchema("redeem_login_code", RedeemLoginCodeReducer),
   __reducerSchema("restart_party", RestartPartyReducer),
+  __reducerSchema("save_progress", SaveProgressReducer),
   __reducerSchema("set_ready", SetReadyReducer),
   __reducerSchema("set_vote", SetVoteReducer),
   __reducerSchema("submit_party_guess", SubmitPartyGuessReducer),

@@ -11,9 +11,5 @@ import {
 } from "spacetimedb";
 
 export default {
-  userId: __t.string(),
-  target: __t.string(),
-  guess: __t.string(),
-  lat: __t.f64(),
-  lon: __t.f64(),
+  code: __t.string(),
 };

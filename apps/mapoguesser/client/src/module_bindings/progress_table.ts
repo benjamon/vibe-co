@@ -11,12 +11,7 @@ import {
 } from "spacetimedb";
 
 export default __t.row({
-  id: __t.u64().primaryKey(),
-  userId: __t.string().name("user_id"),
-  target: __t.string(),
-  guess: __t.string(),
-  correct: __t.bool(),
-  lat: __t.f64(),
-  lon: __t.f64(),
-  timestamp: __t.u64(),
+  accountId: __t.string().primaryKey().name("account_id"),
+  data: __t.string(),
+  updatedAt: __t.u64().name("updated_at"),
 });

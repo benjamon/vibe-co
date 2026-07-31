@@ -10,37 +10,13 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export const CapitalGuess = __t.object("CapitalGuess", {
-  id: __t.u64(),
-  userId: __t.string(),
-  country: __t.string(),
-  guessLat: __t.f64(),
-  guessLon: __t.f64(),
-  targetLat: __t.f64(),
-  targetLon: __t.f64(),
-  distanceMi: __t.f64(),
-  timestamp: __t.u64(),
+export const LoginCode = __t.object("LoginCode", {
+  code: __t.string(),
+  accountId: __t.string(),
+  createdAt: __t.u64(),
+  expiresAt: __t.u64(),
 });
-export type CapitalGuess = __Infer<typeof CapitalGuess>;
-
-export const CountryStat = __t.object("CountryStat", {
-  country: __t.string(),
-  correct: __t.i32(),
-  total: __t.i32(),
-});
-export type CountryStat = __Infer<typeof CountryStat>;
-
-export const Guess = __t.object("Guess", {
-  id: __t.u64(),
-  userId: __t.string(),
-  target: __t.string(),
-  guess: __t.string(),
-  correct: __t.bool(),
-  lat: __t.f64(),
-  lon: __t.f64(),
-  timestamp: __t.u64(),
-});
-export type Guess = __Infer<typeof Guess>;
+export type LoginCode = __Infer<typeof LoginCode>;
 
 export const Party = __t.object("Party", {
   code: __t.string(),
@@ -112,12 +88,10 @@ export const PartyVote = __t.object("PartyVote", {
 });
 export type PartyVote = __Infer<typeof PartyVote>;
 
-export const UserCountryStat = __t.object("UserCountryStat", {
-  key: __t.string(),
-  userId: __t.string(),
-  country: __t.string(),
-  correct: __t.i32(),
-  total: __t.i32(),
+export const Progress = __t.object("Progress", {
+  accountId: __t.string(),
+  data: __t.string(),
+  updatedAt: __t.u64(),
 });
-export type UserCountryStat = __Infer<typeof UserCountryStat>;
+export type Progress = __Infer<typeof Progress>;
 

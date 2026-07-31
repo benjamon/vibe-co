@@ -11,11 +11,6 @@ import {
 } from "spacetimedb";
 
 export default {
-  userId: __t.string(),
-  country: __t.string(),
-  guessLat: __t.f64(),
-  guessLon: __t.f64(),
-  targetLat: __t.f64(),
-  targetLon: __t.f64(),
-  distanceMi: __t.f64(),
+  accountId: __t.string(),
+  code: __t.string(),
 };

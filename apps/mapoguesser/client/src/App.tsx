@@ -27,13 +27,6 @@ import { StateFactsCard } from './StateFactsCard'
 import { CountryFactsCard } from './CountryFactsCard'
 import { CityFactsCard, type CityFactsData } from './CityFactsCard'
 import { ItemDetailCard } from './ItemDetailCard'
-import {
-  fetchStats,
-  releaseStats,
-  subscribeStats,
-  subscribeCountryGuesses,
-  type CountryAgg,
-} from './stats'
 import { PartyOverlay, useParty } from './PartyUI'
 import { subModesFor, resolveSubMode, type SubMode } from './gameModes'
 import { COLOR, FONT, border, hardShadow, panelStyle, pillStyle, buttonStyle, disabledLook } from './theme'
@@ -262,15 +255,6 @@ const Checkbox = ({
   </div>
 )
 
-// Stats sum colour: green for net-positive, red for net-negative, neutral
-// otherwise. A zero result still gets shown but uses the muted style so the
-// strong colours stay reserved for clear signal.
-const scoreColour = (sum: number): string => {
-  if (sum > 0) return '#1E8E4A'
-  if (sum < 0) return COLOR.coral
-  return COLOR.charcoal
-}
-
 // End-of-match "N mastered" message: singular/plural noun per family, keyed
 // off the just-played sub-mode's family (see subFamily below).
 const MASTERED_NOUN: Record<'countries' | 'states' | 'cities', [string, string]> = {
@@ -306,14 +290,8 @@ export function App() {
   const markerEpoch = useGameStore((s) => s.markerEpoch)
   const countryCodes = useGameStore((s) => s.countryCodes)
   const countryPopulations = useGameStore((s) => s.countryPopulations)
-  const countryIds = useGameStore((s) => s.countryIds)
-  const stats = useGameStore((s) => s.stats)
-  const selectedStatsCountryId = useGameStore((s) => s.selectedStatsCountryId)
-  const selectStatsCountry = useGameStore((s) => s.selectStatsCountry)
-  const statsMode = useGameStore((s) => s.statsMode)
-  const setStatsMode = useGameStore((s) => s.setStatsMode)
-  const globalStats = useGameStore((s) => s.globalStats)
-  const myStats = useGameStore((s) => s.myStats)
+  const generateLoginCode = useGameStore((s) => s.generateLoginCode)
+  const redeemLoginCode = useGameStore((s) => s.redeemLoginCode)
   const ready = useGameStore((s) => s.countries.length > 0)
   const startGame = useGameStore((s) => s.startGame)
   const resetGame = useGameStore((s) => s.resetGame)
@@ -390,7 +368,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   // Which mode-family sub-menu the idle start screen is showing (null = the
   // top-level Countries / Cities / … picker). 'settings' is the Settings
-  // menu (volume, tiny-island toggle, View Stats), not a region picker, but
+  // menu (volume, tiny-island toggle, login codes), not a region picker, but
   // shares the same "navigate in / ← Back" slot. 'border-artist' is the
   // combined Draw-mode picker — it shows both the 'draw' (countries) and
   // 'draw-states' families' sub-modes together (see the border-artist branch
@@ -402,8 +380,15 @@ export function App() {
   // Settings menu: master SFX volume. Seeded once from sfx.ts's persisted
   // value; setVolume() both applies it live and re-persists it.
   const [volume, setVolumeState] = useState(() => getVolume())
-  const [statsOpen, setStatsOpen] = useState(false)
-  const [statsSort, setStatsSort] = useState<'name' | 'sum'>('sum')
+  // Settings menu: cross-device progress sync via a short-lived login code —
+  // see account.ts / store.ts's generateLoginCode/redeemLoginCode.
+  const [generatedCode, setGeneratedCode] = useState<string | null>(null)
+  const [generatingCode, setGeneratingCode] = useState(false)
+  const [redeemOpen, setRedeemOpen] = useState(false)
+  const [redeemInput, setRedeemInput] = useState('')
+  const [redeemStatus, setRedeemStatus] = useState<
+    'idle' | 'pending' | 'ok' | 'not-found' | 'expired' | 'offline'
+  >('idle')
   // Sub-mode whose full item list (weights + mastery status) the "view list"
   // button is showing, or null when that panel is closed.
   const [weightsSub, setWeightsSub] = useState<SubMode | null>(null)
@@ -439,73 +424,6 @@ export function App() {
   >([])
   const nextPointToastId = useRef(1)
 
-  // Reverse lookup ID → name so we can fold the local guess history into the
-  // "mine" aggregate. Recompute only when the (grow-only) ID map changes.
-  const idToName = useMemo(() => {
-    const m: Record<number, string> = {}
-    for (const [name, id] of Object.entries(countryIds)) m[id] = name
-    return m
-  }, [countryIds])
-
-  // "Mine" aggregate keyed by country NAME: the server's per-user totals
-  // (retrieved by the local random id) merged with this device's local history.
-  // Local overlays the server when it holds at least as many samples, so the
-  // view never shows fewer guesses than the player has actually made here.
-  const mineAgg = useMemo(() => {
-    const out: Record<string, CountryAgg> = {}
-    for (const [name, a] of Object.entries(myStats)) {
-      out[name] = { correct: a.correct, total: a.total }
-    }
-    for (const [idStr, s] of Object.entries(stats)) {
-      const id = Number(idStr)
-      const name = idToName[id]
-      if (!name) continue
-      let correct = 0
-      for (const g of s.guesses) if (g.id === id) correct += 1
-      const total = s.guesses.length
-      const prev = out[name]
-      if (!prev || total >= prev.total) out[name] = { correct, total }
-    }
-    return out
-  }, [myStats, stats, idToName])
-
-  // The dataset the sidebar is currently showing.
-  const activeAgg = statsMode === 'global' ? globalStats : mineAgg
-
-  // Flatten the active aggregate into a sorted, render-ready array. Only
-  // countries with at least one recorded guess appear — an alphabetical wall of
-  // every country in the dataset would be mostly noise. `sum` is the net score
-  // (correct − wrong); selection is keyed by the local country ID.
-  const statsRows = useMemo(() => {
-    const rows: { id: number; name: string; sum: number; code?: string }[] = []
-    for (const [name, a] of Object.entries(activeAgg)) {
-      const id = countryIds[name]
-      if (id === undefined) continue
-      rows.push({
-        id,
-        name,
-        sum: a.correct - (a.total - a.correct),
-        code: countryCodes[name],
-      })
-    }
-    rows.sort((a, b) =>
-      statsSort === 'sum'
-        ? b.sum - a.sum || a.name.localeCompare(b.name) // best net score first
-        : a.name.localeCompare(b.name),
-    )
-    return rows
-  }, [activeAgg, countryIds, countryCodes, statsSort])
-
-  // Totals across every country, for the synthetic "All" row at the top.
-  const statsTotals = useMemo(() => {
-    let correct = 0
-    let total = 0
-    for (const a of Object.values(activeAgg)) {
-      correct += a.correct
-      total += a.total
-    }
-    return { correct, wrong: total - correct, total }
-  }, [activeAgg])
 
   // Full item list (+ weight/status) for whichever sub-mode's "view list"
   // button was clicked. `item` is a country/state name for those families, or
@@ -619,23 +537,6 @@ export function App() {
     return useGameStore.subscribe((state) => {
       ;(window as any).__gameState = state
     })
-  }, [])
-
-  // Pipe SpacetimeDB snapshots into the store: aggregate per-country stats
-  // (global + this user's) and the on-demand guess dots for a selected global
-  // country. The connection itself is opened lazily (on the first guess or when
-  // the stats panel opens), not here — visitors who only look hold nothing.
-  useEffect(() => {
-    const unsubStats = subscribeStats((snap) => {
-      useGameStore.getState().setServerStats(snap.global, snap.mine)
-    })
-    const unsubGuesses = subscribeCountryGuesses((country, dots) => {
-      useGameStore.getState().setGlobalGuesses(country, dots)
-    })
-    return () => {
-      unsubStats()
-      unsubGuesses()
-    }
   }, [])
 
   // Auto-start a match if the URL carries a ?seed=. Runs once countries have
@@ -896,6 +797,10 @@ export function App() {
   // timing, and multiplayer rounds are server-paced. The actual timeout is
   // this one setTimeout (independent of the display tick below, so a slow
   // frame doesn't delay it); `timedDeadline` just drives the countdown badge.
+  // Gated on revealTarget === null: a double-miss advances `target` to the
+  // next country immediately, but the screen keeps showing the "you missed
+  // it was X" reveal for a bit (see WorldViewer's clearReveal) — the window
+  // for the new country shouldn't start ticking until that reveal clears.
   const [timedDeadline, setTimedDeadline] = useState<number | null>(null)
   useEffect(() => {
     const active =
@@ -904,6 +809,7 @@ export function App() {
       !partyUI &&
       phase === 'playing' &&
       target !== null &&
+      revealTarget === null &&
       (mode === 'classic' || mode === 'capitals')
     if (!active) {
       setTimedDeadline(null)
@@ -916,7 +822,7 @@ export function App() {
       else st.handleTimeout()
     }, TIMED_ROUND_MS)
     return () => window.clearTimeout(timer)
-  }, [timedMode, multiplayer, partyUI, phase, target, mode])
+  }, [timedMode, multiplayer, partyUI, phase, target, revealTarget, mode])
 
   // Ticks the countdown badge's display only — doesn't drive the timeout
   // itself (the setTimeout above does that independently).
@@ -996,24 +902,25 @@ export function App() {
     clearSeedFromUrl()
     resetGame()
   }
-  const handleOpenStats = () => {
-    clearSeedFromUrl()
-    // Wipe the last game's pins/labels so the stats dots aren't drawn on
-    // top of leftover correct/wrong markers from the previous round.
-    resetGame()
-    setStatsOpen(true)
-    // Pull a fresh one-time snapshot of the server aggregates. There's no live
-    // subscription; this is the only point the global/your stats are fetched.
-    fetchStats()
+  // Settings menu: cross-device progress sync (see store.ts's generateLoginCode
+  // / redeemLoginCode, backed by account.ts). "Keep it simple" — no real auth,
+  // just a short-lived pairing code copied by hand between devices.
+  const handleGenerateCode = async () => {
+    setRedeemOpen(false)
+    setGeneratingCode(true)
+    setGeneratedCode(null)
+    const code = await generateLoginCode()
+    setGeneratingCode(false)
+    setGeneratedCode(code)
   }
-  const handleCloseStats = () => {
-    // Drop the transient stats + per-country subscriptions, and clear the dot
-    // layer so stale highlights don't linger on the globe.
-    selectStatsCountry(null)
-    releaseStats()
-    setStatsOpen(false)
+  const handleRedeemCode = async () => {
+    const code = redeemInput.trim()
+    if (code.length !== 6) return
+    setRedeemStatus('pending')
+    const result = await redeemLoginCode(code)
+    setRedeemStatus(result)
+    if (result === 'ok') setRedeemInput('')
   }
-
   return (
     <>
       <Suspense fallback={null}>
@@ -1512,7 +1419,7 @@ export function App() {
         </div>
       )}
 
-      {!statsOpen && !partyUI && !friendsOpen && (phase === 'idle' || phase === 'finished') && (
+      {!partyUI && !friendsOpen && (phase === 'idle' || phase === 'finished') && (
         <div
           style={{
             position: 'absolute',
@@ -1558,8 +1465,8 @@ export function App() {
             // hide the region picker underneath it entirely.
             null
           ) : submenu === 'settings' ? (
-            // Settings menu: View Stats lives here now, plus the SFX volume
-            // slider and the "All" countries tiny-island toggle.
+            // Settings menu: cross-device progress sync (login codes), plus
+            // the SFX volume slider and the "All" countries tiny-island toggle.
             <>
               <div
                 style={{
@@ -1574,14 +1481,148 @@ export function App() {
               <button
                 type="button"
                 className="arcade-btn"
+                onClick={handleGenerateCode}
+                disabled={generatingCode}
+                style={{
+                  ...menuButtonStyle,
+                  minWidth: 220,
+                  ...(generatingCode ? disabledLook : {}),
+                }}
+              >
+                {generatingCode ? 'Generating…' : '🔑 Generate Login Code'}
+              </button>
+              {generatedCode && (
+                <div
+                  style={{
+                    ...menuButtonStyle,
+                    minWidth: 220,
+                    cursor: 'default',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.8 }}>
+                    Enter this on your other device:
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 900, letterSpacing: 4 }}>
+                    {generatedCode}
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.7 }}>Valid for 10 minutes</div>
+                </div>
+              )}
+              <button
+                type="button"
+                className="arcade-btn"
                 onClick={() => {
-                  setSubmenu(null)
-                  handleOpenStats()
+                  setRedeemOpen((v) => !v)
+                  setGeneratedCode(null)
+                  setRedeemStatus('idle')
                 }}
                 style={{ ...menuButtonStyle, minWidth: 220 }}
               >
-                View Stats
+                🔓 Enter Login Code
               </button>
+              {redeemOpen && (
+                <div
+                  style={{
+                    ...menuButtonStyle,
+                    minWidth: 220,
+                    cursor: 'default',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'stretch',
+                    gap: 6,
+                  }}
+                >
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={redeemInput}
+                    onChange={(e) => {
+                      setRedeemInput(e.target.value.replace(/\D/g, '').slice(0, 6))
+                      setRedeemStatus('idle')
+                    }}
+                    placeholder="6-digit code"
+                    style={{
+                      fontSize: 20,
+                      fontWeight: 800,
+                      letterSpacing: 4,
+                      textAlign: 'center',
+                      padding: '6px 0',
+                      border: border(2),
+                      borderRadius: 8,
+                      fontFamily: 'inherit',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="arcade-btn"
+                    onClick={handleRedeemCode}
+                    disabled={redeemInput.length !== 6 || redeemStatus === 'pending'}
+                    style={{
+                      ...buttonStyle(COLOR.yellow),
+                      padding: '8px 0',
+                      fontSize: 14,
+                      ...(redeemInput.length !== 6 || redeemStatus === 'pending'
+                        ? disabledLook
+                        : {}),
+                    }}
+                  >
+                    {redeemStatus === 'pending' ? 'Checking…' : 'Submit'}
+                  </button>
+                  {redeemStatus === 'ok' && (
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: '#1E8E4A',
+                        textAlign: 'center',
+                      }}
+                    >
+                      Synced! Your progress from that device is now here.
+                    </div>
+                  )}
+                  {redeemStatus === 'not-found' && (
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: COLOR.coral,
+                        textAlign: 'center',
+                      }}
+                    >
+                      Code not found — check it and try again.
+                    </div>
+                  )}
+                  {redeemStatus === 'expired' && (
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: COLOR.coral,
+                        textAlign: 'center',
+                      }}
+                    >
+                      That code expired — generate a new one.
+                    </div>
+                  )}
+                  {redeemStatus === 'offline' && (
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: COLOR.coral,
+                        textAlign: 'center',
+                      }}
+                    >
+                      Couldn't connect — check your internet and try again.
+                    </div>
+                  )}
+                </div>
+              )}
               <div
                 style={{
                   ...menuButtonStyle,
@@ -2079,284 +2120,6 @@ export function App() {
           'mapoguesser'
         )}
       </div>
-
-      {statsOpen && (
-        <div
-          style={{
-            ...panelStyle,
-            position: 'absolute',
-            top: 16,
-            // The list view stretches to fill the height (bottom: 16); the
-            // detail view is short and fixed, so it just sizes to its content
-            // instead of leaving a tall empty panel below it.
-            ...(typeof selectedStatsCountryId === 'number' ? {} : { bottom: 16 }),
-            left: 16,
-            width: 'min(340px, 92vw)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            padding: 14,
-            pointerEvents: 'auto',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 8,
-            }}
-          >
-            <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 0.3 }}>
-              {statsMode === 'global' ? 'Global stats' : 'My stats'}
-            </div>
-            <button
-              type="button"
-              className="arcade-btn"
-              onClick={handleCloseStats}
-              style={{ ...buttonStyle(COLOR.coral, COLOR.cream), padding: '6px 10px', fontSize: 14 }}
-            >
-              Close
-            </button>
-          </div>
-          {typeof selectedStatsCountryId === 'number' ? (
-            // A specific country is selected: hide the list and show its
-            // detail card instead, with an X that clears the selection (and
-            // the flag/dots on the globe) and brings the list back.
-            <div
-              style={{
-                background: COLOR.cream,
-                border: border(2),
-                borderRadius: 12,
-                padding: 14,
-              }}
-            >
-              <ItemDetailCard
-                family="countries"
-                item={idToName[selectedStatsCountryId] ?? ''}
-                cities={cities}
-                countryCodes={countryCodes}
-                countryPopulations={countryPopulations}
-                subModeId={subMode}
-                onClose={() => selectStatsCountry(null)}
-              />
-            </div>
-          ) : (
-            <>
-          {/* Segmented My / Global toggle, with a single sort-toggle icon to its
-              right. Switching mode wipes the current selection (handled in
-              setStatsMode) so dots from one dataset don't linger. */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
-            <div
-              style={{
-                display: 'flex',
-                flex: 1,
-                gap: 0,
-                border: border(2),
-                borderRadius: 12,
-                overflow: 'hidden',
-              }}
-            >
-              {(['mine', 'global'] as const).map((mode) => {
-                const active = statsMode === mode
-                return (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => {
-                      if (statsMode !== mode) setStatsMode(mode)
-                    }}
-                    style={{
-                      flex: 1,
-                      padding: '8px 0',
-                      fontSize: 14,
-                      fontWeight: 700,
-                      letterSpacing: 0.3,
-                      color: COLOR.charcoal,
-                      background: active ? COLOR.yellow : COLOR.cream,
-                      border: 'none',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                  >
-                    {mode === 'mine' ? 'My stats' : 'Global stats'}
-                  </button>
-                )
-              })}
-            </div>
-            {/* Sort toggle: shows "AZ" when sorting by name, a funnel when
-                sorting by net hit−miss sum. Tapping flips between them. */}
-            <button
-              type="button"
-              className="arcade-btn"
-              aria-label={
-                statsSort === 'name'
-                  ? 'Sorted by name — tap to sort by hit − miss'
-                  : 'Sorted by hit − miss — tap to sort by name'
-              }
-              title={
-                statsSort === 'name' ? 'Sort by hit − miss' : 'Sort by name'
-              }
-              onClick={() =>
-                setStatsSort((s) => (s === 'name' ? 'sum' : 'name'))
-              }
-              style={{
-                ...buttonStyle(COLOR.cream),
-                width: 44,
-                padding: 0,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 14,
-                letterSpacing: 0.5,
-              }}
-            >
-              {statsSort === 'name' ? (
-                'AZ'
-              ) : (
-                <svg
-                  width="17"
-                  height="17"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-                </svg>
-              )}
-            </button>
-          </div>
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflowY: 'auto',
-              background: COLOR.cream,
-              border: border(2),
-              borderRadius: 12,
-            }}
-          >
-            {statsRows.length === 0 ? (
-              <div
-                style={{
-                  padding: 24,
-                  textAlign: 'center',
-                  fontWeight: 600,
-                  fontSize: 14,
-                }}
-              >
-                {statsMode === 'global'
-                  ? 'No global guesses yet — or still connecting.'
-                  : 'No guesses yet — play a round to start filling this in.'}
-              </div>
-            ) : (
-              <>
-                {(() => {
-                  const active = selectedStatsCountryId === 'all'
-                  return (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        selectStatsCountry(active ? null : 'all')
-                      }
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '8px 12px',
-                        width: '100%',
-                        background: active ? COLOR.yellow : 'transparent',
-                        border: 'none',
-                        borderBottom: border(2),
-                        color: COLOR.charcoal,
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        fontFamily: 'inherit',
-                      }}
-                    >
-                      <span
-                        style={{
-                          flex: 1,
-                          fontSize: 15,
-                          fontWeight: 700,
-                          letterSpacing: 0.3,
-                        }}
-                      >
-                        All ({statsTotals.total})
-                      </span>
-                      <span
-                        style={{
-                          fontVariantNumeric: 'tabular-nums',
-                          fontWeight: 700,
-                          fontSize: 15,
-                          color: '#1E8E4A',
-                        }}
-                      >
-                        {statsTotals.correct}
-                      </span>
-                      <span style={{ fontWeight: 700 }}>/</span>
-                      <span
-                        style={{
-                          fontVariantNumeric: 'tabular-nums',
-                          fontWeight: 700,
-                          fontSize: 15,
-                          color: COLOR.coral,
-                        }}
-                      >
-                        {statsTotals.wrong}
-                      </span>
-                    </button>
-                  )
-                })()}
-                {statsRows.map((row) => {
-                return (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => selectStatsCountry(row.id)}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                      padding: '8px 12px',
-                      width: '100%',
-                      background: 'transparent',
-                      border: 'none',
-                      borderBottom: '1px solid rgba(30,32,34,0.15)',
-                      color: COLOR.charcoal,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      fontFamily: 'inherit',
-                    }}
-                  >
-                    <FlagIcon code={row.code} height={20} />
-                    <span style={{ flex: 1, fontSize: 15 }}>{row.name}</span>
-                    <span
-                      style={{
-                        fontVariantNumeric: 'tabular-nums',
-                        fontWeight: 700,
-                        fontSize: 16,
-                        color: scoreColour(row.sum),
-                        minWidth: 32,
-                        textAlign: 'right',
-                      }}
-                    >
-                      {row.sum > 0 ? `+${row.sum}` : row.sum}
-                    </span>
-                  </button>
-                )
-                })}
-              </>
-            )}
-          </div>
-            </>
-          )}
-        </div>
-      )}
 
       {weightsSub && (
         <div

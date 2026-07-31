@@ -1,105 +1,53 @@
 /**
- * SpacetimeDB module for mapoguesser stats.
+ * SpacetimeDB module for mapoguesser.
  *
- * Stores every guess plus two aggregate rollups:
- *   - country_stat:      global per-country totals across all users
- *   - user_country_stat: per-user per-country totals (looked up by the random
- *                        client-side user id)
- *
- * The raw `guess` table is capped at GUESS_CAP_PER_TARGET rows per target
- * country. SpacetimeDB's subscription SQL has no ORDER BY, so we can't ask for
- * "the latest 200" at query time — instead we bound the stored set to the most
- * recent 200 (evicting the oldest, which are the smallest auto-inc ids) so a
- * plain `SELECT * FROM guess WHERE target = '…'` returns exactly that window.
+ * Two unrelated concerns share this module:
+ *   - Cross-device progress sync: each device holds a locally-generated
+ *     `account_id`. Its adaptive-difficulty item-weight progress (see the
+ *     client's store.ts) is pushed here as an opaque JSON blob (`progress`),
+ *     keyed by that id. A short-lived `login_code` table lets a player pair a
+ *     second device to the same account_id without any real auth — generate a
+ *     code on one device, enter it on the other.
+ *   - "Play With Friends" party mode (see the tables/reducers below) — a
+ *     short-lived room identified by a 4-char code, unrelated to accounts.
  */
 import { schema, t, table } from 'spacetimedb/server'
 
-// Map display shows up to the most-recent 200 guesses for a country, so we keep
-// at most that many per target globally.
-const GUESS_CAP_PER_TARGET = 200
-
-// Reject absurdly long strings before they hit the datastore. Natural Earth
-// country names and uuids are both comfortably under this.
-const MAX_NAME_LEN = 96
+// Reject absurdly long strings before they hit the datastore.
+const MAX_ACCOUNT_ID_LEN = 64
+// Generous cap on the serialized progress blob — a full itemWeights map across
+// every country/state/city is a few hundred small entries, comfortably under
+// this even formatted.
+const MAX_PROGRESS_LEN = 200_000
+const LOGIN_CODE_LEN = 6
+// How long a generated login code stays redeemable.
+const LOGIN_CODE_TTL_MS = 10 * 60 * 1000
+// Party mode's per-tab session id, unrelated to account_id.
 const MAX_USER_ID_LEN = 64
 
-// One row per guess. `target` is the country the player was asked to find;
-// `guess` is the country they clicked. `lat`/`lon` are the click location used
-// to paint the dot on the globe.
-const guess = table(
+// One row per account: the opaque serialized progress blob (itemWeights JSON)
+// plus when it was last written, so two devices syncing the same account can
+// resolve which copy is newer (last-write-wins).
+const progress = table(
+  { name: 'progress', public: true },
   {
-    name: 'guess',
-    public: true,
-    indexes: [
-      { accessor: 'byTarget', algorithm: 'btree', columns: ['target'] as const },
-      { accessor: 'byUser', algorithm: 'btree', columns: ['user_id'] as const },
-    ] as const,
-  },
-  {
-    id: t.u64().primaryKey().autoInc(),
-    user_id: t.string(),
-    target: t.string(),
-    guess: t.string(),
-    correct: t.bool(),
-    lat: t.f64(),
-    lon: t.f64(),
-    timestamp: t.u64(),
+    account_id: t.string().primaryKey(),
+    data: t.string(),
+    updated_at: t.u64(),
   },
 )
 
-// One row per capitals-mode guess (golf scoring). `country` is the country whose
-// capital the player was asked to find. `guess_lat`/`guess_lon` are where they
-// dropped the pin; `target_lat`/`target_lon` are the true capital; `distance_mi`
-// is the great-circle miles between them (the round's golf score — lower better).
-const capital_guess = table(
+// Short-lived pairing code: generated on one device, entered on another to
+// adopt the same account_id (and pull its progress). Rows aren't proactively
+// cleaned up — codes are infrequent and small, and expired ones are simply
+// ignored by redeem_login_code / the client's expiry check.
+const login_code = table(
+  { name: 'login_code', public: true },
   {
-    name: 'capital_guess',
-    public: true,
-    indexes: [
-      { accessor: 'byCountry', algorithm: 'btree', columns: ['country'] as const },
-      { accessor: 'byUser', algorithm: 'btree', columns: ['user_id'] as const },
-    ] as const,
-  },
-  {
-    id: t.u64().primaryKey().autoInc(),
-    user_id: t.string(),
-    country: t.string(),
-    guess_lat: t.f64(),
-    guess_lon: t.f64(),
-    target_lat: t.f64(),
-    target_lon: t.f64(),
-    distance_mi: t.f64(),
-    timestamp: t.u64(),
-  },
-)
-
-// Global per-country aggregate across every user. `correct` counts guesses that
-// matched the target; `total` counts all guesses. score = 2*correct - total.
-const country_stat = table(
-  { name: 'country_stat', public: true },
-  {
-    country: t.string().primaryKey(),
-    correct: t.i32(),
-    total: t.i32(),
-  },
-)
-
-// Per-user mirror of country_stat. Primary key is `${user_id}-${country}` so we
-// can upsert without a composite-key index, mirroring the sky-strike pattern.
-const user_country_stat = table(
-  {
-    name: 'user_country_stat',
-    public: true,
-    indexes: [
-      { accessor: 'byUser', algorithm: 'btree', columns: ['user_id'] as const },
-    ] as const,
-  },
-  {
-    key: t.string().primaryKey(),
-    user_id: t.string(),
-    country: t.string(),
-    correct: t.i32(),
-    total: t.i32(),
+    code: t.string().primaryKey(),
+    account_id: t.string(),
+    created_at: t.u64(),
+    expires_at: t.u64(),
   },
 )
 
@@ -308,10 +256,8 @@ const party_capital = table(
 )
 
 const spacetimedb = schema({
-  guess,
-  capital_guess,
-  country_stat,
-  user_country_stat,
+  progress,
+  login_code,
   party,
   party_player,
   party_guess,
@@ -321,136 +267,54 @@ const spacetimedb = schema({
   party_capital,
 })
 
-export const record_guess = spacetimedb.reducer(
-  {
-    user_id: t.string(),
-    target: t.string(),
-    guess: t.string(),
-    lat: t.f64(),
-    lon: t.f64(),
-  },
-  (ctx, { user_id, target, guess: guessName, lat, lon }) => {
-    // Defensive validation — a misbehaving client shouldn't be able to bloat
-    // the datastore or write garbage rows.
-    if (!user_id || user_id.length > MAX_USER_ID_LEN) return
-    if (!target || target.length > MAX_NAME_LEN) return
-    if (!guessName || guessName.length > MAX_NAME_LEN) return
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return
-
-    const correct = target === guessName
-
-    // 1. Append the raw guess.
-    ctx.db.guess.insert({
-      id: 0n, // ignored — autoInc fills it
-      user_id,
-      target,
-      guess: guessName,
-      correct,
-      lat,
-      lon,
-      timestamp: BigInt(Date.now()),
-    })
-
-    // Enforce the per-target cap: auto-inc ids are monotonic, so the smallest
-    // ids are the oldest. Delete just enough of them to stay at the cap. The
-    // scan is bounded to one target's rows (<= cap + 1), so it stays cheap.
-    const rows = Array.from(ctx.db.guess.byTarget.filter(target))
-    if (rows.length > GUESS_CAP_PER_TARGET) {
-      rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-      const excess = rows.length - GUESS_CAP_PER_TARGET
-      for (let i = 0; i < excess; i++) {
-        ctx.db.guess.id.delete(rows[i].id)
-      }
-    }
-
-    // 2. Global aggregate (upsert).
-    const globalExisting = ctx.db.country_stat.country.find(target)
-    if (globalExisting) {
-      ctx.db.country_stat.country.update({
-        country: target,
-        correct: globalExisting.correct + (correct ? 1 : 0),
-        total: globalExisting.total + 1,
-      })
+// Push this device's local progress (itemWeights, serialized as JSON by the
+// client) up to the account it belongs to — an upsert keyed by account_id.
+// `updated_at` is stamped server-side so two devices racing to sync the same
+// account can't spoof each other's clock.
+export const save_progress = spacetimedb.reducer(
+  { account_id: t.string(), data: t.string() },
+  (ctx, { account_id, data }) => {
+    if (!account_id || account_id.length > MAX_ACCOUNT_ID_LEN) return
+    if (data.length > MAX_PROGRESS_LEN) return
+    const now = BigInt(Date.now())
+    const existing = ctx.db.progress.account_id.find(account_id)
+    if (existing) {
+      ctx.db.progress.account_id.update({ account_id, data, updated_at: now })
     } else {
-      ctx.db.country_stat.insert({
-        country: target,
-        correct: correct ? 1 : 0,
-        total: 1,
-      })
-    }
-
-    // 3. Per-user aggregate (upsert).
-    const key = `${user_id}-${target}`
-    const userExisting = ctx.db.user_country_stat.key.find(key)
-    if (userExisting) {
-      ctx.db.user_country_stat.key.update({
-        key,
-        user_id,
-        country: target,
-        correct: userExisting.correct + (correct ? 1 : 0),
-        total: userExisting.total + 1,
-      })
-    } else {
-      ctx.db.user_country_stat.insert({
-        key,
-        user_id,
-        country: target,
-        correct: correct ? 1 : 0,
-        total: 1,
-      })
+      ctx.db.progress.insert({ account_id, data, updated_at: now })
     }
   },
 )
 
-// Record one capitals-mode guess (golf). Stores both the dropped pin and the
-// true capital plus the great-circle distance. Kept in its own table so it never
-// pollutes the classic country_stat / user_country_stat aggregates.
-export const record_capital_guess = spacetimedb.reducer(
-  {
-    user_id: t.string(),
-    country: t.string(),
-    guess_lat: t.f64(),
-    guess_lon: t.f64(),
-    target_lat: t.f64(),
-    target_lon: t.f64(),
-    distance_mi: t.f64(),
-  },
-  (
-    ctx,
-    { user_id, country, guess_lat, guess_lon, target_lat, target_lon, distance_mi },
-  ) => {
-    if (!user_id || user_id.length > MAX_USER_ID_LEN) return
-    if (!country || country.length > MAX_NAME_LEN) return
-    const nums = [guess_lat, guess_lon, target_lat, target_lon, distance_mi]
-    if (nums.some((n) => !Number.isFinite(n))) return
-    if (guess_lat < -90 || guess_lat > 90 || guess_lon < -180 || guess_lon > 180)
-      return
-    if (target_lat < -90 || target_lat > 90 || target_lon < -180 || target_lon > 180)
-      return
-    if (distance_mi < 0) return
-
-    ctx.db.capital_guess.insert({
-      id: 0n, // ignored — autoInc fills it
-      user_id,
-      country,
-      guess_lat,
-      guess_lon,
-      target_lat,
-      target_lon,
-      distance_mi,
-      timestamp: BigInt(Date.now()),
+// Generate a short-lived pairing code for account_id. The client picks a
+// collision-free code (checked via subscription) the same way party codes are
+// chosen, and retries this reducer on collision.
+export const generate_login_code = spacetimedb.reducer(
+  { account_id: t.string(), code: t.string() },
+  (ctx, { account_id, code }) => {
+    if (!account_id || account_id.length > MAX_ACCOUNT_ID_LEN) return
+    if (!code || code.length !== LOGIN_CODE_LEN) return
+    if (ctx.db.login_code.code.find(code)) return // collision — client retries
+    const now = Date.now()
+    ctx.db.login_code.insert({
+      code,
+      account_id,
+      created_at: BigInt(now),
+      expires_at: BigInt(now + LOGIN_CODE_TTL_MS),
     })
+  },
+)
 
-    // Same per-country cap as `guess`: keep at most the most-recent rows.
-    const rows = Array.from(ctx.db.capital_guess.byCountry.filter(country))
-    if (rows.length > GUESS_CAP_PER_TARGET) {
-      rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-      const excess = rows.length - GUESS_CAP_PER_TARGET
-      for (let i = 0; i < excess; i++) {
-        ctx.db.capital_guess.id.delete(rows[i].id)
-      }
-    }
+// Invalidate a login code once the redeeming device has read its account_id
+// (via subscription) and pulled that account's progress — a one-time-use
+// cleanup, not itself how the code is "read" (rows are public and queryable
+// directly by code).
+export const redeem_login_code = spacetimedb.reducer(
+  { code: t.string() },
+  (ctx, { code }) => {
+    const row = ctx.db.login_code.code.find(code)
+    if (!row) return
+    ctx.db.login_code.code.delete(code)
   },
 )
 

@@ -1,13 +1,12 @@
 import { create } from 'zustand'
 import { sfxCorrect, sfxWrong } from './sfx'
 import {
-  recordGuess,
-  recordCapitalGuess,
-  selectGlobalCountryGuesses,
-  ALL_GUESSES,
-  type CountryAgg,
-  type GuessDot,
-} from './stats'
+  getAccountId,
+  pullProgress,
+  pushProgress,
+  generateLoginCode as accountGenerateLoginCode,
+  redeemLoginCode as accountRedeemLoginCode,
+} from './account'
 import {
   submitGuess as submitPartyGuess,
   sendLifeline as sendPartyLifeline,
@@ -20,11 +19,6 @@ import {
   type ModeFamily,
 } from './gameModes'
 import { usStateFlagUrl } from './usStateFlags'
-
-// Which dataset the stats sidebar shows. 'mine' = this player's local history
-// (also mirrored to the server); 'global' = aggregate totals across all users
-// pulled from SpacetimeDB.
-export type StatsMode = 'mine' | 'global'
 
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
@@ -151,42 +145,25 @@ export const roundsForMode = (mode: GameMode): number =>
 // Single-slot save: a returning player can resume one in-progress match.
 // Starting a different seed overwrites it.
 const SAVE_KEY = 'mapoguesser:save'
-// Persistent across matches: stable integer ID per country (grow-only) and
-// the guess history / rolling score keyed by those IDs.
-const IDS_KEY = 'mapoguesser:countryIds'
-const STATS_KEY = 'mapoguesser:stats'
 // Count of consecutive perfect (9/9) games. Persisted so the streak survives
 // reloads; reset to 0 the moment a match ends with any miss.
 const PERFECT_STREAK_KEY = 'mapoguesser:perfectStreak'
 // Per-item adaptive-difficulty weights (single-player draw only — see
 // `drawWeightedUniqueTargets`). Keyed by `${family}:${itemId}` so the same
 // entity (e.g. "France") shares one weight across every sub-mode it appears in
-// (All, Europe, Asia, …), while cities/states get their own namespace.
+// (All, Europe, Asia, …), while cities/states get their own namespace. This is
+// "the user's progress" that account.ts syncs across devices.
 const ITEM_WEIGHTS_KEY = 'mapoguesser:itemWeights'
+// When itemWeights was last changed locally (epoch ms) — compared against the
+// server's `progress.updated_at` on load to decide which copy is newer. See
+// syncProgressOnLoad.
+const ITEM_WEIGHTS_UPDATED_KEY = 'mapoguesser:itemWeightsUpdatedAt'
 // Settings-menu preference: whether the "All" countries pool excludes tiny
 // island nations / city-states. See MIN_TARGET_AREA / poolForSubMode.
 const HIDE_TINY_ISLANDS_KEY = 'mapoguesser:hideTinyIslands'
 // Settings-menu preference: Timed Mode — see TIMED_ROUND_MS / handleTimeout /
 // handleCapitalTimeout.
 const TIMED_MODE_KEY = 'mapoguesser:timedMode'
-
-// One guess on a target. `id` is the country the player actually clicked.
-// `lat`/`lon` are the exact click position on the globe — optional only
-// because guesses persisted before this field was added don't carry them
-// (they still count toward score, they just don't draw dots).
-export interface GuessRecord {
-  id: number
-  lat?: number
-  lon?: number
-}
-
-export interface CountryStats {
-  guesses: GuessRecord[]
-  // Running total over every guess at this country: +1 when the guess matches
-  // the target ID, −1 otherwise. Cached so the stats view doesn't recompute it
-  // for every row on every render.
-  score: number
-}
 
 // Adaptive-difficulty weight for one item (country/state/city). `weight` is
 // the draw multiplier (1.0 = default likelihood); `streak` is the player's
@@ -344,75 +321,12 @@ const writeSave = (data: SavedMatch): void => {
   }
 }
 
-const loadCountryIds = (): Record<string, number> => {
-  if (typeof localStorage === 'undefined') return {}
+// Shared by loadItemWeights (localStorage) and the cross-device sync path
+// (account.ts's pulled JSON blob) — both hand this raw JSON text.
+const parseItemWeightsJSON = (raw: string): ItemWeights | null => {
   try {
-    const raw = localStorage.getItem(IDS_KEY)
-    if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out: Record<string, number> = {}
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === 'number' && Number.isInteger(v) && v >= 0) out[k] = v
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-// Accept both the legacy plain-number form ("guesses: [3, 7, 7]") and the
-// new {id, lat, lon} form. Legacy entries survive with no position and just
-// don't render dots on the map.
-const parseGuessRecord = (v: unknown): GuessRecord | null => {
-  if (typeof v === 'number' && Number.isInteger(v) && v >= 0) {
-    return { id: v }
-  }
-  if (!v || typeof v !== 'object') return null
-  const o = v as Record<string, unknown>
-  if (typeof o.id !== 'number' || !Number.isInteger(o.id) || o.id < 0) return null
-  const rec: GuessRecord = { id: o.id }
-  if (typeof o.lat === 'number' && Number.isFinite(o.lat)) rec.lat = o.lat
-  if (typeof o.lon === 'number' && Number.isFinite(o.lon)) rec.lon = o.lon
-  return rec
-}
-
-const loadStats = (): Record<number, CountryStats> => {
-  if (typeof localStorage === 'undefined') return {}
-  try {
-    const raw = localStorage.getItem(STATS_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out: Record<number, CountryStats> = {}
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      const id = Number(k)
-      if (!Number.isInteger(id) || id < 0) continue
-      if (!v || typeof v !== 'object') continue
-      const o = v as Record<string, unknown>
-      if (!Array.isArray(o.guesses)) continue
-      const guesses: GuessRecord[] = []
-      for (const raw of o.guesses as unknown[]) {
-        const rec = parseGuessRecord(raw)
-        if (rec) guesses.push(rec)
-      }
-      // Recompute from the full history rather than trusting the stored value —
-      // older saves cached only a last-5 rolling score under `recentScore`.
-      out[id] = { guesses, score: computeScore(guesses, id) }
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-const loadItemWeights = (): ItemWeights => {
-  if (typeof localStorage === 'undefined') return {}
-  try {
-    const raw = localStorage.getItem(ITEM_WEIGHTS_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
+    if (!parsed || typeof parsed !== 'object') return null
     const out: ItemWeights = {}
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (!v || typeof v !== 'object') continue
@@ -423,7 +337,25 @@ const loadItemWeights = (): ItemWeights => {
     }
     return out
   } catch {
-    return {}
+    return null
+  }
+}
+
+const loadItemWeights = (): ItemWeights => {
+  if (typeof localStorage === 'undefined') return {}
+  const raw = localStorage.getItem(ITEM_WEIGHTS_KEY)
+  if (!raw) return {}
+  return parseItemWeightsJSON(raw) ?? {}
+}
+
+const loadItemWeightsUpdatedAt = (): number => {
+  if (typeof localStorage === 'undefined') return 0
+  try {
+    const raw = localStorage.getItem(ITEM_WEIGHTS_UPDATED_KEY)
+    const n = raw ? Number(raw) : 0
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch {
+    return 0
   }
 }
 
@@ -433,37 +365,6 @@ const writeJSON = (key: string, data: unknown): void => {
     localStorage.setItem(key, JSON.stringify(data))
   } catch {
     // quota exceeded / private browsing — silent skip
-  }
-}
-
-const computeScore = (guesses: GuessRecord[], targetId: number): number => {
-  let sum = 0
-  for (const g of guesses) sum += g.id === targetId ? 1 : -1
-  return sum
-}
-
-// Record one guess (target vs clicked) into the server stats and return the
-// updated local per-country stats map — or null if the names lack IDs yet.
-// Shared by the single-player and multiplayer guess paths so both feed stats.
-const applyGuessStats = (
-  s: GameState,
-  target: string,
-  clicked: string,
-  lat?: number,
-  lon?: number,
-): Record<number, CountryStats> | null => {
-  recordGuess(target, clicked, lat as number, lon as number)
-  const targetId = s.countryIds[target]
-  const guessId = s.countryIds[clicked]
-  if (targetId === undefined || guessId === undefined) return null
-  const existing = s.stats[targetId] ?? { guesses: [], score: 0 }
-  const record: GuessRecord = { id: guessId }
-  if (typeof lat === 'number' && Number.isFinite(lat)) record.lat = lat
-  if (typeof lon === 'number' && Number.isFinite(lon)) record.lon = lon
-  const guesses = [...existing.guesses, record]
-  return {
-    ...s.stats,
-    [targetId]: { guesses, score: computeScore(guesses, targetId) },
   }
 }
 
@@ -521,9 +422,7 @@ interface GameState {
   setCountries: (countries: string[]) => void
 
   // US state names, populated by WorldViewer once the states polygon GeoJSON
-  // loads. Drives the 'states' family draw pool. Unlike countries, state
-  // guesses aren't registered into countryIds/stats (see handleGlobeClick) —
-  // this mode doesn't feed the persistent stats sidebar or server leaderboard.
+  // loads. Drives the 'states' family draw pool.
   states: string[]
   setStates: (states: string[]) => void
 
@@ -576,22 +475,16 @@ interface GameState {
   timedMode: boolean
   setTimedMode: (timed: boolean) => void
 
-  // Name → stable integer ID. Grow-only across reloads so stats keyed by ID
-  // stay valid as new countries appear in the dataset. WorldViewer calls
-  // registerCountries(names) after the GeoJSON loads.
-  countryIds: Record<string, number>
-  registerCountries: (names: string[]) => void
-
-  // Per-target guess history. Keyed by the target country's ID. Persisted to
-  // localStorage independently of the in-progress match save.
-  stats: Record<number, CountryStats>
-
   // Adaptive-difficulty draw weight per item, keyed by `itemWeightKey(family,
-  // item)`. Persisted independently of the match save (like `stats`), grown
-  // over time by single-player-only guesses (see `handleGlobeClick` /
-  // `handleCapitalGuess`). Drives `drawWeightedUniqueTargets` in `startGame`
-  // and the per-mode "solved" counts (`subModeProgress`).
+  // item)`. Persisted independently of the match save, grown over time by
+  // single-player-only guesses (see `handleGlobeClick` / `handleCapitalGuess`).
+  // Drives `drawWeightedUniqueTargets` in `startGame` and the per-mode "solved"
+  // counts (`subModeProgress`) — this is "the user's progress" that gets
+  // synced across devices (see account.ts / syncProgressOnLoad).
   itemWeights: ItemWeights
+  // Internal: epoch ms this device last changed itemWeights locally. Not for
+  // UI use — see ITEM_WEIGHTS_UPDATED_KEY / syncProgressOnLoad.
+  itemWeightsUpdatedAt: number
 
   // Count of items whose adaptive-difficulty weight dropped to MIN_ITEM_WEIGHT
   // (freshly mastered) so far in the current single-player match — reset by
@@ -605,9 +498,7 @@ interface GameState {
   // The item currently being "browsed" from the item-list panel (see
   // App.tsx's weightsSub UI) — drives WorldViewer's fly-to + flag-pin so the
   // player can see where it is on the globe, and the detail card shown in
-  // place of the list. null = nothing being browsed. (The My Stats country
-  // list has its own, pre-existing fly-to/flag mechanism — see
-  // selectedStatsCountryId below.)
+  // place of the list. null = nothing being browsed.
   browseTarget: BrowseTarget | null
   setBrowseTarget: (t: BrowseTarget | null) => void
 
@@ -619,33 +510,12 @@ interface GameState {
   browseSubModeId: string | null
   setBrowseSubMode: (id: string | null) => void
 
-  // Which row in the stats sidebar is currently selected. Drives the dots the
-  // WorldViewer paints at the player's past guess locations for that country.
-  // null = no row selected; the dot layer is empty. 'all' = the synthetic top
-  // row, which paints every guess ever made across all countries.
-  selectedStatsCountryId: number | 'all' | null
-  selectStatsCountry: (id: number | 'all' | null) => void
-
-  // 'mine' vs 'global' toggle for the stats sidebar.
-  statsMode: StatsMode
-  setStatsMode: (mode: StatsMode) => void
-
-  // Server-fed aggregate snapshots, keyed by country NAME (stable across
-  // clients). `globalStats` spans all users; `myStats` is this user's totals
-  // retrieved from the server by the locally-stored random id. Populated by the
-  // stats subscription wired up in App.
-  globalStats: Record<string, CountryAgg>
-  myStats: Record<string, CountryAgg>
-  setServerStats: (
-    global: Record<string, CountryAgg>,
-    mine: Record<string, CountryAgg>,
-  ) => void
-
-  // Up to the most-recent 200 guesses for the currently-selected global
-  // country, loaded on demand for painting on the globe. `country` is the name
-  // those dots belong to (so a stale update for a different country is ignored).
-  globalGuesses: { country: string | null; dots: GuessDot[] }
-  setGlobalGuesses: (country: string | null, dots: GuessDot[]) => void
+  // Cross-device progress sync (see account.ts). Generates a short-lived
+  // pairing code for this device's account, or null if offline/failed.
+  generateLoginCode: () => Promise<string | null>
+  // Redeems a code generated on another device: adopts that device's account
+  // id and pulls (and applies) its itemWeights progress.
+  redeemLoginCode: (code: string) => Promise<'ok' | 'not-found' | 'expired' | 'offline'>
 
   // Last country clicked on the globe (whichever phase we're in).
   country: string | null
@@ -1251,27 +1121,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   timedMode: loadTimedMode(),
   setTimedMode: (timed) => set({ timedMode: timed }),
 
-  countryIds: loadCountryIds(),
-  registerCountries: (names) => {
-    set((state) => {
-      const ids = { ...state.countryIds }
-      // maxId starts at -1 so the first ever country becomes id 0.
-      let maxId = -1
-      for (const v of Object.values(ids)) if (v > maxId) maxId = v
-      let changed = false
-      for (const name of names) {
-        if (ids[name] === undefined) {
-          maxId++
-          ids[name] = maxId
-          changed = true
-        }
-      }
-      return changed ? { countryIds: ids } : state
-    })
-  },
-
-  stats: loadStats(),
   itemWeights: loadItemWeights(),
+  itemWeightsUpdatedAt: loadItemWeightsUpdatedAt(),
   masteredThisMatch: 0,
 
   browseTarget: null,
@@ -1280,46 +1131,23 @@ export const useGameStore = create<GameState>((set, get) => ({
   browseSubModeId: null,
   setBrowseSubMode: (id) => set({ browseSubModeId: id }),
 
-  selectedStatsCountryId: null,
-  selectStatsCountry: (id) => {
-    set({ selectedStatsCountryId: id })
-    // In global mode, picking a country opens a server subscription for its
-    // most-recent guesses; 'all' opens one for the latest guesses across every
-    // country. Either way the globe paints what loads. 'mine' mode paints from
-    // local history instead, so the server subscription is cleared.
-    const { statsMode, countryIds } = get()
-    if (statsMode === 'global' && id === 'all') {
-      selectGlobalCountryGuesses(ALL_GUESSES)
-    } else if (statsMode === 'global' && typeof id === 'number') {
-      let name: string | null = null
-      for (const k in countryIds) {
-        if (countryIds[k] === id) {
-          name = k
-          break
-        }
-      }
-      selectGlobalCountryGuesses(name)
-    } else {
-      selectGlobalCountryGuesses(null)
-    }
+  generateLoginCode: async () => {
+    // Push current progress first so the code being handed out reflects it,
+    // even if the debounced background push (see the persistence subscriber
+    // below) hasn't fired yet.
+    await pushProgress(JSON.stringify(get().itemWeights))
+    return accountGenerateLoginCode()
   },
-
-  statsMode: 'mine',
-  setStatsMode: (mode) => {
-    // Switching mode clears the current selection so we don't carry a 'mine'
-    // highlight into the 'global' dataset (or vice versa).
-    selectGlobalCountryGuesses(null)
-    set({ statsMode: mode, selectedStatsCountryId: null })
+  redeemLoginCode: async (code) => {
+    const result = await accountRedeemLoginCode(code)
+    if (!result.ok) return result.reason
+    // Adopt the other device's progress wholesale — even if it's empty (a
+    // fresh account with nothing synced yet). The persistence subscriber
+    // below persists this locally and stamps a fresh itemWeightsUpdatedAt.
+    const parsed = result.progress ? parseItemWeightsJSON(result.progress.data) : null
+    set({ itemWeights: parsed ?? {} })
+    return 'ok'
   },
-
-  globalStats: {},
-  myStats: {},
-  setServerStats: (global, mine) =>
-    set({ globalStats: global, myStats: mine }),
-
-  globalGuesses: { country: null, dots: [] },
-  setGlobalGuesses: (country, dots) =>
-    set({ globalGuesses: { country, dots } }),
 
   country: null,
   setCountry: (country) => set({ country }),
@@ -1693,18 +1521,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       const correct = clicked === s.target
       if (correct) sfxCorrect()
       else sfxWrong()
-      // States mode isn't tracked in the persistent stats/leaderboard system
-      // (see the `states` field doc) — skip recordGuess so state names don't
-      // pollute the shared country leaderboard.
-      const isStates = resolveSubMode(s.subMode).family === 'states'
-      const nextStats = isStates
-        ? null
-        : applyGuessStats(s, s.target, clicked, lat, lon)
       submitPartyGuess(s.targetIndex, correct)
-      set({
-        partyAnswered: true,
-        ...(nextStats ? { stats: nextStats } : {}),
-      })
+      set({ partyAnswered: true })
       return
     }
 
@@ -1721,16 +1539,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (s.target === null || s.targetIndex >= ROUNDS) return
 
     const family = resolveSubMode(s.subMode).family
-
-    // Record this guess against the active target in the persistent stats
-    // before we mutate any game state. Skipped if either name lacks an ID
-    // (registerCountries hasn't run yet — shouldn't happen in practice), and
-    // for states mode entirely (state names aren't registered into
-    // countryIds/stats — see the `states` field doc).
-    if (s.target && family !== 'states') {
-      const nextStats = applyGuessStats(s, s.target, clicked, lat, lon)
-      if (nextStats) set({ stats: nextStats })
-    }
 
     const correct = clicked === s.target
 
@@ -1995,16 +1803,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       ? { lat, lon }
       : { lat: first.lat, lon: first.lon }
 
-    // Persist the scoring guess + the answer + the (best) distance to SpacetimeDB.
-    recordCapitalGuess({
-      country: cap.country,
-      guessLat: scoring.lat,
-      guessLon: scoring.lon,
-      targetLat: cap.lat,
-      targetLon: cap.lon,
-      distanceMi: best,
-    })
-
     const distances = [...s.distances, best]
     const capitalPoints = [...s.capitalPoints, points]
     const capitalBonus = [...s.capitalBonus, bestRegionMatch]
@@ -2113,17 +1911,6 @@ export const useGameStore = create<GameState>((set, get) => ({
         (bestRegionMatch ? REGION_BONUS_POINTS : 0) -
         hintPenalty
       : -hintPenalty
-
-    if (first) {
-      recordCapitalGuess({
-        country: cap.country,
-        guessLat: first.lat,
-        guessLon: first.lon,
-        targetLat: cap.lat,
-        targetLon: cap.lon,
-        distanceMi: best,
-      })
-    }
 
     const distances = [...s.distances, best]
     const capitalPoints = [...s.capitalPoints, points]
@@ -2298,17 +2085,61 @@ useGameStore.subscribe((state, prev) => {
   })
 })
 
-// Persist long-lived state (IDs and stats) independently of the match save —
-// it survives across matches and is never wiped by a "new game".
+// Debounced push of itemWeights up to the server, under the current device's
+// account id — see account.ts. Coalesces a burst of rounds into one write.
+const PROGRESS_PUSH_DEBOUNCE_MS = 2000
+let progressPushTimer: ReturnType<typeof setTimeout> | null = null
+const schedulePushProgress = (itemWeights: ItemWeights): void => {
+  if (progressPushTimer !== null) clearTimeout(progressPushTimer)
+  progressPushTimer = setTimeout(() => {
+    progressPushTimer = null
+    void pushProgress(JSON.stringify(itemWeights))
+  }, PROGRESS_PUSH_DEBOUNCE_MS)
+}
+
+// Persist long-lived state (progress and settings) independently of the match
+// save — it survives across matches and is never wiped by a "new game".
 useGameStore.subscribe((state, prev) => {
-  if (state.countryIds !== prev.countryIds) writeJSON(IDS_KEY, state.countryIds)
-  if (state.stats !== prev.stats) writeJSON(STATS_KEY, state.stats)
   if (state.perfectStreak !== prev.perfectStreak)
     writeJSON(PERFECT_STREAK_KEY, state.perfectStreak)
-  if (state.itemWeights !== prev.itemWeights)
+  if (state.itemWeights !== prev.itemWeights) {
+    const now = Date.now()
     writeJSON(ITEM_WEIGHTS_KEY, state.itemWeights)
+    writeJSON(ITEM_WEIGHTS_UPDATED_KEY, now)
+    if (state.itemWeightsUpdatedAt !== now)
+      useGameStore.setState({ itemWeightsUpdatedAt: now })
+    schedulePushProgress(state.itemWeights)
+  }
   if (state.hideTinyIslands !== prev.hideTinyIslands)
     writeJSON(HIDE_TINY_ISLANDS_KEY, state.hideTinyIslands)
   if (state.timedMode !== prev.timedMode)
     writeJSON(TIMED_MODE_KEY, state.timedMode)
 })
+
+// One-time cross-device catch-up on load: compare this device's local
+// itemWeights timestamp against the server's for the current account, and
+// let whichever is newer win (last-write-wins — good enough for a single
+// player sequentially switching between their own devices). If the server has
+// nothing yet (or is unreachable), this just pushes local progress up so it
+// exists there going forward.
+async function syncProgressOnLoad(): Promise<void> {
+  const accountId = getAccountId()
+  const remote = await pullProgress(accountId)
+  const state = useGameStore.getState()
+  if (remote && remote.updatedAt > state.itemWeightsUpdatedAt) {
+    const parsed = parseItemWeightsJSON(remote.data)
+    if (parsed) {
+      writeJSON(ITEM_WEIGHTS_KEY, parsed)
+      writeJSON(ITEM_WEIGHTS_UPDATED_KEY, remote.updatedAt)
+      useGameStore.setState({
+        itemWeights: parsed,
+        itemWeightsUpdatedAt: remote.updatedAt,
+      })
+      return
+    }
+  }
+  if (Object.keys(state.itemWeights).length > 0) {
+    void pushProgress(JSON.stringify(state.itemWeights))
+  }
+}
+void syncProgressOnLoad()
