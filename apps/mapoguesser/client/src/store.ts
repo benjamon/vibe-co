@@ -89,7 +89,7 @@ export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // auto-misses — see handleTimeout/handleCapitalTimeout. One window per
 // round, not per guess (App.tsx's timer effect keys off `target`, which
 // stays the same across capitals mode's two attempts on one city).
-export const TIMED_ROUND_MS = 5000
+export const TIMED_ROUND_MS = 10000
 // Capitals mode is shorter and scored golf-style: 5 capitals, two guesses each
 // (the closer guess scores). Kept separate from ROUNDS, which is the guess
 // budget for classic.

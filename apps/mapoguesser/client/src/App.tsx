@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { Confetti } from './Confetti'
 import { Fireworks } from './Fireworks'
-import { sfxEndJingle, installAudioUnlock, getVolume, setVolume } from './sfx'
+import {
+  sfxEndJingle,
+  sfxCountdownBeep,
+  installAudioUnlock,
+  getVolume,
+  setVolume,
+} from './sfx'
 import {
   useGameStore,
   ROUNDS,
@@ -825,11 +831,27 @@ export function App() {
   }, [timedMode, multiplayer, partyUI, phase, target, revealTarget, mode])
 
   // Ticks the countdown badge's display only — doesn't drive the timeout
-  // itself (the setTimeout above does that independently).
+  // itself (the setTimeout above does that independently). Also beeps once
+  // per second for the last 3 seconds, tracked by lastBeepSecond so a 200ms
+  // tick landing on the same whole second twice doesn't double-beep.
   const [timedNow, setTimedNow] = useState(() => Date.now())
+  const lastBeepSecond = useRef<number | null>(null)
   useEffect(() => {
+    lastBeepSecond.current = null
     if (timedDeadline === null) return
-    const id = window.setInterval(() => setTimedNow(Date.now()), 200)
+    const id = window.setInterval(() => {
+      const now = Date.now()
+      setTimedNow(now)
+      const secondsLeft = Math.max(0, Math.ceil((timedDeadline - now) / 1000))
+      if (
+        secondsLeft > 0 &&
+        secondsLeft <= 3 &&
+        lastBeepSecond.current !== secondsLeft
+      ) {
+        lastBeepSecond.current = secondsLeft
+        sfxCountdownBeep()
+      }
+    }, 200)
     return () => window.clearInterval(id)
   }, [timedDeadline])
   const timedSecondsLeft =

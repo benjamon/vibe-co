@@ -188,6 +188,13 @@ export const sfxFirework = (): void => {
   osc.stop(now + 0.32)
 }
 
+// Short, sharp countdown beep — Timed Mode (Settings menu) plays this once
+// per second for the last 3 seconds of a round's window, so a miss doesn't
+// come as a surprise. Higher-pitched than the guess feedback tones so it
+// reads as a clock, not a right/wrong result.
+export const sfxCountdownBeep = (): void =>
+  play([{ midi: 88, start: 0, dur: 0.09, wave: 'square', gain: 0.2 }], 4000)
+
 // --- End-of-match jingles ---------------------------------------------------
 
 // <= 1/9 : the classic "wah-wah-wah-waaah" sad trombone — four descending
