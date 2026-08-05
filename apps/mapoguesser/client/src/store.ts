@@ -88,8 +88,10 @@ export const WRONG_GUESSES_BEFORE_REVEAL = 2
 // Timed Mode (Settings menu): how long a single-player round has before it
 // auto-misses — see handleTimeout/handleCapitalTimeout. One window per
 // round, not per guess (App.tsx's timer effect keys off `target`, which
-// stays the same across capitals mode's two attempts on one city).
-export const TIMED_ROUND_MS = 10000
+// stays the same across capitals mode's two attempts on one city). Padded
+// by FIRST_MISS_LOCK_MS so the post-first-miss input lock below doesn't eat
+// into a timed round's thinking time.
+export const TIMED_ROUND_MS = 10000 + 500
 // Capitals mode is shorter and scored golf-style: 5 capitals, two guesses each
 // (the closer guess scores). Kept separate from ROUNDS, which is the guess
 // budget for classic.
@@ -134,7 +136,12 @@ export const MAX_CAPITAL_POINTS = CAPITAL_ROUNDS * (5 + REGION_BONUS_POINTS)
 // After the target changes, guess input is ignored for this long so a click
 // queued/double-fired for the previous target doesn't land on the new one.
 export const GUESS_LOCK_MS = 1000
-const lockUntil = (): number => Date.now() + GUESS_LOCK_MS
+const lockUntil = (ms: number = GUESS_LOCK_MS): number => Date.now() + ms
+
+// After a first missed guess (still same target, one retry left), input is
+// briefly ignored too — otherwise a fast double-tap/click meant as a single
+// guess registers as two straight misses and burns the reveal early.
+const FIRST_MISS_LOCK_MS = 500
 
 // How many rounds a given mode runs for. Must match the server's roundsForMode
 // so single-player and party matches agree on when the match ends. ('draw' is
@@ -1591,8 +1598,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const newWrong = s.consecutiveWrong + 1
     if (newWrong < WRONG_GUESSES_BEFORE_REVEAL && !finished) {
       // Still have a guess left on this country (and in the match) — log the
-      // miss but keep the same target so the next click retries it.
-      set({ attempts, consecutiveWrong: newWrong, target: s.target })
+      // miss but keep the same target so the next click retries it. Brief
+      // lock so a double-tap that produced this miss doesn't also burn the
+      // retry.
+      set({
+        attempts,
+        consecutiveWrong: newWrong,
+        target: s.target,
+        inputLockUntil: lockUntil(FIRST_MISS_LOCK_MS),
+      })
       return
     }
 
@@ -1680,10 +1694,17 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     // Whether THIS click landed in the target's actual country — or, in the
     // US state-lines sub-mode, its actual state — for the +1 region bonus.
+    // Also awarded outright once the guess is within the tightest distance
+    // tier (tiers[0], the smallest scoring radius) — a pin that close is
+    // essentially on the city, so a click that technically lands just across
+    // a nearby border into another country/state shouldn't cost the bonus.
     const byState = resolveSubMode(s.subMode).cities?.usStateLines === true
-    const regionMatch = byState
-      ? guessedState != null && guessedState === cap.region
-      : guessedCountry != null && guessedCountry === cap.country
+    const withinSmallestTier = distance <= capitalPointTierMilesFor(s.subMode)[0]
+    const regionMatch =
+      withinSmallestTier ||
+      (byState
+        ? guessedState != null && guessedState === cap.region
+        : guessedCountry != null && guessedCountry === cap.country)
 
     // A guess dot labelled with its own miss distance. Grey by default; the
     // closer of the two guesses — the one that actually scores — is drawn

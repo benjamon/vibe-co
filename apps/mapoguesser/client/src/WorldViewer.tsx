@@ -84,10 +84,13 @@ const USE_FXAA = true
 // (default true, ignoring devicePixelRatio), and going below 1 here subsamples
 // the whole framebuffer and makes thin high-contrast lines crawl / pixelate.
 const RESOLUTION_SCALE = 1
-// Globe screen-space error tolerance. Higher = coarser tiles, so fewer tile
-// fetches and draw calls. Desktop uses Cesium's default (2); mobile relaxes
-// to 4 to cut bandwidth and draw calls.
-const MAX_SCREEN_SPACE_ERROR = IS_MOBILE ? 4 : 3
+// Globe screen-space error tolerance. Higher = coarser tiles (fewer fetches/
+// draw calls) at every zoom level, since this is what decides which tile
+// level the current camera distance warrants. Same value on mobile and
+// desktop — mobile previously relaxed this to 4 to save bandwidth, but that
+// made imagery visibly blurrier/more pixelated at every zoom on phones, so
+// it now matches desktop's sharper default.
+const MAX_SCREEN_SPACE_ERROR = 3
 // Atmosphere + fog are fillrate cosmetics: on for desktop (nicer limb glow),
 // off on mobile to save fill.
 const SHOW_ATMOSPHERE = !IS_MOBILE
@@ -347,6 +350,12 @@ export function WorldViewer() {
     // of the game markers.
     const overlays = new CustomDataSource('overlays')
     viewer.dataSources.add(overlays)
+
+    // Landing-zone circles for every tiny/scattered country — see
+    // renderTinyCountryDots below. Populated once when the country polygons
+    // load, then just toggled show/hide as the mode changes.
+    const tinyDots = new CustomDataSource('tinyDots')
+    viewer.dataSources.add(tinyDots)
 
     // Flag-on-a-pole pin sprites. Composed on demand per (kind, code) because
     // flag images load asynchronously from flagcdn.com; cached so a re-render
@@ -713,6 +722,9 @@ export function WorldViewer() {
             })
           }
           countryEntries = list
+          renderTinyCountryDots()
+          tinyDots.show =
+            resolveSubMode(useGameStore.getState().subMode).family === 'countries'
           // Cities-mode pool: join places with countries (no-op until the places
           // have also loaded — publishCities guards on placesLoaded).
           publishCities()
@@ -1066,6 +1078,15 @@ export function WorldViewer() {
     // degrees per-click via surfaceRadiansPerPixel so it stays a constant
     // *visual* size regardless of zoom.
     const TINY_HIT_PIXEL_RADIUS = 18
+    // A click within this many real-world miles of a tiny target counts as a
+    // hit outright, regardless of which polygon (if any) it actually landed
+    // in — nearestTinyCountry's pixel radius only fires when the click missed
+    // every polygon, but a click anywhere in Rome hits Italy's polygon
+    // outright and never reaches that fallback, even though it's right next
+    // to the Vatican. This check runs instead, keyed specifically off the
+    // *target* (see isGenerousHitOnTarget below) so it never redirects a miss
+    // into crediting some other nearby tiny country.
+    const GENEROUS_HIT_MILES = 10
 
     // Fallback hit-test for a click that missed every polygon outright: snap
     // to the nearest tiny country's flag anchor (the same point its pin
@@ -1101,6 +1122,60 @@ export function WorldViewer() {
         }
       }
       return bestName
+    }
+
+    // Every tiny country (area <= TINY_HITBOX_MAX_AREA) whose flag point sits
+    // within GENEROUS_HIT_MILES of (lat, lon) — the generous-hit candidate set
+    // for that click. The caller only cares whether the current target is a
+    // member (see emitLatLon), but building the whole set rather than testing
+    // the target alone keeps this symmetric with nearestTinyCountry above and
+    // means a target look-up never has to special-case "is this country tiny".
+    const generousTinyMatches = (
+      list: CountryEntry[],
+      lat: number,
+      lon: number,
+    ): Set<string> => {
+      const matches = new Set<string>()
+      for (const c of list) {
+        if (c.area > TINY_HITBOX_MAX_AREA) continue
+        const pt = flagPointFor(c)
+        if (haversineMiles(lat, lon, pt.lat, pt.lon) <= GENEROUS_HIT_MILES) {
+          matches.add(c.name)
+        }
+      }
+      return matches
+    }
+
+    // Permanently-visible landing-zone circle for every tiny country (area <=
+    // TINY_HITBOX_MAX_AREA) — Vatican, Nauru, and scattered archipelagos like
+    // the Marshall Islands are otherwise a sub-pixel smear even at close zoom,
+    // with no reliable spot to aim a click at. One circle per country at its
+    // flagPointFor anchor (the same "main island" point the reveal flag lands
+    // on), radius GENEROUS_HIT_MILES — the same radius that already credits a
+    // nearby click as a hit on the target (see emitLatLon), so what's visible
+    // matches what's clickable. Drawn for the whole tiny-country set at once,
+    // not just the current target, so it's a locating aid rather than a
+    // giveaway of which one is the answer.
+    const renderTinyCountryDots = (): void => {
+      tinyDots.entities.removeAll()
+      if (!countryEntries) return
+      const MI_TO_M = 1609.344
+      for (const c of countryEntries) {
+        if (c.area > TINY_HITBOX_MAX_AREA) continue
+        const pt = flagPointFor(c)
+        tinyDots.entities.add({
+          position: Cartesian3.fromDegrees(pt.lon, pt.lat),
+          ellipse: {
+            semiMajorAxis: GENEROUS_HIT_MILES * MI_TO_M,
+            semiMinorAxis: GENEROUS_HIT_MILES * MI_TO_M,
+            material: new ColorMaterialProperty(Color.WHITE.withAlpha(0.12)),
+            outline: true,
+            outlineColor: Color.WHITE.withAlpha(0.55),
+            outlineWidth: 2,
+            height: 0,
+          },
+        })
+      }
     }
 
     const lookupCountryName = (lat: number, lon: number): string | null => {
@@ -1833,10 +1908,9 @@ export function WorldViewer() {
       const lon = CesiumMath.toDegrees(carto.longitude)
       console.log(`lat: ${lat.toFixed(4)}, lon: ${lon.toFixed(4)}`)
       const state = useGameStore.getState()
+      const family = resolveSubMode(state.subMode).family
       const name =
-        resolveSubMode(state.subMode).family === 'states'
-          ? lookupStateName(lat, lon)
-          : lookupCountryName(lat, lon)
+        family === 'states' ? lookupStateName(lat, lon) : lookupCountryName(lat, lon)
 
       // Brief input lock right after the target changes: swallow the click so a
       // release/double-tap meant for the previous target doesn't guess the new
@@ -1860,20 +1934,36 @@ export function WorldViewer() {
         return
       }
 
+      // Tiny targets: if the exact click missed (whether it landed in some
+      // other polygon, like Italy around the Vatican, or in open water/no
+      // polygon at all) but is within GENEROUS_HIT_MILES of the target,
+      // credit it anyway — see generousTinyMatches above.
+      let resolvedName = name
+      if (
+        family === 'countries' &&
+        state.phase === 'playing' &&
+        state.target !== null &&
+        resolvedName !== state.target &&
+        countryEntries &&
+        generousTinyMatches(countryEntries, lat, lon).has(state.target)
+      ) {
+        resolvedName = state.target
+      }
+
       // Drop a guess pin at the click location during play. Snapshot target
       // BEFORE handleGlobeClick — that call may advance to a new target,
       // which would corrupt the right/wrong determination.
-      if (state.phase === 'playing' && name !== null && state.revealTarget === null) {
-        const correct = state.target === name
+      if (
+        state.phase === 'playing' &&
+        resolvedName !== null &&
+        state.revealTarget === null
+      ) {
+        const correct = state.target === resolvedName
         // Countries mode only: on a miss, show how far off the click was —
         // great-circle distance to the target's centroid (an approximation;
         // there's no cheap "distance to the actual border" available here).
         let distanceMi: number | undefined
-        if (
-          !correct &&
-          state.target &&
-          resolveSubMode(state.subMode).family === 'countries'
-        ) {
+        if (!correct && state.target && family === 'countries') {
           const targetEntry = countryEntries?.find((c) => c.name === state.target)
           if (targetEntry) {
             distanceMi = haversineMiles(
@@ -1888,11 +1978,11 @@ export function WorldViewer() {
           lat,
           lon,
           kind: correct ? 'correct' : 'wrong',
-          label: name,
+          label: resolvedName,
           distanceMi,
         })
       }
-      useGameStore.getState().handleGlobeClick(name, lat, lon)
+      useGameStore.getState().handleGlobeClick(resolvedName, lat, lon)
     }
 
     const onPointerDown = (e: PointerEvent) => {
@@ -2218,6 +2308,9 @@ export function WorldViewer() {
         const want = wantStateLines(state.browseSubModeId ?? state.subMode)
         if (want) loadStateLines() // lazy: fetch the first time it's needed
         if (stateLinesDS) stateLinesDS.show = want
+        tinyDots.show =
+          resolveSubMode(state.browseSubModeId ?? state.subMode).family ===
+          'countries'
       }
 
       // A bumped epoch means the markers were fully replaced (capitals mode
