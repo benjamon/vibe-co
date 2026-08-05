@@ -1659,12 +1659,13 @@ export function WorldViewer() {
     }
 
     // % of the target country's area covered by the union of the player's
-    // committed shapes — (points inside both) / (points inside the target) —
-    // minus the over-drawn area (points inside a shape but outside the
-    // target), expressed as that same fraction of the target's area, so
-    // drawing a big loose loop around the country no longer scores well just
-    // for covering it. Estimated via a raster scan over unionBBox; floored
-    // at 0 so a wildly oversized drawing doesn't score negative.
+    // committed shapes — (points inside both) / (points inside the target),
+    // as a percent — divided by 100% plus the over-drawn area (points inside
+    // a shape but outside the target, as that same fraction of the target's
+    // area). Dividing rather than subtracting means over-drawing dilutes the
+    // score instead of subtracting linearly, so a big loose loop around the
+    // country scores worse than a tight fill but can't go negative.
+    // Estimated via a raster scan over unionBBox.
     const computeOverlapPercent = (
       entry: CountryEntry,
       rawShapes: DrawPoint[][],
@@ -1692,8 +1693,8 @@ export function WorldViewer() {
       }
       if (targetCount === 0) return 0
       const hitPercent = (intersectCount / targetCount) * 100
-      const overDrawPenalty = (extraCount / targetCount) * 100
-      return Math.round(Math.max(0, hitPercent - overDrawPenalty))
+      const overDrawPercent = (extraCount / targetCount) * 100
+      return Math.round((hitPercent * 100) / (100 + overDrawPercent))
     }
 
     // Same union-bbox raster idea as computeOverlapPercent, but at
