@@ -1,5 +1,4 @@
-import { Canvas } from '@react-three/fiber'
-import { PerspectiveCamera } from '@react-three/drei'
+import { Canvas, useThree } from '@react-three/fiber'
 import { useEffect, useMemo } from 'react'
 import { GameScene } from './GameScene'
 import { HUD } from './HUD'
@@ -8,7 +7,17 @@ import { autoFlipIntervalMs, useGameStore } from './store'
 function cameraPosition(coinCount: number): [number, number, number] {
   const cols = Math.ceil(Math.sqrt(Math.max(coinCount, 1)))
   const dist = 14 + cols * 4
-  return [0, dist * 0.7, dist]
+  return [0, dist * 0.45, dist]
+}
+
+function CameraRig({ position }: { position: [number, number, number] }) {
+  const { camera } = useThree()
+  useEffect(() => {
+    camera.position.set(position[0], position[1], position[2])
+    camera.lookAt(0, 0, 0)
+    camera.updateProjectionMatrix()
+  }, [camera, position])
+  return null
 }
 
 export function App() {
@@ -47,8 +56,8 @@ export function App() {
         touchAction: 'manipulation',
       }}
     >
-      <Canvas>
-        <PerspectiveCamera makeDefault position={camPos} fov={45} />
+      <Canvas camera={{ fov: 45 }}>
+        <CameraRig position={camPos} />
         <color attach="background" args={['#0f1020']} />
         <ambientLight intensity={0.55} />
         <directionalLight position={[8, 14, 10]} intensity={1.2} />
