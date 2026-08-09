@@ -65,9 +65,19 @@ jobs:
           GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/sky-strike/
         run: npm run build
 
+      - name: Install osm_globe
+        working-directory: apps/osm_globe
+        run: npm ci
+
+      - name: Build osm_globe
+        working-directory: apps/osm_globe
+        env:
+          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/osm_globe/
+        run: npm run build
+
       - name: Stage site
         run: |
-          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser _site/sky-strike
+          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser _site/sky-strike _site/osm_globe
           cp -r apps/auto-battles/client/dist/. _site/auto-battles/
           cp apps/auto-battles/client/dist/index.html _site/auto-battles/404.html
           cp -r apps/coin-flip/client/dist/. _site/coin-flip/
@@ -76,6 +86,8 @@ jobs:
           cp apps/mapoguesser/client/dist/index.html _site/mapoguesser/404.html
           cp -r apps/sky-strike/client/dist/. _site/sky-strike/
           cp apps/sky-strike/client/dist/index.html _site/sky-strike/404.html
+          cp -r apps/osm_globe/client/dist/. _site/osm_globe/
+          cp apps/osm_globe/client/dist/index.html _site/osm_globe/404.html
           cp site/index.html _site/index.html
           echo '--- artifact tree ---'
           find _site -maxdepth 3 -print

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>osm_globe</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #map { width: 100%; height: 100%; overflow: hidden; }
+      body { background: #0a0e14; font-family: system-ui, sans-serif; }
+
+      #menu-toggle {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 20;
+        width: 34px;
+        height: 34px;
+        border: none;
+        border-radius: 4px;
+        background: #fff;
+        box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+        cursor: pointer;
+        font-size: 18px;
+        line-height: 1;
+      }
+      #menu-toggle:hover { background: #f2f2f2; }
+
+      #menu-panel {
+        position: fixed;
+        top: 54px;
+        left: 10px;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        background: #fff;
+        border-radius: 4px;
+        box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+        padding: 8px 12px;
+        min-width: 170px;
+        transform: translateY(-8px);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.12s ease, transform 0.12s ease;
+      }
+      #menu-panel.open {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+      #menu-panel label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 2px;
+        font-size: 13px;
+        color: #222;
+        cursor: pointer;
+        user-select: none;
+      }
+      #menu-panel input[type='checkbox'],
+      #menu-panel input[type='radio'] { cursor: pointer; }
+      #menu-panel hr {
+        border: none;
+        border-top: 1px solid #ddd;
+        margin: 6px 0;
+      }
+      .menu-section-heading {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #888;
+        margin: 2px 2px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <button id="menu-toggle" aria-label="Toggle layers menu" aria-expanded="false">&#9776;</button>
+    <div id="menu-panel"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
