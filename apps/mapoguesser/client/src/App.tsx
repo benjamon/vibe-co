@@ -223,6 +223,7 @@ const Checkbox = ({
   code,
   flagSrc,
   count,
+  justMastered,
 }: {
   result: AttemptResult
   code?: string
@@ -231,32 +232,70 @@ const Checkbox = ({
   // How many boxes share the row — drives the responsive shrink so they all fit
   // across a narrow viewport even when misses push the count above 9.
   count: number
+  // This guess just floored its target's mastery weight (see isNewlyMastered
+  // in store.ts) — draws the little stamp badge in the box's corner.
+  justMastered?: boolean
 }) => (
   <div
     style={{
-      // 40px on desktop, but shrink to fit `count` boxes (+ 4px gaps) across the
-      // viewport on a narrow portrait phone. aspectRatio keeps the 40:32 shape
-      // as the width shrinks; the flag inside scales with it.
+      // Wrapper carries the sizing/shape; the badge below is positioned
+      // relative to it, outside the inner box's own overflow:hidden (which
+      // clips the flag image to its rounded corners).
+      position: 'relative',
       width: `min(40px, calc((96vw - ${(count - 1) * 4}px) / ${count}))`,
       aspectRatio: '40 / 32',
-      boxSizing: 'border-box',
       flex: 'none',
-      border: border(2),
-      borderRadius: 8,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: CHECK_BG[result],
-      boxShadow: hardShadow(2),
-      overflow: 'hidden',
     }}
   >
-    {result !== 'pending' && (flagSrc || code) && (
-      <img
-        src={flagSrc ?? `https://flagcdn.com/w80/${code}.png`}
-        alt=""
-        style={{ display: 'block', width: '70%', height: 'auto', borderRadius: 2 }}
-      />
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        boxSizing: 'border-box',
+        border: border(2),
+        borderRadius: 8,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: CHECK_BG[result],
+        boxShadow: hardShadow(2),
+        overflow: 'hidden',
+      }}
+    >
+      {result !== 'pending' && (flagSrc || code) && (
+        <img
+          src={flagSrc ?? `https://flagcdn.com/w80/${code}.png`}
+          alt=""
+          style={{ display: 'block', width: '70%', height: 'auto', borderRadius: 2 }}
+        />
+      )}
+    </div>
+    {justMastered && (
+      <span
+        role="img"
+        aria-label="Mastered"
+        title="Mastered!"
+        style={{
+          position: 'absolute',
+          bottom: -6,
+          right: -6,
+          width: 16,
+          height: 16,
+          borderRadius: '50%',
+          background: COLOR.forestGreen,
+          border: border(1.5),
+          boxShadow: hardShadow(1.5),
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 10,
+          lineHeight: 1,
+          color: COLOR.cream,
+          pointerEvents: 'none',
+        }}
+      >
+        ★
+      </span>
     )}
   </div>
 )
@@ -292,6 +331,7 @@ export function App() {
   const target = useGameStore((s) => s.target)
   const revealTarget = useGameStore((s) => s.revealTarget)
   const attempts = useGameStore((s) => s.attempts)
+  const masteredOnAttempt = useGameStore((s) => s.masteredOnAttempt)
   const markers = useGameStore((s) => s.markers)
   const markerEpoch = useGameStore((s) => s.markerEpoch)
   const countryCodes = useGameStore((s) => s.countryCodes)
@@ -519,6 +559,7 @@ export function App() {
       result: AttemptResult
       code?: string
       flagSrc?: string
+      justMastered?: boolean
     }[] = []
     const isStates = subFamily === 'states'
     for (let i = 0; i < ROUNDS; i++) {
@@ -528,13 +569,14 @@ export function App() {
           result: attempts[i],
           code: label && !isStates ? countryCodes[label] : undefined,
           flagSrc: label && isStates ? usStateFlagUrl(label) : undefined,
+          justMastered: masteredOnAttempt[i],
         })
       } else {
         boxes.push({ result: 'pending' })
       }
     }
     return boxes
-  }, [attempts, clickMarkers, countryCodes, subFamily])
+  }, [attempts, clickMarkers, countryCodes, subFamily, masteredOnAttempt])
 
   const [shareLabel, setShareLabel] = useState<'idle' | 'copied'>('idle')
 
@@ -1227,6 +1269,7 @@ export function App() {
                   code={b.code}
                   flagSrc={b.flagSrc}
                   count={guessBoxes.length}
+                  justMastered={b.justMastered}
                 />
               ))}
             </div>

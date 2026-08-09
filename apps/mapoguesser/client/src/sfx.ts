@@ -188,6 +188,17 @@ export const sfxFirework = (): void => {
   osc.stop(now + 0.32)
 }
 
+// A quick, sparkly ascending chime — layered on top of the normal correct
+// "bing" the instant a guess pushes an item's mastery streak to 3-in-a-row
+// (see nextWeightEntry / isNewlyMastered in store.ts). Short and bell-like so
+// it reads as a bonus flourish rather than another end-of-match jingle.
+export const sfxAchievement = (): void =>
+  play([
+    { midi: 84, start: 0, dur: 0.14, wave: 'triangle', gain: 0.22 }, // C6
+    { midi: 88, start: 0.07, dur: 0.14, wave: 'triangle', gain: 0.22 }, // E6
+    { midi: 91, start: 0.14, dur: 0.28, wave: 'sine', gain: 0.26 }, // G6 sparkle
+  ])
+
 // Short, sharp countdown beep — Timed Mode (Settings menu) plays this once
 // per second for the last 3 seconds of a round's window, so a miss doesn't
 // come as a surprise. Higher-pitched than the guess feedback tones so it

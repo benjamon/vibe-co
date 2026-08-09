@@ -21,7 +21,15 @@ const memoryStore = new Map<string, string>()
   },
 } as Storage
 
-import { useGameStore, ROUNDS, type AttemptResult } from './store'
+import {
+  useGameStore,
+  ROUNDS,
+  itemWeightKey,
+  DEFAULT_ITEM_WEIGHT,
+  MIN_ITEM_WEIGHT,
+  type AttemptResult,
+  type ItemWeights,
+} from './store'
 
 const POOL = Array.from({ length: 30 }, (_, i) => `Country${i}`)
 
@@ -208,6 +216,90 @@ describe('GameStore', () => {
     useGameStore.getState().clearReveal()
     expect(useGameStore.getState().phase).toBe('finished')
     expect(useGameStore.getState().perfectStreak).toBe(0)
+  })
+
+  it('flags the exact guess that pushes an item into mastery, and no others', () => {
+    // Every other pool item already mastered; POOL[0] one correct guess away
+    // (streak 2) — guessing it correctly should floor its weight and mark
+    // that guess's index in masteredOnAttempt, with every other index false.
+    const itemWeights: ItemWeights = {}
+    for (const c of POOL.slice(1)) {
+      itemWeights[itemWeightKey('countries', c)] = {
+        weight: MIN_ITEM_WEIGHT,
+        streak: 3,
+      }
+    }
+    itemWeights[itemWeightKey('countries', POOL[0])] = { weight: 0.25, streak: 2 }
+    useGameStore.setState({ itemWeights })
+    useGameStore.getState().startGame('mastery-seed')
+
+    let masteredIndex = -1
+    for (let i = 0; i < ROUNDS; i++) {
+      const target = useGameStore.getState().target!
+      if (target === POOL[0]) masteredIndex = i
+      useGameStore.getState().handleGlobeClick(target)
+    }
+
+    expect(masteredIndex).toBeGreaterThanOrEqual(0)
+    const flags = useGameStore.getState().masteredOnAttempt
+    expect(flags[masteredIndex]).toBe(true)
+    expect(flags.filter((f) => f).length).toBe(1)
+    expect(
+      useGameStore.getState().itemWeights[itemWeightKey('countries', POOL[0])]
+        .weight,
+    ).toBe(MIN_ITEM_WEIGHT)
+  })
+
+  it('always includes an unmastered item, even when the rest of the pool is mastered', () => {
+    // Master every country except one; the weighted draw would otherwise
+    // almost never surface the mastered ones, but the guarantee should still
+    // pull in the one remaining unmastered item.
+    const itemWeights: ItemWeights = {}
+    for (const c of POOL.slice(1)) {
+      itemWeights[itemWeightKey('countries', c)] = {
+        weight: MIN_ITEM_WEIGHT,
+        streak: 3,
+      }
+    }
+    useGameStore.setState({ itemWeights })
+    useGameStore.getState().startGame('unmastered-seed')
+    expect(useGameStore.getState().targets).toContain(POOL[0])
+  })
+
+  it('always includes the least-recently-guessed item once the whole pool has been guessed', () => {
+    // Every item guessed and mastered, but one item is far staler than the
+    // rest — it should be forced back into the round despite its low weight.
+    const itemWeights: ItemWeights = {}
+    POOL.forEach((c, i) => {
+      itemWeights[itemWeightKey('countries', c)] = {
+        weight: MIN_ITEM_WEIGHT,
+        streak: 3,
+        lastGuessed: i === 0 ? 1000 : 2_000_000 + i,
+      }
+    })
+    useGameStore.setState({ itemWeights })
+    useGameStore.getState().startGame('stale-seed')
+    expect(useGameStore.getState().targets).toContain(POOL[0])
+  })
+
+  it('does not always pin guaranteed items to the start or end of the round', () => {
+    const itemWeights: ItemWeights = {}
+    for (const c of POOL.slice(1)) {
+      itemWeights[itemWeightKey('countries', c)] = {
+        weight: MIN_ITEM_WEIGHT,
+        streak: 3,
+      }
+    }
+    useGameStore.setState({ itemWeights })
+
+    const positions = new Set<number>()
+    for (let i = 0; i < 20; i++) {
+      useGameStore.getState().startGame(`shuffle-seed-${i}`)
+      positions.add(useGameStore.getState().targets.indexOf(POOL[0]))
+    }
+    // Across enough seeds, the guaranteed item should land somewhere other
+    // than always position 0 or always the last slot.
+    expect(positions.size).toBeGreaterThan(1)
   })
 
   it('clears saved progress when a different seed starts', () => {

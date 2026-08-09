@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { sfxCorrect, sfxWrong } from './sfx'
+import { sfxCorrect, sfxWrong, sfxAchievement } from './sfx'
 import {
   getAccountId,
   pullProgress,
@@ -179,6 +179,13 @@ const TIMED_MODE_KEY = 'mapoguesser:timedMode'
 export interface WeightEntry {
   weight: number
   streak: number
+  // Epoch ms this item was last guessed (any outcome). Drives the
+  // least-recently-shown guarantee in `buildRoundTargets` — once every item
+  // in a pool has been guessed at least once, the round with the oldest
+  // `lastGuessed` is forced back into rotation even if it's since been
+  // mastered down to a near-zero draw weight. Absent for entries created
+  // before this field existed.
+  lastGuessed?: number
 }
 export type ItemWeights = Record<string, WeightEntry>
 
@@ -221,18 +228,22 @@ export type WeightOutcome = 'first' | 'second' | 'miss'
 const nextWeightEntry = (
   entry: WeightEntry | undefined,
   outcome: WeightOutcome,
+  now: number = Date.now(),
 ): WeightEntry => {
   const weight = entry?.weight ?? DEFAULT_ITEM_WEIGHT
   if (outcome === 'miss') {
     return {
       weight: clampWeight(Math.max(weight * 2, DEFAULT_ITEM_WEIGHT)),
       streak: 0,
+      lastGuessed: now,
     }
   }
   const streak = (entry?.streak ?? 0) + 1
-  if (streak >= MASTERY_STREAK) return { weight: MIN_ITEM_WEIGHT, streak }
-  if (outcome === 'first') return { weight: clampWeight(weight * 0.5), streak }
-  return { weight, streak }
+  if (streak >= MASTERY_STREAK)
+    return { weight: MIN_ITEM_WEIGHT, streak, lastGuessed: now }
+  if (outcome === 'first')
+    return { weight: clampWeight(weight * 0.5), streak, lastGuessed: now }
+  return { weight, streak, lastGuessed: now }
 }
 
 // Whether a weight update just crossed into "mastered" (floored to
@@ -260,6 +271,11 @@ interface SavedMatch {
   targets?: string[]
   // Per-guess log (one entry per click), NOT one per country. See GameState.
   attempts: AttemptResult[]
+  // Parallel to `attempts` (classic mode only): true at index i iff that
+  // guess was the one that pushed its target's mastery streak to the floor
+  // (see isNewlyMastered) — drives the stamp badge on that guess's flag box.
+  // Optional so legacy saves without it just show no badges on resume.
+  masteredOnAttempt?: boolean[]
   // How far through the 9-country sequence we are (advances on a correct guess
   // or the second consecutive miss). Drives which country is served.
   targetIndex: number
@@ -340,7 +356,15 @@ const parseItemWeightsJSON = (raw: string): ItemWeights | null => {
       const o = v as Record<string, unknown>
       if (typeof o.weight !== 'number' || !Number.isFinite(o.weight)) continue
       if (typeof o.streak !== 'number' || !Number.isFinite(o.streak)) continue
-      out[k] = { weight: clampWeight(o.weight), streak: Math.max(0, o.streak) }
+      const lastGuessed =
+        typeof o.lastGuessed === 'number' && Number.isFinite(o.lastGuessed)
+          ? o.lastGuessed
+          : undefined
+      out[k] = {
+        weight: clampWeight(o.weight),
+        streak: Math.max(0, o.streak),
+        ...(lastGuessed !== undefined ? { lastGuessed } : {}),
+      }
     }
     return out
   } catch {
@@ -562,6 +586,10 @@ interface GameState {
   // flag boxes (which pad to ROUNDS with pending boxes for unused guesses); it
   // never contains 'pending'.
   attempts: AttemptResult[]
+  // Parallel to `attempts` (classic mode only, always [] elsewhere): true at
+  // index i iff that guess just floored its target's mastery weight (see
+  // isNewlyMastered) — drives the flag box's stamp badge in the HUD.
+  masteredOnAttempt: boolean[]
   // Capitals mode only: the great-circle miles for each completed round, in
   // order (uncapped — a wild guess shows its true miss distance). Empty in
   // classic mode (which scores by `attempts`).
@@ -807,6 +835,70 @@ const drawWeightedUniqueTargets = (
     remaining.splice(idx, 1)
   }
   return out
+}
+
+// Builds a single-player round on top of `drawWeightedUniqueTargets`, adding
+// two "guaranteed" picks so a match never drifts into being entirely
+// mastered items or entirely fresh ones:
+//   1. An unmastered item (weight above MIN_ITEM_WEIGHT) — skipped only once
+//      *nothing* in the pool is unmastered.
+//   2. The least-recently-guessed item — forced only once every item in the
+//      pool has been guessed at least once (a pool with never-seen items
+//      already gets those naturally via guarantee #1 / the weighted draw, so
+//      this only matters once the whole pool has cycled through and mastered
+//      items would otherwise almost never resurface).
+// Both guaranteed picks are seeded-shuffled in among the rest so they don't
+// always land at the start or end of the round.
+const buildRoundTargets = (
+  pool: string[],
+  weightOf: (item: string) => number,
+  lastGuessedOf: (item: string) => number | undefined,
+  seed: string,
+  n: number,
+): string[] => {
+  const limit = Math.min(n, pool.length)
+  if (limit <= 0) return []
+
+  const guaranteed: string[] = []
+  const pickRng = mulberry32(hashSeed(`${seed}:guarantee`))
+
+  const unmastered = pool.filter((item) => weightOf(item) > MIN_ITEM_WEIGHT)
+  if (unmastered.length > 0) {
+    guaranteed.push(unmastered[Math.floor(pickRng() * unmastered.length)])
+  }
+
+  if (pool.every((item) => lastGuessedOf(item) !== undefined)) {
+    let leastRecent: string | null = null
+    let leastRecentAt = Infinity
+    for (const item of pool) {
+      if (guaranteed.includes(item)) continue
+      const at = lastGuessedOf(item) ?? -Infinity
+      if (at < leastRecentAt) {
+        leastRecentAt = at
+        leastRecent = item
+      }
+    }
+    if (leastRecent) guaranteed.push(leastRecent)
+  }
+
+  const forced = guaranteed.slice(0, limit)
+  const remainingPool = pool.filter((item) => !forced.includes(item))
+  const drawn = drawWeightedUniqueTargets(
+    remainingPool,
+    weightOf,
+    `${seed}:fill`,
+    limit - forced.length,
+  )
+
+  const combined = [...forced, ...drawn]
+  const shuffleRng = mulberry32(hashSeed(`${seed}:shuffle`))
+  for (let i = combined.length - 1; i > 0; i--) {
+    const j = Math.floor(shuffleRng() * (i + 1))
+    const tmp = combined[i]
+    combined[i] = combined[j]
+    combined[j] = tmp
+  }
+  return combined
 }
 
 // Draw mode: pick `n` countries from `pool` that are geographically close to
@@ -1169,6 +1261,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   targetIndex: 0,
   target: null,
   attempts: [],
+  masteredOnAttempt: [],
   distances: [],
   capitalPoints: [],
   capitalBonus: [],
@@ -1282,6 +1375,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetIndex: 0,
       target: null,
       attempts: [],
+      masteredOnAttempt: [],
       distances: [],
       capitalPoints: [],
       capitalBonus: [],
@@ -1329,6 +1423,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const weightOf = (item: string) =>
       state.itemWeights[itemWeightKey(sub.family, item)]?.weight ??
       DEFAULT_ITEM_WEIGHT
+    const lastGuessedOf = (item: string) =>
+      state.itemWeights[itemWeightKey(sub.family, item)]?.lastGuessed
     const targets =
       restore?.targets && restore.targets.length > 0
         ? restore.targets
@@ -1341,9 +1437,10 @@ export const useGameStore = create<GameState>((set, get) => ({
               matchSeed,
               roundCount,
             )
-          : drawWeightedUniqueTargets(pool, weightOf, matchSeed, roundCount)
+          : buildRoundTargets(pool, weightOf, lastGuessedOf, matchSeed, roundCount)
     if (targets.length === 0) return
     const attempts = restore?.attempts ?? []
+    const masteredOnAttempt = restore?.masteredOnAttempt ?? []
     const distances = restore?.distances ?? []
     const capitalPoints = restore?.capitalPoints ?? []
     const capitalBonus = restore?.capitalBonus ?? []
@@ -1376,6 +1473,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetIndex,
       target: finished ? null : targetAt(targets, targetIndex),
       attempts,
+      masteredOnAttempt,
       distances,
       capitalPoints,
       capitalBonus,
@@ -1411,6 +1509,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       targetIndex: 0,
       target: null,
       attempts: [],
+      masteredOnAttempt: [],
       distances: [],
       capitalPoints: [],
       capitalBonus: [],
@@ -1576,13 +1675,18 @@ export const useGameStore = create<GameState>((set, get) => ({
         s.consecutiveWrong === 0 ? 'first' : 'second',
       )
       const itemWeights = { ...s.itemWeights, [key]: nextEntry }
-      const masteredThisMatch =
-        s.masteredThisMatch +
-        (isNewlyMastered(prevWeight, nextEntry.weight) ? 1 : 0)
+      const justMastered = isNewlyMastered(prevWeight, nextEntry.weight)
+      const masteredThisMatch = s.masteredThisMatch + (justMastered ? 1 : 0)
+      const masteredOnAttempt = [...s.masteredOnAttempt, justMastered]
+      // Layer the achievement chime on top of the correct "bing" already
+      // played above — fires at the moment of the click that earned it, not
+      // later, so it reads as feedback on this guess.
+      if (justMastered) sfxAchievement()
       // On the final guess, hand the camera to the viewer for a celebratory pan.
       // Phase stays 'playing' until finishGame() fires after the hold.
       set({
         attempts,
+        masteredOnAttempt,
         targetIndex,
         consecutiveWrong: 0,
         target: finished ? null : targetAt(s.targets, targetIndex),
@@ -1603,6 +1707,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // retry.
       set({
         attempts,
+        masteredOnAttempt: [...s.masteredOnAttempt, false],
         consecutiveWrong: newWrong,
         target: s.target,
         inputLockUntil: lockUntil(FIRST_MISS_LOCK_MS),
@@ -1626,6 +1731,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     set({
       attempts,
+      masteredOnAttempt: [...s.masteredOnAttempt, false],
       targetIndex,
       consecutiveWrong: 0,
       revealTarget: s.target,
@@ -1668,6 +1774,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     sfxWrong()
     set({
       attempts,
+      masteredOnAttempt: [
+        ...s.masteredOnAttempt,
+        ...(Array(needed).fill(false) as boolean[]),
+      ],
       targetIndex,
       consecutiveWrong: 0,
       revealTarget: s.target,
@@ -2092,6 +2202,7 @@ useGameStore.subscribe((state, prev) => {
     subMode: state.subMode,
     targets: state.targets,
     attempts: state.attempts,
+    masteredOnAttempt: state.masteredOnAttempt,
     distances: state.distances,
     capitalPoints: state.capitalPoints,
     capitalBonus: state.capitalBonus,
