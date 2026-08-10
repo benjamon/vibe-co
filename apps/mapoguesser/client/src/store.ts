@@ -171,6 +171,11 @@ const HIDE_TINY_ISLANDS_KEY = 'mapoguesser:hideTinyIslands'
 // Settings-menu preference: Timed Mode — see TIMED_ROUND_MS / handleTimeout /
 // handleCapitalTimeout.
 const TIMED_MODE_KEY = 'mapoguesser:timedMode'
+// Settings-menu preference: which basemap WorldViewer renders — a satellite
+// photo layer or the labelled-and-stripped OpenStreetMap vector style. See
+// WorldViewer's styleFor().
+const MAP_STYLE_KEY = 'mapoguesser:mapStyle'
+export type MapStyleChoice = 'osm' | 'satellite' | 'toner' | 'desert'
 
 // Adaptive-difficulty weight for one item (country/state/city). `weight` is
 // the draw multiplier (1.0 = default likelihood); `streak` is the player's
@@ -431,6 +436,22 @@ const loadTimedMode = (): boolean => {
   }
 }
 
+const MAP_STYLE_CHOICES: MapStyleChoice[] = ['osm', 'satellite', 'toner', 'desert']
+
+const loadMapStyle = (): MapStyleChoice => {
+  if (typeof localStorage === 'undefined') return 'satellite'
+  try {
+    const raw = localStorage.getItem(MAP_STYLE_KEY)
+    if (raw === null) return 'satellite'
+    // writeJSON always JSON-encodes, so a stored 'osm' round-trips as the
+    // 5-character string `"osm"`, not the bare word.
+    const parsed = JSON.parse(raw)
+    return MAP_STYLE_CHOICES.includes(parsed) ? parsed : 'satellite'
+  } catch {
+    return 'satellite'
+  }
+}
+
 // Given a finished match's per-guess log, return the next perfect-game streak:
 // +1 on a flawless run, reset to 0 otherwise. A perfect run is exactly ROUNDS
 // guesses that are all correct — any miss adds an extra 'wrong' entry, pushing
@@ -505,6 +526,11 @@ interface GameState {
   // to Draw mode or multiplayer. Persisted; defaults to false.
   timedMode: boolean
   setTimedMode: (timed: boolean) => void
+
+  // Settings-menu preference: which basemap WorldViewer renders (see
+  // MapStyleChoice). Persisted; defaults to 'osm'.
+  mapStyle: MapStyleChoice
+  setMapStyle: (style: MapStyleChoice) => void
 
   // Adaptive-difficulty draw weight per item, keyed by `itemWeightKey(family,
   // item)`. Persisted independently of the match save, grown over time by
@@ -659,7 +685,7 @@ interface GameState {
   markerEpoch: number
 
   // Markers placed on the globe. Owned by the store (rather than the viewer's
-  // Cesium data source) so we can persist them and replay them on resume.
+  // map markers) so we can persist them and replay them on resume.
   markers: Marker[]
   // Wrong guesses on the *current* target. Resets on correct guess or reveal.
   consecutiveWrong: number
@@ -750,7 +776,7 @@ interface GameState {
   commitPartyCapitalGuess: () => void
   // Spend a once-per-game capitals lifeline on the current round.
   useLifeline: (which: Lifeline) => void
-  // Records a marker drop. The viewer also handles the Cesium-side render via
+  // Records a marker drop. The viewer also handles the map-side render via
   // a subscription to `markers`.
   addMarker: (marker: Marker) => void
 }
@@ -1219,6 +1245,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   timedMode: loadTimedMode(),
   setTimedMode: (timed) => set({ timedMode: timed }),
+
+  mapStyle: loadMapStyle(),
+  setMapStyle: (style) => set({ mapStyle: style }),
 
   itemWeights: loadItemWeights(),
   itemWeightsUpdatedAt: loadItemWeightsUpdatedAt(),
@@ -2246,6 +2275,8 @@ useGameStore.subscribe((state, prev) => {
     writeJSON(HIDE_TINY_ISLANDS_KEY, state.hideTinyIslands)
   if (state.timedMode !== prev.timedMode)
     writeJSON(TIMED_MODE_KEY, state.timedMode)
+  if (state.mapStyle !== prev.mapStyle)
+    writeJSON(MAP_STYLE_KEY, state.mapStyle)
 })
 
 // One-time cross-device catch-up on load: compare this device's local

@@ -12,12 +12,16 @@ test('world viewer loads and spins horizontally', async ({ page }) => {
   // Game state is exposed for introspection
   const initial = await page.evaluate(() => (window as any).__gameState)
   expect(initial).toBeDefined()
-  expect(initial.heading).toBe(0)
 
-  // Wait for Cesium to finish its initial render before driving input
+  // Wait for the globe to finish its initial render before driving input
   await page.waitForTimeout(1500)
 
-  // Drag horizontally across the viewport — heading should advance
+  const centerBefore = await page.evaluate(() =>
+    (window as any).__mapInstance?.getCenter(),
+  )
+  expect(centerBefore).toBeDefined()
+
+  // Drag horizontally across the viewport — the map should pan.
   const box = await canvas.boundingBox()
   if (!box) throw new Error('canvas has no bounding box')
   const cy = box.y + box.height / 2
@@ -28,8 +32,10 @@ test('world viewer loads and spins horizontally', async ({ page }) => {
 
   await page.waitForTimeout(500)
 
-  const after = await page.evaluate(() => (window as any).__gameState)
-  expect(after.heading).not.toBe(0)
+  const centerAfter = await page.evaluate(() =>
+    (window as any).__mapInstance?.getCenter(),
+  )
+  expect(centerAfter.lng).not.toBeCloseTo(centerBefore.lng, 3)
 
   // Run for a bit longer to ensure the viewer doesn't crash
   await page.waitForTimeout(3000)

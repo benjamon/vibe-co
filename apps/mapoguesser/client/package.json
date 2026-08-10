@@ -13,7 +13,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "cesium": "1.140.0",
+    "maplibre-gl": "6.2.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "shared": "*",
@@ -24,9 +24,7 @@
     "@playwright/test": "1.52.0",
     "@types/react": "19.1.2",
     "@types/react-dom": "19.1.2",
-    "@types/serve-static": "1.15.7",
     "@vitejs/plugin-react": "4.4.1",
-    "serve-static": "1.15.0",
     "typescript": "5.8.3",
     "vite": "6.3.4",
     "vitest": "3.1.3"

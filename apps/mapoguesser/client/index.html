@@ -25,6 +25,20 @@
         transform: translate(3px, 3px) !important;
         box-shadow: 0px 0px 0px #4A3826 !important;
       }
+
+      /* MapLibre defaults to an open-hand "grab" cursor any time the map is
+         interactive, but this is a click-to-place-a-guess game, not a
+         drag-to-explore map — a plain pointer reads better at rest. Its
+         built-in :active (mouse held / touch drag in progress) rule already
+         swaps to "grabbing"; only the resting cursor is overridden here.
+         !important is needed regardless of stylesheet load order, since
+         maplibre-gl.css is injected later, into the same specificity tier. */
+      .maplibregl-canvas-container.maplibregl-interactive {
+        cursor: pointer !important;
+      }
+      .maplibregl-canvas-container.maplibregl-interactive:active {
+        cursor: grabbing !important;
+      }
     </style>
   </head>
   <body>

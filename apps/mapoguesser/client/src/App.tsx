@@ -26,6 +26,7 @@ import {
   DEFAULT_ITEM_WEIGHT,
   capitalPointTierMilesFor,
   type AttemptResult,
+  type MapStyleChoice,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
 import { usStateFlagUrl } from './usStateFlags'
@@ -37,7 +38,7 @@ import { PartyOverlay, useParty } from './PartyUI'
 import { subModesFor, resolveSubMode, type SubMode } from './gameModes'
 import { COLOR, FONT, border, hardShadow, panelStyle, pillStyle, buttonStyle, disabledLook } from './theme'
 
-// Cesium (~4 MB) lives entirely inside WorldViewer, so lazy-loading it splits
+// MapLibre GL JS lives entirely inside WorldViewer, so lazy-loading it splits
 // that weight into its own chunk: the menu / start screen paints off the small
 // React bundle while the globe streams in behind it. The `ready` flag already
 // keeps the Start button showing "Loading…" until the globe has its data.
@@ -84,6 +85,19 @@ const CHECK_BG: Record<AttemptResult, string> = {
 const POINT_TOAST_START_DELAY_MS = 1000
 const POINT_TOAST_LIFE_MS = 3100
 const POINT_TOAST_FADE_MS = 500
+
+// Settings-menu map-style carousel. Data-driven so a new basemap is a
+// one-line addition here — but adding one for real also means wiring its
+// layer ids into WorldViewer.tsx's HIDDEN_LAYER_IDS/COUNTRY_LINE_LAYERS/
+// STATE_LINE_LAYERS (or routing it through the entry-borders overlay like
+// satellite does), since a different vector style ships different layer
+// names and unaudited ones can leak country/city name labels pre-guess.
+const MAP_STYLE_OPTIONS: { value: MapStyleChoice; label: string }[] = [
+  { value: 'satellite', label: '🛰️ Satellite' },
+  { value: 'osm', label: '🗺️ Street' },
+  { value: 'toner', label: '🫟 Toner' },
+  { value: 'desert', label: '🏜️ Desert' },
+]
 
 // flagcdn.com serves free, CORS-friendly PNGs at 4:3 (w40 = 40×30). Using
 // images instead of emoji because Windows browsers render regional-indicator
@@ -387,6 +401,9 @@ export function App() {
   const setHideTinyIslands = useGameStore((s) => s.setHideTinyIslands)
   const timedMode = useGameStore((s) => s.timedMode)
   const setTimedMode = useGameStore((s) => s.setTimedMode)
+  const mapStyle = useGameStore((s) => s.mapStyle)
+  const setMapStyle = useGameStore((s) => s.setMapStyle)
+  const mapStyleIndex = MAP_STYLE_OPTIONS.findIndex((opt) => opt.value === mapStyle)
   const poolSource = useMemo(
     () => ({ cities, states, countries, itemWeights, countryAreas, hideTinyIslands }),
     [cities, states, countries, itemWeights, countryAreas, hideTinyIslands],
@@ -1798,6 +1815,104 @@ export function App() {
                   )}
                 </span>
               </button>
+              <div
+                role="group"
+                aria-label="Map style"
+                style={{
+                  ...menuButtonStyle,
+                  minWidth: 220,
+                  cursor: 'default',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'stretch',
+                  gap: 6,
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700 }}>🗺️ Map style</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <button
+                    type="button"
+                    className="arcade-btn"
+                    aria-label="Previous map style"
+                    onClick={() =>
+                      setMapStyle(
+                        MAP_STYLE_OPTIONS[
+                          (mapStyleIndex - 1 + MAP_STYLE_OPTIONS.length) % MAP_STYLE_OPTIONS.length
+                        ].value,
+                      )
+                    }
+                    style={{
+                      flex: 'none',
+                      width: 30,
+                      height: 34,
+                      borderRadius: 10,
+                      border: border(2),
+                      background: COLOR.cream,
+                      color: COLOR.charcoal,
+                      fontFamily: FONT,
+                      fontWeight: 900,
+                      fontSize: 16,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ‹
+                  </button>
+                  <div
+                    style={{
+                      flex: 1,
+                      padding: '8px 6px',
+                      borderRadius: 10,
+                      border: border(2),
+                      background: COLOR.forestGreen,
+                      color: COLOR.cream,
+                      fontFamily: FONT,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      textAlign: 'center',
+                    }}
+                  >
+                    {MAP_STYLE_OPTIONS[mapStyleIndex].label}
+                  </div>
+                  <button
+                    type="button"
+                    className="arcade-btn"
+                    aria-label="Next map style"
+                    onClick={() =>
+                      setMapStyle(MAP_STYLE_OPTIONS[(mapStyleIndex + 1) % MAP_STYLE_OPTIONS.length].value)
+                    }
+                    style={{
+                      flex: 'none',
+                      width: 30,
+                      height: 34,
+                      borderRadius: 10,
+                      border: border(2),
+                      background: COLOR.cream,
+                      color: COLOR.charcoal,
+                      fontFamily: FONT,
+                      fontWeight: 900,
+                      fontSize: 16,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ›
+                  </button>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 5 }}>
+                  {MAP_STYLE_OPTIONS.map((opt, i) => (
+                    <span
+                      key={opt.value}
+                      aria-hidden="true"
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: '50%',
+                        background: i === mapStyleIndex ? COLOR.forestGreen : COLOR.cream,
+                        border: border(1),
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
               <button
                 type="button"
                 className="arcade-btn"
@@ -2170,7 +2285,7 @@ export function App() {
         style={{
           ...overlayBase,
           bottom: 10,
-          right: 10,
+          left: 10,
           fontSize: 20,
           fontWeight: 700,
           color: COLOR.yellow,
