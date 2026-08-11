@@ -175,7 +175,7 @@ const TIMED_MODE_KEY = 'mapoguesser:timedMode'
 // photo layer or the labelled-and-stripped OpenStreetMap vector style. See
 // WorldViewer's styleFor().
 const MAP_STYLE_KEY = 'mapoguesser:mapStyle'
-export type MapStyleChoice = 'osm' | 'satellite' | 'toner' | 'desert'
+export type MapStyleChoice = 'osm' | 'satellite' | 'toner' | 'desert' | 'dark' | 'colorful'
 
 // Adaptive-difficulty weight for one item (country/state/city). `weight` is
 // the draw multiplier (1.0 = default likelihood); `streak` is the player's
@@ -436,7 +436,7 @@ const loadTimedMode = (): boolean => {
   }
 }
 
-const MAP_STYLE_CHOICES: MapStyleChoice[] = ['osm', 'satellite', 'toner', 'desert']
+const MAP_STYLE_CHOICES: MapStyleChoice[] = ['osm', 'satellite', 'toner', 'desert', 'dark', 'colorful']
 
 const loadMapStyle = (): MapStyleChoice => {
   if (typeof localStorage === 'undefined') return 'satellite'

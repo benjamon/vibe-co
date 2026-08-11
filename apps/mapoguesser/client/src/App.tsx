@@ -97,6 +97,8 @@ const MAP_STYLE_OPTIONS: { value: MapStyleChoice; label: string }[] = [
   { value: 'osm', label: '🗺️ Street' },
   { value: 'toner', label: '🫟 Toner' },
   { value: 'desert', label: '🏜️ Desert' },
+  { value: 'dark', label: '🌑 Dark' },
+  { value: 'colorful', label: '🎨 Colorful' },
 ]
 
 // flagcdn.com serves free, CORS-friendly PNGs at 4:3 (w40 = 40×30). Using

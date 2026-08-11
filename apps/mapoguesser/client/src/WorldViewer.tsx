@@ -191,7 +191,7 @@ const DESERT_STYLE: maplibregl.StyleSpecification = {
     {
       id: 'background',
       type: 'background',
-      paint: { 'background-color': 'rgba(245, 211, 172, 1)' },
+      paint: { 'background-color': 'rgba(225, 200, 152, 1)' },
     },
     {
       id: 'landcover_wood',
@@ -217,7 +217,7 @@ const DESERT_STYLE: maplibregl.StyleSpecification = {
       type: 'fill',
       source: 'openmaptiles',
       'source-layer': 'water',
-      paint: { 'fill-color': 'rgba(146, 198, 205, 1)' },
+      paint: { 'fill-color': 'rgba(126, 178, 185, 1)' },
     },
     {
       // Inert at this game's MAX_ZOOM (9) — see TONER_STYLE's building layer.
@@ -225,7 +225,7 @@ const DESERT_STYLE: maplibregl.StyleSpecification = {
       type: 'fill',
       source: 'openmaptiles',
       'source-layer': 'building',
-      paint: { 'fill-color': 'rgba(224, 196, 158, 1)', 'fill-antialias': true },
+      paint: { 'fill-color': 'rgba(204, 186, 148, 1)', 'fill-antialias': true },
     },
     {
       id: 'building-top',
@@ -254,10 +254,111 @@ const DESERT_STYLE: maplibregl.StyleSpecification = {
   ],
 }
 
+// A dark/"light lines" companion to TONER_STYLE — same structure and layer
+// ids, palette inverted: near-black land/water instead of near-white, and a
+// light (rather than dark) boundary color. The one thing that can't just be
+// inverted in this style's own JSON is entry-borders-state (the always-on
+// US state-line overlay — see showStateBorders) and entry-borders-country
+// (satellite's fallback), since both are shared game-drawn layers with a
+// single hardcoded color; see STATE_BORDER_COLOR_BY_STYLE for how those stay
+// legible against a dark basemap too.
+const DARK_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  name: 'Dark',
+  sources: {
+    openmaptiles: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
+  },
+  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+  layers: [
+    {
+      id: 'background',
+      type: 'background',
+      paint: { 'background-color': 'rgba(24, 24, 27, 1)' },
+    },
+    {
+      id: 'landcover_wood',
+      type: 'fill',
+      source: 'openmaptiles',
+      'source-layer': 'landcover',
+      filter: ['==', ['get', 'class'], 'wood'],
+      paint: {
+        'fill-color': 'rgba(60, 60, 66, 0.6)',
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.6, 22, 1],
+      },
+    },
+    {
+      id: 'landcover-grass',
+      type: 'fill',
+      source: 'openmaptiles',
+      'source-layer': 'landcover',
+      filter: ['==', ['get', 'class'], 'grass'],
+      paint: { 'fill-color': 'rgba(32, 32, 35, 1)', 'fill-opacity': 1 },
+    },
+    {
+      id: 'water',
+      type: 'fill',
+      source: 'openmaptiles',
+      'source-layer': 'water',
+      paint: { 'fill-color': 'rgba(10, 11, 15, 1)' },
+    },
+    {
+      // Inert at this game's MAX_ZOOM (9) — see TONER_STYLE's building layer.
+      id: 'building',
+      type: 'fill',
+      source: 'openmaptiles',
+      'source-layer': 'building',
+      paint: { 'fill-color': 'rgba(46, 46, 50, 1)', 'fill-antialias': true },
+    },
+    {
+      id: 'building-top',
+      type: 'fill',
+      source: 'openmaptiles',
+      'source-layer': 'building',
+      paint: {
+        'fill-outline-color': 'rgba(58, 58, 63, 1)',
+        'fill-color': 'rgba(38, 38, 41, 1)',
+      },
+    },
+    {
+      id: 'boundary_country',
+      type: 'line',
+      source: 'openmaptiles',
+      'source-layer': 'boundary',
+      filter: ['all', ['==', ['get', 'admin_level'], 2], ['==', ['get', 'maritime'], 0]],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': 'rgba(225, 225, 230, 1)',
+        'line-width': ['interpolate', ['exponential', 1.1], ['zoom'], 3, 1, 22, 20],
+        'line-blur': ['interpolate', ['linear'], ['zoom'], 0, 0.4, 22, 4],
+        'line-opacity': 1,
+      },
+    },
+  ],
+}
+
+// entry-borders-{country,state} (see addGameSourcesAndLayers) are shared,
+// game-drawn overlays reused across every basemap, so their line-color can't
+// just live in one style's own JSON — a style-specific one is only needed
+// for entries that'd otherwise be illegible (dark's near-black land under
+// the default black line). Every other style keeps the original black.
+const STATE_BORDER_COLOR_BY_STYLE: Partial<Record<MapStyleChoice, string>> = {
+  dark: 'rgba(225, 225, 230, 1)',
+}
+
 const styleFor = (choice: MapStyleChoice): string | maplibregl.StyleSpecification => {
   if (choice === 'satellite') return SATELLITE_STYLE
   if (choice === 'toner') return TONER_STYLE
   if (choice === 'desert') return DESERT_STYLE
+  if (choice === 'dark') return DARK_STYLE
+  // Same base look as desert — the colorful per-region fill mosaic (see
+  // addGameSourcesAndLayers/renderColorfulFill) is a game-drawn overlay on
+  // top, not a different vector style. A distinct object (not just
+  // DESERT_STYLE reused as-is) so map.setStyle() sees a genuine change and
+  // always re-fires 'style.load' when switching directly between the two —
+  // passing the exact same object reference back risks MapLibre's style
+  // diffing treating it as a no-op and skipping the reload that
+  // addGameSourcesAndLayers relies on to re-toggle the fill's visibility.
+  if (choice === 'colorful') return { ...DESERT_STYLE, name: 'Colorful' }
   return OSM_STYLE_URL
 }
 
@@ -378,6 +479,8 @@ const COUNTRY_LINE_LAYERS_BY_STYLE: Partial<Record<MapStyleChoice, string[]>> = 
   osm: ['boundary_2', 'boundary_disputed', 'coastline_stroke'],
   toner: ['boundary_country'],
   desert: ['boundary_country'],
+  dark: ['boundary_country'],
+  colorful: ['boundary_country'],
 }
 // State lines have no per-style equivalent — see showStateBorders for why
 // (Liberty's boundary_3 and Toner's boundary_state are both worldwide,
@@ -655,6 +758,17 @@ export function WorldViewer() {
     // are permanently hidden instead (see HIDDEN_LAYER_IDS).
     const showStateBorders = (visible: boolean): void => {
       setLineLayersVisible(['entry-borders-state'], visible)
+      // Colorful style's fill mosaic follows this same signal — state colors
+      // whenever state lines are, country colors whenever they're not (see
+      // renderColorfulFill) — so every call site that decides state-line
+      // visibility (including the phase-gated draw-states one) drives it too,
+      // with no separate wiring needed.
+      syncColorfulFill(visible)
+    }
+    const syncColorfulFill = (showStates: boolean): void => {
+      if (useGameStore.getState().mapStyle !== 'colorful') return
+      if (!map.getLayer('colorful-fill')) return
+      renderColorfulFill(showStates)
     }
 
     // --- Our own GeoJSON sources/layers, added once the style is ready -----
@@ -663,8 +777,48 @@ export function WorldViewer() {
     const DRAW_STROKES_SRC = 'draw-strokes'
     const DRAW_REVEAL_SRC = 'draw-reveal'
     const ENTRY_BORDERS_SRC = 'entry-borders'
+    const COLORFUL_FILL_SRC = 'colorful-fill'
 
     const addGameSourcesAndLayers = () => {
+      // Colorful style's per-region fill mosaic — a decorative basemap
+      // layer, not a gameplay hint itself, but its granularity follows
+      // whatever the state-line toggle is actually showing: US state colors
+      // while state lines are up (States game, draw-states reveal), country
+      // colors the rest of the time (see showStateBorders/syncColorfulFill,
+      // which is what actually re-renders this on every mode change — this
+      // initial render just covers the moment the layer is first created).
+      // Visibility, unlike the data, is keyed on mapStyle alone: always on
+      // for 'colorful', always off otherwise. Sits directly under
+      // boundary_country (when that layer exists — every style but
+      // 'colorful' hides this anyway) so the country border stays legible on
+      // top of the fill.
+      map.addSource(COLORFUL_FILL_SRC, { type: 'geojson', data: emptyFC() })
+      const colorfulVisible = useGameStore.getState().mapStyle === 'colorful' ? 'visible' : 'none'
+      const beforeCountryLine = map.getLayer('boundary_country') ? 'boundary_country' : undefined
+      map.addLayer(
+        {
+          id: 'colorful-fill',
+          type: 'fill',
+          source: COLORFUL_FILL_SRC,
+          layout: { visibility: colorfulVisible },
+          paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.8 },
+        },
+        beforeCountryLine,
+      )
+      map.addLayer(
+        {
+          id: 'colorful-outline',
+          type: 'line',
+          source: COLORFUL_FILL_SRC,
+          layout: { visibility: colorfulVisible },
+          paint: { 'line-color': 'rgba(255, 255, 255, 0.7)', 'line-width': 1 },
+        },
+        beforeCountryLine,
+      )
+      renderColorfulFill(
+        wantStateLines(useGameStore.getState().browseSubModeId ?? useGameStore.getState().subMode),
+      )
+
       map.addSource(TINY_DOTS_SRC, { type: 'geojson', data: emptyFC() })
       map.addLayer({
         id: 'tiny-dots-fill',
@@ -779,7 +933,11 @@ export function WorldViewer() {
         source: ENTRY_BORDERS_SRC,
         filter: ['==', ['get', 'kind'], 'state'],
         layout: { visibility: 'none' },
-        paint: { 'line-color': '#000000', 'line-opacity': 0.8, 'line-width': 1.5 },
+        paint: {
+          'line-color': STATE_BORDER_COLOR_BY_STYLE[useGameStore.getState().mapStyle] ?? '#000000',
+          'line-opacity': 0.8,
+          'line-width': 1.5,
+        },
       })
 
       tinyDots.show(resolveSubMode(useGameStore.getState().subMode).family === 'countries')
@@ -812,6 +970,34 @@ export function WorldViewer() {
       addEntries(countryEntries, 'country')
       addEntries(stateEntries, 'state')
       setSourceData(ENTRY_BORDERS_SRC, { type: 'FeatureCollection', features })
+    }
+
+    // Colorful style's per-region fill colors — spread evenly around the hue
+    // wheel via the golden angle (~137.5°) rather than 360/entries.length, so
+    // adjacent regions (which get adjacent hues under naive even spacing
+    // only if the entry list happens to be geographically sorted, which it
+    // isn't) end up visually distinct regardless of fetch order; high
+    // lightness/moderate saturation keeps every hue "pastel". Colors are
+    // keyed by name over an alphabetically-sorted copy so they're stable
+    // across reloads/mode-switches instead of depending on fetch order.
+    // Which entry list to use is the whole "split into two behaviors" of
+    // this style — US states while state lines are shown (stateEntries,
+    // hard-filtered to just the US — see its fetch below), every country
+    // otherwise (countryEntries) — driven by showStateBorders/
+    // syncColorfulFill so it flips in lockstep with the actual line layer.
+    const renderColorfulFill = (showStates: boolean): void => {
+      const entries = showStates ? stateEntries : countryEntries
+      if (!entries) return
+      const sortedNames = [...entries].map((e) => e.name).sort()
+      const colorByName = new Map(
+        sortedNames.map((name, i) => [name, `hsl(${(i * 137.508) % 360}, 62%, 82%)`]),
+      )
+      const features: Feature[] = entries.map((entry) => ({
+        type: 'Feature',
+        properties: { name: entry.name, color: colorByName.get(entry.name) ?? '#cccccc' },
+        geometry: { type: 'MultiPolygon', coordinates: entry.polygons },
+      }))
+      setSourceData(COLORFUL_FILL_SRC, { type: 'FeatureCollection', features })
     }
 
     const setSourceData = (id: string, data: FeatureCollection): void => {
@@ -1228,6 +1414,9 @@ export function WorldViewer() {
             tinyDots.show(resolveSubMode(useGameStore.getState().subMode).family === 'countries')
           }
           if (map.getSource(ENTRY_BORDERS_SRC)) renderEntryBorders()
+          syncColorfulFill(
+            wantStateLines(useGameStore.getState().browseSubModeId ?? useGameStore.getState().subMode),
+          )
           publishCities()
           useGameStore.getState().setCountryCodes(codes)
           useGameStore.getState().setCountryPopulations(populations)
@@ -1283,6 +1472,9 @@ export function WorldViewer() {
           }
           stateEntries = list
           if (map.getSource(ENTRY_BORDERS_SRC)) renderEntryBorders()
+          syncColorfulFill(
+            wantStateLines(useGameStore.getState().browseSubModeId ?? useGameStore.getState().subMode),
+          )
           useGameStore.getState().setStates(list.map((c) => c.name))
           const stateCentroids: Record<string, { lat: number; lon: number }> = {}
           for (const c of list) stateCentroids[c.name] = c.centroid
