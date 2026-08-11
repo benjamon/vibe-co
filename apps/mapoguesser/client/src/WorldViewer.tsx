@@ -18,474 +18,14 @@ import {
 } from './store'
 import { resolveSubMode } from './gameModes'
 import { usStateFlagUrl } from './usStateFlags'
+import {
+  styleFor,
+  HIDDEN_LAYER_IDS,
+  COUNTRY_LINE_LAYERS_BY_STYLE,
+  STATE_BORDER_COLOR_BY_STYLE,
+} from './mapStyles'
 
 maplibregl.setWorkerUrl(workerUrl)
-
-// OpenFreeMap: free, keyless vector tiles built from OpenStreetMap data.
-// https://openfreemap.org — Liberty is its general-purpose style. Matches the
-// stack spiked in apps/osm_globe.
-const OSM_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty'
-
-// Esri World Imagery: free, keyless satellite raster, up to ~z19 — the same
-// source the old Cesium build used. No labels or boundary lines come with it
-// (see the entry-borders overlay below, which supplies borders when this
-// style is active).
-const SATELLITE_TILE_URL =
-  'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-// MapLibre's tile-substitution (showing a coarser/finer tile while the exact
-// one loads) only searches the *currently in-view* tile set, not tiles that
-// scrolled out of view earlier — so panning/zooming to anywhere not in the
-// last frame or two shows bare black until the fetch completes. The fix is
-// the standard one for raster basemaps: a second, coarse copy of the same
-// imagery capped at SATELLITE_BASE_MAXZOOM, rendered underneath the detail
-// layer. MapLibre auto-upscales a raster source past its `maxzoom`, so this
-// covers every zoom level with a blurry-but-present fallback; capped this
-// low it's only a few hundred small tiles covering the whole globe, so it
-// loads almost immediately and is small enough to never get evicted from
-// cache — there's effectively always *something* under the sharp tiles.
-const SATELLITE_BASE_MAXZOOM = 5
-const SATELLITE_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    'satellite-base': {
-      type: 'raster',
-      tiles: [SATELLITE_TILE_URL],
-      tileSize: 256,
-      maxzoom: SATELLITE_BASE_MAXZOOM,
-      attribution: 'Tiles © Esri — World Imagery',
-    },
-    satellite: {
-      type: 'raster',
-      tiles: [SATELLITE_TILE_URL],
-      tileSize: 256,
-      attribution: 'Tiles © Esri — World Imagery',
-    },
-  },
-  layers: [
-    { id: 'satellite-base', type: 'raster', source: 'satellite-base' },
-    { id: 'satellite', type: 'raster', source: 'satellite' },
-  ],
-}
-
-// User-provided custom style ("Toner Soft", exported from MapTiler/Maputnik),
-// re-pointed at OpenFreeMap's keyless tiles instead of the original
-// api.maptiler.com source+glyphs URLs (which need a personal API key). Works
-// unmodified because both are the same OpenMapTiles schema — only the host
-// changed. It ships with no label/POI/road layers at all (already stripped
-// by whoever built it), so unlike Liberty it needs no HIDDEN_LAYER_IDS-style
-// suppression list — there's nothing in it that could leak an answer.
-const TONER_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  name: 'Toner',
-  sources: {
-    openmaptiles: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
-  },
-  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
-  layers: [
-    {
-      id: 'background',
-      type: 'background',
-      paint: { 'background-color': 'rgba(231, 225, 218, 1)' },
-    },
-    {
-      id: 'landcover_wood',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'landcover',
-      filter: ['==', 'class', 'wood'],
-      paint: {
-        'fill-color': 'rgba(218, 218, 218, 0.51)',
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.6, 22, 1],
-      },
-    },
-    {
-      id: 'landcover-grass',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'landcover',
-      filter: ['==', 'class', 'grass'],
-      paint: { 'fill-color': 'rgba(236, 235, 235, 1)', 'fill-opacity': 1 },
-    },
-    {
-      id: 'water',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'water',
-      paint: { 'fill-color': 'rgba(30, 29, 28, 1)' },
-    },
-    {
-      // Building footprints don't render below their z13.5-16 stops anyway,
-      // and MAX_ZOOM caps this game's globe at 9 — kept for fidelity to the
-      // source style but effectively inert; static paint values instead of
-      // the zoom-ramped ones since they'll never be visible mid-ramp.
-      id: 'building',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'building',
-      paint: { 'fill-color': 'rgba(212, 212, 212, 1)', 'fill-antialias': true },
-    },
-    {
-      id: 'building-top',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'building',
-      paint: {
-        'fill-outline-color': 'rgba(181, 180, 179, 1)',
-        'fill-color': 'rgba(249, 249, 249, 1)',
-      },
-    },
-    {
-      id: 'boundary_state',
-      type: 'line',
-      source: 'openmaptiles',
-      'source-layer': 'boundary',
-      minzoom: 0,
-      filter: ['all', ['==', ['get', 'admin_level'], 4], ['==', ['get', 'maritime'], 0]],
-      layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: {
-        'line-color': 'rgba(72, 70, 70, 1)',
-        'line-width': ['interpolate', ['exponential', 2], ['zoom'], 0, 0.5, 10, 3, 23, 12],
-        'line-blur': 0.4,
-        'line-opacity': 1,
-      },
-    },
-    {
-      id: 'boundary_country',
-      type: 'line',
-      source: 'openmaptiles',
-      'source-layer': 'boundary',
-      filter: ['all', ['==', ['get', 'admin_level'], 2], ['==', ['get', 'maritime'], 0]],
-      layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: {
-        'line-color': 'rgba(82, 81, 81, 1)',
-        'line-width': ['interpolate', ['exponential', 1.1], ['zoom'], 3, 1, 22, 20],
-        'line-blur': ['interpolate', ['linear'], ['zoom'], 0, 0.4, 22, 4],
-        'line-opacity': 1,
-      },
-    },
-  ],
-}
-
-// User-provided "desert" palette, ported from the legacy Google Maps
-// JavaScript API styling-wizard format (featureType/elementType/stylers) —
-// an entirely different, incompatible style spec from MapLibre's, and one
-// whose stylers (color + relative saturation/lightness/gamma adjustments)
-// don't map onto MapLibre's flat paint colors 1:1. Rather than replicate
-// that adjustment pipeline, this hand-picks final RGBA values that land in
-// the same neighborhood: landscape's #f9ddc5 (lightness -7) as the base
-// sand tone, water's #1994bf desaturated/lightened per its stylers as a
-// muted teal, and the road color #813033 repurposed as the border accent
-// (the source style has no featureType for admin boundaries — this game
-// draws those itself). Structured like TONER_STYLE (no boundary_state here
-// either — see HIDDEN_LAYER_IDS/showStateBorders for why that'd be dead
-// code) and, per the source style's `labels: visibility off`, no label/POI
-// layers at all.
-const DESERT_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  name: 'Desert',
-  sources: {
-    openmaptiles: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
-  },
-  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
-  layers: [
-    {
-      id: 'background',
-      type: 'background',
-      paint: { 'background-color': 'rgba(225, 200, 152, 1)' },
-    },
-    {
-      id: 'landcover_wood',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'landcover',
-      filter: ['==', ['get', 'class'], 'wood'],
-      paint: {
-        'fill-color': 'rgba(184, 158, 105, 0.4)',
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.6, 22, 1],
-      },
-    },
-    {
-      id: 'landcover-grass',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'landcover',
-      filter: ['==', ['get', 'class'], 'grass'],
-      paint: { 'fill-color': 'rgba(240, 217, 180, 1)', 'fill-opacity': 1 },
-    },
-    {
-      id: 'water',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'water',
-      paint: { 'fill-color': 'rgba(126, 178, 185, 1)' },
-    },
-    {
-      // Inert at this game's MAX_ZOOM (9) — see TONER_STYLE's building layer.
-      id: 'building',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'building',
-      paint: { 'fill-color': 'rgba(204, 186, 148, 1)', 'fill-antialias': true },
-    },
-    {
-      id: 'building-top',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'building',
-      paint: {
-        'fill-outline-color': 'rgba(197, 165, 123, 1)',
-        'fill-color': 'rgba(240, 219, 189, 1)',
-      },
-    },
-    {
-      id: 'boundary_country',
-      type: 'line',
-      source: 'openmaptiles',
-      'source-layer': 'boundary',
-      filter: ['all', ['==', ['get', 'admin_level'], 2], ['==', ['get', 'maritime'], 0]],
-      layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: {
-        'line-color': 'rgba(129, 48, 51, 1)',
-        'line-width': ['interpolate', ['exponential', 1.1], ['zoom'], 3, 1, 22, 20],
-        'line-blur': ['interpolate', ['linear'], ['zoom'], 0, 0.4, 22, 4],
-        'line-opacity': 1,
-      },
-    },
-  ],
-}
-
-// A dark/"light lines" companion to TONER_STYLE — same structure and layer
-// ids, palette inverted: near-black land/water instead of near-white, and a
-// light (rather than dark) boundary color. The one thing that can't just be
-// inverted in this style's own JSON is entry-borders-state (the always-on
-// US state-line overlay — see showStateBorders) and entry-borders-country
-// (satellite's fallback), since both are shared game-drawn layers with a
-// single hardcoded color; see STATE_BORDER_COLOR_BY_STYLE for how those stay
-// legible against a dark basemap too.
-const DARK_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  name: 'Dark',
-  sources: {
-    openmaptiles: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' },
-  },
-  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
-  layers: [
-    {
-      id: 'background',
-      type: 'background',
-      paint: { 'background-color': 'rgba(24, 24, 27, 1)' },
-    },
-    {
-      id: 'landcover_wood',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'landcover',
-      filter: ['==', ['get', 'class'], 'wood'],
-      paint: {
-        'fill-color': 'rgba(60, 60, 66, 0.6)',
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.6, 22, 1],
-      },
-    },
-    {
-      id: 'landcover-grass',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'landcover',
-      filter: ['==', ['get', 'class'], 'grass'],
-      paint: { 'fill-color': 'rgba(32, 32, 35, 1)', 'fill-opacity': 1 },
-    },
-    {
-      id: 'water',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'water',
-      paint: { 'fill-color': 'rgba(10, 11, 15, 1)' },
-    },
-    {
-      // Inert at this game's MAX_ZOOM (9) — see TONER_STYLE's building layer.
-      id: 'building',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'building',
-      paint: { 'fill-color': 'rgba(46, 46, 50, 1)', 'fill-antialias': true },
-    },
-    {
-      id: 'building-top',
-      type: 'fill',
-      source: 'openmaptiles',
-      'source-layer': 'building',
-      paint: {
-        'fill-outline-color': 'rgba(58, 58, 63, 1)',
-        'fill-color': 'rgba(38, 38, 41, 1)',
-      },
-    },
-    {
-      id: 'boundary_country',
-      type: 'line',
-      source: 'openmaptiles',
-      'source-layer': 'boundary',
-      filter: ['all', ['==', ['get', 'admin_level'], 2], ['==', ['get', 'maritime'], 0]],
-      layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: {
-        'line-color': 'rgba(225, 225, 230, 1)',
-        'line-width': ['interpolate', ['exponential', 1.1], ['zoom'], 3, 1, 22, 20],
-        'line-blur': ['interpolate', ['linear'], ['zoom'], 0, 0.4, 22, 4],
-        'line-opacity': 1,
-      },
-    },
-  ],
-}
-
-// entry-borders-{country,state} (see addGameSourcesAndLayers) are shared,
-// game-drawn overlays reused across every basemap, so their line-color can't
-// just live in one style's own JSON — a style-specific one is only needed
-// for entries that'd otherwise be illegible (dark's near-black land under
-// the default black line). Every other style keeps the original black.
-const STATE_BORDER_COLOR_BY_STYLE: Partial<Record<MapStyleChoice, string>> = {
-  dark: 'rgba(225, 225, 230, 1)',
-}
-
-const styleFor = (choice: MapStyleChoice): string | maplibregl.StyleSpecification => {
-  if (choice === 'satellite') return SATELLITE_STYLE
-  if (choice === 'toner') return TONER_STYLE
-  if (choice === 'desert') return DESERT_STYLE
-  if (choice === 'dark') return DARK_STYLE
-  // Same base look as desert — the colorful per-region fill mosaic (see
-  // addGameSourcesAndLayers/renderColorfulFill) is a game-drawn overlay on
-  // top, not a different vector style. A distinct object (not just
-  // DESERT_STYLE reused as-is) so map.setStyle() sees a genuine change and
-  // always re-fires 'style.load' when switching directly between the two —
-  // passing the exact same object reference back risks MapLibre's style
-  // diffing treating it as a no-op and skipping the reload that
-  // addGameSourcesAndLayers relies on to re-toggle the fill's visibility.
-  if (choice === 'colorful') return { ...DESERT_STYLE, name: 'Colorful' }
-  return OSM_STYLE_URL
-}
-
-// Every Liberty label/POI/road-shield/highway-name layer id, plus the road
-// network itself (irrelevant clutter for a globe quiz) — hidden permanently
-// so no country/state/city name ever leaks onto the map ahead of a guess.
-// IDs pulled from apps/osm_globe/client/src/layerMenu.ts's hand-categorized
-// LAYER_GROUPS.Text + LAYER_GROUPS.Roads.
-const HIDDEN_LAYER_IDS = [
-  // Shaded-relief/albedo backdrop (Natural Earth II raster) — a low-res
-  // terrain tint under everything else; not useful gameplay signal and
-  // muddies the flat-color look we want.
-  'natural_earth',
-  // Worldwide state/province boundary lines (Liberty's boundary_3, Toner's
-  // boundary_state) — permanently hidden in favor of our own US-only
-  // entry-borders-state overlay; see showStateBorders for why.
-  'boundary_3',
-  'boundary_state',
-  // Text: labels, POIs, road shields, highway names, one-way arrows.
-  'road_one_way_arrow',
-  'road_one_way_arrow_opposite',
-  'waterway_line_label',
-  'water_name_point_label',
-  'water_name_line_label',
-  'poi_r20',
-  'poi_r7',
-  'poi_r1',
-  'poi_transit',
-  'highway-name-path',
-  'highway-name-minor',
-  'highway-name-major',
-  'highway-shield-non-us',
-  'highway-shield-us-interstate',
-  'road_shield_us',
-  'airport',
-  'label_other',
-  'label_village',
-  'label_town',
-  'label_state',
-  'label_city',
-  'label_city_capital',
-  'label_country_3',
-  'label_country_2',
-  'label_country_1',
-  // Roads: the whole street/rail network, on top of and under water/bridges.
-  'aeroway_runway',
-  'aeroway_taxiway',
-  'tunnel_motorway_link_casing',
-  'tunnel_service_track_casing',
-  'tunnel_link_casing',
-  'tunnel_street_casing',
-  'tunnel_secondary_tertiary_casing',
-  'tunnel_trunk_primary_casing',
-  'tunnel_motorway_casing',
-  'tunnel_path_pedestrian',
-  'tunnel_motorway_link',
-  'tunnel_service_track',
-  'tunnel_link',
-  'tunnel_minor',
-  'tunnel_secondary_tertiary',
-  'tunnel_trunk_primary',
-  'tunnel_motorway',
-  'tunnel_major_rail',
-  'tunnel_major_rail_hatching',
-  'tunnel_transit_rail',
-  'tunnel_transit_rail_hatching',
-  'road_motorway_link_casing',
-  'road_service_track_casing',
-  'road_link_casing',
-  'road_minor_casing',
-  'road_secondary_tertiary_casing',
-  'road_trunk_primary_casing',
-  'road_motorway_casing',
-  'road_path_pedestrian',
-  'road_motorway_link',
-  'road_service_track',
-  'road_link',
-  'road_minor',
-  'road_secondary_tertiary',
-  'road_trunk_primary',
-  'road_motorway',
-  'road_major_rail',
-  'road_major_rail_hatching',
-  'road_transit_rail',
-  'road_transit_rail_hatching',
-  'bridge_motorway_link_casing',
-  'bridge_service_track_casing',
-  'bridge_link_casing',
-  'bridge_street_casing',
-  'bridge_path_pedestrian_casing',
-  'bridge_secondary_tertiary_casing',
-  'bridge_trunk_primary_casing',
-  'bridge_motorway_casing',
-  'bridge_path_pedestrian',
-  'bridge_motorway_link',
-  'bridge_service_track',
-  'bridge_link',
-  'bridge_street',
-  'bridge_secondary_tertiary',
-  'bridge_trunk_primary',
-  'bridge_motorway',
-  'bridge_major_rail',
-  'bridge_major_rail_hatching',
-  'bridge_transit_rail',
-  'bridge_transit_rail_hatching',
-]
-
-// Each vector style's own admin-boundary layer ids, reused as-is instead of
-// fetching/rendering our own borders dataset — keyed by MapStyleChoice since
-// every style names/splits these differently (Liberty and Toner don't even
-// agree on how many layers a "country border" is). Toggled show/hide by mode
-// (see the store-subscription block) rather than loaded/unloaded. Styles with
-// no entry here (satellite) have no native boundaries at all and fall back
-// to the entry-borders GeoJSON overlay instead — see showCountryBorders.
-const COUNTRY_LINE_LAYERS_BY_STYLE: Partial<Record<MapStyleChoice, string[]>> = {
-  // admin_level 2, plus disputed borders and the coastline stroke Liberty
-  // draws as a separate layer from the water fill.
-  osm: ['boundary_2', 'boundary_disputed', 'coastline_stroke'],
-  toner: ['boundary_country'],
-  desert: ['boundary_country'],
-  dark: ['boundary_country'],
-  colorful: ['boundary_country'],
-}
-// State lines have no per-style equivalent — see showStateBorders for why
-// (Liberty's boundary_3 and Toner's boundary_state are both worldwide,
-// admin_level 3-6/4, with no country code to filter on) — every style
-// always uses the entry-borders-state overlay instead.
 
 // --- Camera ------------------------------------------------------------
 const INITIAL_ZOOM = 1.6
@@ -1077,24 +617,47 @@ export function WorldViewer() {
     const FLAG_TOP = 2
     const PIN_W = POLE_W + FLAG_W
     const PIN_H = POLE_H
-    const flagPinCache = new Map<string, Promise<string>>()
+    // Pole and flag are separate images (rather than one composited canvas)
+    // so the flag alone can be flipped/tilted with a CSS transform on hover
+    // while the pole stays put.
+    type FlagPinImages = { pole: string; flag: string }
+    const flagPinCache = new Map<string, Promise<FlagPinImages | null>>()
     const flagCdnUrl = (code: string): string => `https://flagcdn.com/w160/${code}.png`
 
     const buildFlagPin = (
       imageUrl: string | undefined,
       kind: PinKind,
-    ): Promise<string> => {
+    ): Promise<FlagPinImages | null> => {
       const key = `${kind}:${imageUrl ?? '_'}`
       const cached = flagPinCache.get(key)
       if (cached) return cached
       const promise = (async () => {
-        const canvas = document.createElement('canvas')
-        canvas.width = PIN_W
-        canvas.height = PIN_H
-        const ctx = canvas.getContext('2d')
-        if (!ctx) return ''
+        const poleCanvas = document.createElement('canvas')
+        poleCanvas.width = POLE_W
+        poleCanvas.height = POLE_H
+        const poleCtx = poleCanvas.getContext('2d')
+        const flagCanvas = document.createElement('canvas')
+        flagCanvas.width = FLAG_W
+        flagCanvas.height = FLAG_H
+        const flagCtx = flagCanvas.getContext('2d')
+        if (!poleCtx || !flagCtx) return null
 
-        const flagX = POLE_W - 1
+        const inset = 0.75
+        const left = inset
+        const right = POLE_W - inset
+        const topR = (right - left) / 2
+        poleCtx.beginPath()
+        poleCtx.moveTo(left, POLE_H)
+        poleCtx.lineTo(left, inset + topR)
+        poleCtx.arcTo(left, inset, left + topR, inset, topR)
+        poleCtx.arcTo(right, inset, right, inset + topR, topR)
+        poleCtx.lineTo(right, POLE_H)
+        poleCtx.fillStyle = PIN_BG[kind]
+        poleCtx.fill()
+        poleCtx.lineWidth = 1.5
+        poleCtx.strokeStyle = '#000'
+        poleCtx.stroke()
+
         let drewFlag = false
         if (imageUrl) {
           try {
@@ -1105,41 +668,25 @@ export function WorldViewer() {
               img.onerror = () => reject(new Error('flag load failed'))
               img.src = imageUrl
             })
-            ctx.drawImage(img, flagX, FLAG_TOP, FLAG_W, FLAG_H)
+            flagCtx.drawImage(img, 0, 0, FLAG_W, FLAG_H)
             drewFlag = true
           } catch {
             // Flag fetch / CORS failure: fall back to a plain coloured flag.
           }
         }
         if (!drewFlag) {
-          ctx.fillStyle = PIN_BG[kind]
-          ctx.fillRect(flagX, FLAG_TOP, FLAG_W, FLAG_H)
+          flagCtx.fillStyle = PIN_BG[kind]
+          flagCtx.fillRect(0, 0, FLAG_W, FLAG_H)
         }
-        ctx.strokeStyle = 'rgba(0,0,0,0.85)'
-        ctx.lineWidth = 1
-        ctx.strokeRect(flagX + 0.5, FLAG_TOP + 0.5, FLAG_W - 1, FLAG_H - 1)
-
-        const inset = 0.75
-        const left = inset
-        const right = POLE_W - inset
-        const topR = (right - left) / 2
-        ctx.beginPath()
-        ctx.moveTo(left, POLE_H)
-        ctx.lineTo(left, inset + topR)
-        ctx.arcTo(left, inset, left + topR, inset, topR)
-        ctx.arcTo(right, inset, right, inset + topR, topR)
-        ctx.lineTo(right, POLE_H)
-        ctx.fillStyle = PIN_BG[kind]
-        ctx.fill()
-        ctx.lineWidth = 1.5
-        ctx.strokeStyle = '#000'
-        ctx.stroke()
+        flagCtx.strokeStyle = 'rgba(0,0,0,0.85)'
+        flagCtx.lineWidth = 1
+        flagCtx.strokeRect(0.5, 0.5, FLAG_W - 1, FLAG_H - 1)
 
         try {
-          return canvas.toDataURL('image/png')
+          return { pole: poleCanvas.toDataURL('image/png'), flag: flagCanvas.toDataURL('image/png') }
         } catch {
           flagPinCache.delete(key)
-          return ''
+          return null
         }
       })()
       flagPinCache.set(key, promise)
@@ -1152,30 +699,180 @@ export function WorldViewer() {
       '-1.5px -1.5px #000,1.5px -1.5px #000,-1.5px 1.5px #000,1.5px 1.5px #000;' +
       'pointer-events:none;white-space:pre;text-align:center;'
 
-    const makeFlagMarkerEl = (imageUrl: string, label?: string): HTMLDivElement => {
+    // Flag's `left` (within pinWrap) on its default side and swapped to the
+    // far side of the pole, each overlapping the pole by 1px like the
+    // original single-canvas art did.
+    const FLAG_LEFT_DEFAULT = POLE_W - 1
+    const FLAG_LEFT_SWAPPED = 1 - FLAG_W
+
+    const makeFlagMarkerEl = (
+      images: FlagPinImages,
+      label?: string,
+    ): {
+      root: HTMLDivElement
+      pinWrap: HTMLDivElement
+      flagSlot: HTMLDivElement
+      flagImg: HTMLImageElement
+      labelEl: HTMLDivElement | null
+    } => {
       const root = document.createElement('div')
       // No inline `position` here: MapLibre's own .maplibregl-marker class sets
       // position:absolute on this exact element, which also serves as the
-      // positioning context the label below needs. An inline `position`
+      // positioning context the children below need. An inline `position`
       // override (even 'relative') beats that class rule, drops the marker
       // into normal block flow, and stacks every subsequent marker underneath
       // the last at full container width — the "each guess lands lower" bug.
-      const img = document.createElement('img')
-      img.src = imageUrl
-      img.width = PIN_W
-      img.height = PIN_H
-      img.style.display = 'block'
-      root.appendChild(img)
+      // pinWrap is absolutely positioned within it, so give root an explicit
+      // size — otherwise it collapses to 0x0.
+      root.style.width = `${PIN_W}px`
+      root.style.height = `${PIN_H}px`
+      // The marker sits directly over map content (and, for reveal/guess
+      // pins, right where a click needs to land) — none of its layers should
+      // ever intercept the pointer. Without this, mousemove/click events
+      // landing on the pole/flag images never reach the map canvas at all
+      // (they're DOM siblings of it, not descendants), which both ate clicks
+      // on whatever the pin was covering and silently broke the hover-tilt
+      // tracking below right at the one spot it needed to fire.
+      root.style.pointerEvents = 'none'
+
+      // Pole, flag and label all live inside pinWrap so the cursor-proximity
+      // tilt (see the map mousemove handler below) rotates the whole pin
+      // together, pivoting at the pole's base — the geo anchor point, which
+      // sits at (POLE_W/2, PIN_H) in this element's own coordinates since the
+      // marker's `offset` centers the pole on it.
+      const pinWrap = document.createElement('div')
+      pinWrap.style.cssText =
+        'position:absolute;left:0;top:0;width:100%;height:100%;' +
+        `transform-origin:${POLE_W / 2}px 100%;transition:transform 120ms ease-out;`
+      root.appendChild(pinWrap)
+
+      const pole = document.createElement('img')
+      pole.src = images.pole
+      pole.width = POLE_W
+      pole.height = POLE_H
+      pole.style.cssText = 'position:absolute;left:0;top:0;display:block;'
+      pinWrap.appendChild(pole)
+
+      // flagSlot's `left` toggles between the pole's two sides on hover (see
+      // below) so the flag actually dodges the cursor instead of just
+      // spinning in place.
+      const flagSlot = document.createElement('div')
+      flagSlot.style.cssText =
+        `position:absolute;left:${FLAG_LEFT_DEFAULT}px;top:${FLAG_TOP}px;` +
+        `width:${FLAG_W}px;height:${FLAG_H}px;transition:left 250ms ease-in-out;`
+      pinWrap.appendChild(flagSlot)
+
+      const flagImg = document.createElement('img')
+      flagImg.src = images.flag
+      flagImg.width = FLAG_W
+      flagImg.height = FLAG_H
+      flagImg.style.cssText =
+        'position:absolute;left:0;top:0;display:block;transition:transform 250ms ease-in-out;'
+      flagSlot.appendChild(flagImg)
+
+      let labelEl: HTMLDivElement | null = null
       if (label) {
-        const lab = document.createElement('div')
-        lab.textContent = label
-        lab.style.cssText =
+        labelEl = document.createElement('div')
+        labelEl.textContent = label
+        labelEl.style.cssText =
           LABEL_STYLE +
-          `left:${POLE_W / 2 + FLAG_W / 2}px;transform:translateX(-50%);bottom:${PIN_H + 2}px;`
-        root.appendChild(lab)
+          `left:${FLAG_LEFT_DEFAULT + FLAG_W / 2}px;transform:translateX(-50%);` +
+          `bottom:${PIN_H + 2}px;transition:left 250ms ease-in-out;`
+        pinWrap.appendChild(labelEl)
       }
-      return root
+      return { root, pinWrap, flagSlot, flagImg, labelEl }
     }
+
+    // --- Real-time flag dodge/tilt on cursor proximity ---------------------
+    // The whole pin (pole + flag + label) leans away from the cursor, up to
+    // FLAG_MAX_TILT_DEG, like a blade of grass being brushed aside, scaling
+    // continuously over the full FLAG_NEAR_RADIUS with no separate cutoff for
+    // the flip. Once the cursor comes within FLAG_FLIP_RADIUS, the flag also
+    // hops to whichever side of the pole is away from the cursor — that side
+    // is sticky: it's only re-evaluated while the cursor is within flip
+    // range, so it holds its last position as the cursor moves away rather
+    // than snapping back to the default side. "Near" is a plain distance-to-
+    // pole-centre check, not a hit-test against the flag's own (possibly
+    // already-swapped) bounding box, so it can't flicker between states.
+    // Driven imperatively off the map's own mousemove, not React state, so
+    // it stays smooth at pointer speed. The side-swap and its mirror both
+    // animate too (CSS transitions on flagSlot's left and flagImg's
+    // transform), not just the tilt.
+    // Measured to the top of the flag, straight up from the pole's base (the
+    // anchor point) — the pin's static, untilted layout, not wherever the
+    // flag currently is once rotate()/scaleX() are applied.
+    const FLAG_TOP_DY = -PIN_H + FLAG_TOP
+    const FLAG_FLIP_RADIUS = 36
+    const FLAG_NEAR_RADIUS = 50
+    const FLAG_MAX_TILT_DEG = 18
+
+    type FlagHoverTarget = {
+      marker: maplibregl.Marker
+      pinWrap: HTMLDivElement
+      flagSlot: HTMLDivElement
+      flagImg: HTMLImageElement
+      labelEl: HTMLDivElement | null
+    }
+    let flagHoverTargets: FlagHoverTarget[] = []
+    let hoverMousePx: { x: number; y: number } | null = null
+    let hoverRaf = 0
+
+    const updateFlagHover = (): void => {
+      hoverRaf = 0
+      if (destroyed) return
+      for (const { marker, pinWrap, flagSlot, flagImg, labelEl } of flagHoverTargets) {
+        if (!hoverMousePx) {
+          pinWrap.style.transform = ''
+          continue
+        }
+        const p = map.project(marker.getLngLat())
+        const dx = hoverMousePx.x - p.x
+        const dy = hoverMousePx.y - (p.y + FLAG_TOP_DY)
+        const dist = Math.hypot(dx, dy)
+        const tiltT = Math.max(0, Math.min(1, 1 - dist / FLAG_NEAR_RADIUS))
+        const dir = dx === 0 ? 0 : dx > 0 ? -1 : 1
+        pinWrap.style.transform = `rotate(${(dir * FLAG_MAX_TILT_DEG * tiltT).toFixed(2)}deg)`
+        if (dist <= FLAG_FLIP_RADIUS) {
+          const swapped = dx > 0
+          flagSlot.style.left = `${swapped ? FLAG_LEFT_SWAPPED : FLAG_LEFT_DEFAULT}px`
+          if (labelEl) {
+            labelEl.style.left = `${(swapped ? FLAG_LEFT_SWAPPED : FLAG_LEFT_DEFAULT) + FLAG_W / 2}px`
+          }
+          // Mirror the flag horizontally so its pole-side edge still reads
+          // as attached to the pole after hopping to its other side.
+          flagImg.style.transform = swapped ? 'scaleX(-1)' : ''
+        }
+      }
+    }
+    const scheduleFlagHoverUpdate = (): void => {
+      if (hoverRaf) return
+      hoverRaf = requestAnimationFrame(updateFlagHover)
+    }
+    const registerFlagHoverTarget = (
+      marker: maplibregl.Marker,
+      pinWrap: HTMLDivElement,
+      flagSlot: HTMLDivElement,
+      flagImg: HTMLImageElement,
+      labelEl: HTMLDivElement | null,
+    ): void => {
+      flagHoverTargets.push({ marker, pinWrap, flagSlot, flagImg, labelEl })
+      scheduleFlagHoverUpdate()
+    }
+    const unregisterFlagHoverTarget = (marker: maplibregl.Marker): void => {
+      flagHoverTargets = flagHoverTargets.filter((t) => t.marker !== marker)
+    }
+    const onFlagHoverMouseMove = (e: MouseEvent): void => {
+      const rect = map.getCanvas().getBoundingClientRect()
+      hoverMousePx = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+      scheduleFlagHoverUpdate()
+    }
+    const onFlagHoverMouseLeave = (): void => {
+      hoverMousePx = null
+      scheduleFlagHoverUpdate()
+    }
+    map.getCanvas().addEventListener('mousemove', onFlagHoverMouseMove)
+    map.getCanvas().addEventListener('mouseleave', onFlagHoverMouseLeave)
+    map.on('move', scheduleFlagHoverUpdate)
 
     const makeDotMarkerEl = (best: boolean, label?: string): HTMLDivElement => {
       const root = document.createElement('div')
@@ -1595,26 +1292,30 @@ export function WorldViewer() {
               const code = m.code ?? st.countryCodes[m.label]
               return code ? flagCdnUrl(code) : undefined
             })())
-      buildFlagPin(imageUrl, m.kind).then((image) => {
-        if (gen !== renderGen || destroyed || !image) return
+      buildFlagPin(imageUrl, m.kind).then((images) => {
+        if (gen !== renderGen || destroyed || !images) return
         const label =
           m.distanceMi !== undefined
             ? `${m.label}\n${Math.round(m.distanceMi).toLocaleString()} mi`
             : m.label
-        const el = makeFlagMarkerEl(image, label)
+        const { root, pinWrap, flagSlot, flagImg, labelEl } = makeFlagMarkerEl(images, label)
         const mk = new maplibregl.Marker({
-          element: el,
+          element: root,
           anchor: 'bottom-left',
           offset: [-POLE_W / 2, 0],
         })
           .setLngLat([m.lon, m.lat])
           .addTo(map)
         gameMarkers.push(mk)
+        registerFlagHoverTarget(mk, pinWrap, flagSlot, flagImg, labelEl)
       })
     }
 
     const clearGameMarkers = (): void => {
-      for (const mk of gameMarkers) mk.remove()
+      for (const mk of gameMarkers) {
+        mk.remove()
+        unregisterFlagHoverTarget(mk)
+      }
       gameMarkers = []
     }
 
@@ -1622,6 +1323,7 @@ export function WorldViewer() {
     const renderBrowseFlag = (): void => {
       browseGen++
       const gen = browseGen
+      if (browseFlagMarker) unregisterFlagHoverTarget(browseFlagMarker)
       browseFlagMarker?.remove()
       browseFlagMarker = null
       const st = useGameStore.getState()
@@ -1635,16 +1337,17 @@ export function WorldViewer() {
         code: string | undefined,
         flagUrl: string | undefined,
       ) => {
-        buildFlagPin(flagUrl ?? (code ? flagCdnUrl(code) : undefined), 'stats').then((image) => {
-          if (gen !== browseGen || destroyed || !image) return
-          const el = makeFlagMarkerEl(image, label)
+        buildFlagPin(flagUrl ?? (code ? flagCdnUrl(code) : undefined), 'stats').then((images) => {
+          if (gen !== browseGen || destroyed || !images) return
+          const { root, pinWrap, flagSlot, flagImg, labelEl } = makeFlagMarkerEl(images, label)
           browseFlagMarker = new maplibregl.Marker({
-            element: el,
+            element: root,
             anchor: 'bottom-left',
             offset: [-POLE_W / 2, 0],
           })
             .setLngLat([lon, lat])
             .addTo(map)
+          registerFlagHoverTarget(browseFlagMarker, pinWrap, flagSlot, flagImg, labelEl)
         })
       }
 
@@ -2203,6 +1906,7 @@ export function WorldViewer() {
             if (entry) flyTo(entry.centroid.lat, entry.centroid.lon, () => {}, BROWSE_FLY_MS)
           }
         } else {
+          if (browseFlagMarker) unregisterFlagHoverTarget(browseFlagMarker)
           browseFlagMarker?.remove()
           browseFlagMarker = null
         }
@@ -2292,6 +1996,10 @@ export function WorldViewer() {
       canvas.removeEventListener('pointerup', endDrag)
       canvas.removeEventListener('pointercancel', endDrag)
       map.off('click', onMapClick)
+      map.getCanvas().removeEventListener('mousemove', onFlagHoverMouseMove)
+      map.getCanvas().removeEventListener('mouseleave', onFlagHoverMouseLeave)
+      map.off('move', scheduleFlagHoverUpdate)
+      if (hoverRaf) cancelAnimationFrame(hoverRaf)
       if (revealHoldTimeout !== null) clearTimeout(revealHoldTimeout)
       if (endingHoldTimeout !== null) clearTimeout(endingHoldTimeout)
       if (drawHoldTimeout !== null) clearTimeout(drawHoldTimeout)

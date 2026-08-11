@@ -88,7 +88,7 @@ const POINT_TOAST_FADE_MS = 500
 
 // Settings-menu map-style carousel. Data-driven so a new basemap is a
 // one-line addition here — but adding one for real also means wiring its
-// layer ids into WorldViewer.tsx's HIDDEN_LAYER_IDS/COUNTRY_LINE_LAYERS/
+// layer ids into mapStyles.ts's HIDDEN_LAYER_IDS/COUNTRY_LINE_LAYERS/
 // STATE_LINE_LAYERS (or routing it through the entry-borders overlay like
 // satellite does), since a different vector style ships different layer
 // names and unaudited ones can leak country/city name labels pre-guess.

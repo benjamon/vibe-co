@@ -173,7 +173,7 @@ const HIDE_TINY_ISLANDS_KEY = 'mapoguesser:hideTinyIslands'
 const TIMED_MODE_KEY = 'mapoguesser:timedMode'
 // Settings-menu preference: which basemap WorldViewer renders — a satellite
 // photo layer or the labelled-and-stripped OpenStreetMap vector style. See
-// WorldViewer's styleFor().
+// mapStyles.ts's styleFor().
 const MAP_STYLE_KEY = 'mapoguesser:mapStyle'
 export type MapStyleChoice = 'osm' | 'satellite' | 'toner' | 'desert' | 'dark' | 'colorful'
 
