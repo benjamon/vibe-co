@@ -94,11 +94,11 @@ const POINT_TOAST_FADE_MS = 500
 // names and unaudited ones can leak country/city name labels pre-guess.
 const MAP_STYLE_OPTIONS: { value: MapStyleChoice; label: string }[] = [
   { value: 'satellite', label: '🛰️ Satellite' },
+  { value: 'colorful', label: '🎨 Colorful' },
   { value: 'osm', label: '🗺️ Street' },
   { value: 'toner', label: '🫟 Toner' },
   { value: 'desert', label: '🏜️ Desert' },
   { value: 'dark', label: '🌑 Dark' },
-  { value: 'colorful', label: '🎨 Colorful' },
 ]
 
 // flagcdn.com serves free, CORS-friendly PNGs at 4:3 (w40 = 40×30). Using
@@ -1817,104 +1817,6 @@ export function App() {
                   )}
                 </span>
               </button>
-              <div
-                role="group"
-                aria-label="Map style"
-                style={{
-                  ...menuButtonStyle,
-                  minWidth: 220,
-                  cursor: 'default',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'stretch',
-                  gap: 6,
-                }}
-              >
-                <div style={{ fontSize: 14, fontWeight: 700 }}>🗺️ Map style</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <button
-                    type="button"
-                    className="arcade-btn"
-                    aria-label="Previous map style"
-                    onClick={() =>
-                      setMapStyle(
-                        MAP_STYLE_OPTIONS[
-                          (mapStyleIndex - 1 + MAP_STYLE_OPTIONS.length) % MAP_STYLE_OPTIONS.length
-                        ].value,
-                      )
-                    }
-                    style={{
-                      flex: 'none',
-                      width: 30,
-                      height: 34,
-                      borderRadius: 10,
-                      border: border(2),
-                      background: COLOR.cream,
-                      color: COLOR.charcoal,
-                      fontFamily: FONT,
-                      fontWeight: 900,
-                      fontSize: 16,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ‹
-                  </button>
-                  <div
-                    style={{
-                      flex: 1,
-                      padding: '8px 6px',
-                      borderRadius: 10,
-                      border: border(2),
-                      background: COLOR.forestGreen,
-                      color: COLOR.cream,
-                      fontFamily: FONT,
-                      fontWeight: 700,
-                      fontSize: 13,
-                      textAlign: 'center',
-                    }}
-                  >
-                    {MAP_STYLE_OPTIONS[mapStyleIndex].label}
-                  </div>
-                  <button
-                    type="button"
-                    className="arcade-btn"
-                    aria-label="Next map style"
-                    onClick={() =>
-                      setMapStyle(MAP_STYLE_OPTIONS[(mapStyleIndex + 1) % MAP_STYLE_OPTIONS.length].value)
-                    }
-                    style={{
-                      flex: 'none',
-                      width: 30,
-                      height: 34,
-                      borderRadius: 10,
-                      border: border(2),
-                      background: COLOR.cream,
-                      color: COLOR.charcoal,
-                      fontFamily: FONT,
-                      fontWeight: 900,
-                      fontSize: 16,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ›
-                  </button>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'center', gap: 5 }}>
-                  {MAP_STYLE_OPTIONS.map((opt, i) => (
-                    <span
-                      key={opt.value}
-                      aria-hidden="true"
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: i === mapStyleIndex ? COLOR.forestGreen : COLOR.cream,
-                        border: border(1),
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
               <button
                 type="button"
                 className="arcade-btn"
@@ -2153,6 +2055,88 @@ export function App() {
               >
                 ⚙️ Settings
               </button>
+              <div
+                role="group"
+                aria-label="Map style"
+                style={{
+                  ...menuButtonStyle,
+                  background: 'transparent',
+                  boxShadow: 'none',
+                  border: 'none',
+                  minWidth: 220,
+                  cursor: 'default',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <button
+                  type="button"
+                  className="arcade-btn"
+                  aria-label="Previous map style"
+                  onClick={() =>
+                    setMapStyle(
+                      MAP_STYLE_OPTIONS[
+                        (mapStyleIndex - 1 + MAP_STYLE_OPTIONS.length) % MAP_STYLE_OPTIONS.length
+                      ].value,
+                    )
+                  }
+                  style={{
+                    flex: 'none',
+                    width: 30,
+                    height: 34,
+                    borderRadius: 10,
+                    border: border(2),
+                    background: COLOR.cream,
+                    color: COLOR.charcoal,
+                    fontFamily: FONT,
+                    fontWeight: 900,
+                    fontSize: 16,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ‹
+                </button>
+                <div
+                  style={{
+                    flex: 1,
+                    padding: '8px 6px',
+                    borderRadius: 10,
+                    border: border(2),
+                    background: COLOR.cream,
+                    color: COLOR.charcoal,
+                    fontFamily: FONT,
+                    fontWeight: 700,
+                    fontSize: 13,
+                    textAlign: 'center',
+                  }}
+                >
+                  {MAP_STYLE_OPTIONS[mapStyleIndex].label}
+                </div>
+                <button
+                  type="button"
+                  className="arcade-btn"
+                  aria-label="Next map style"
+                  onClick={() =>
+                    setMapStyle(MAP_STYLE_OPTIONS[(mapStyleIndex + 1) % MAP_STYLE_OPTIONS.length].value)
+                  }
+                  style={{
+                    flex: 'none',
+                    width: 30,
+                    height: 34,
+                    borderRadius: 10,
+                    border: border(2),
+                    background: COLOR.cream,
+                    color: COLOR.charcoal,
+                    fontFamily: FONT,
+                    fontWeight: 900,
+                    fontSize: 16,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ›
+                </button>
+              </div>
             </>
           )}
         </div>
