@@ -1,7 +1,7 @@
 import type { CityInfo } from './store'
 import {
   countryPopulationRank,
-  usPopulationRank,
+  cityPopulationRank,
   cityRevealName,
   cityFlagUrl,
 } from './store'
@@ -74,7 +74,7 @@ export function ItemDetailCard({
       flagCode = countryCodes[city.country]
       flagSrc = cityFlagUrl(city, subModeId)
       isCapital = city.stateCapital || city.capital
-      const rank = usPopulationRank(cities, item)
+      const rank = cityPopulationRank(cities, item)
       const founded = US_CITY_FOUNDED[city.city]
       body = (
         <FactsGrid>

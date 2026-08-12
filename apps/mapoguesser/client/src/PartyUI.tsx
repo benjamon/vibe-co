@@ -14,7 +14,7 @@ import {
   roundsForMode,
   cityRevealName,
   cityFlagUrl,
-  usPopulationRank,
+  cityPopulationRank,
   MAX_CAPITAL_MILES,
   HINT_PENALTY,
   type GameMode,
@@ -794,7 +794,7 @@ function GameHud({ snap }: { snap: PartySnapshot }) {
           flagCode: countryCodes[lastCity.country],
           flagSrc: cityFlagUrl(lastCity, room?.mode ?? ''),
           pop: lastCity.pop,
-          rank: usPopulationRank(cities, target),
+          rank: cityPopulationRank(cities, target),
           founded: US_CITY_FOUNDED[lastCity.city],
           isCapital: lastCity.stateCapital || lastCity.capital,
         }

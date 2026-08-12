@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { sfxCorrect, sfxWrong, sfxAchievement } from './sfx'
+import { sfxCorrect, sfxNeutral, sfxWrong, sfxAchievement } from './sfx'
 import {
   getAccountId,
   pullProgress,
@@ -19,6 +19,7 @@ import {
   type ModeFamily,
 } from './gameModes'
 import { usStateFlagUrl } from './usStateFlags'
+import { usStatePopulation } from './usStatePopulations'
 
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
@@ -106,7 +107,10 @@ export const DRAW_ROUNDS = 5
 // only) — a skipped round costs exactly this many miles, no cap on an actual
 // guess (see `handleCapitalGuess`, which reports the true distance).
 export const MAX_CAPITAL_MILES = 1000
-// A city guess within this many miles counts as a "near" hit (green sfx).
+// A city guess within this many miles counts as a "near" hit for adaptive
+// difficulty (nextWeightEntry's first/second/miss split) and for the
+// multiplayer "correct" flag sent to the server. The per-guess drop *sound*
+// no longer uses this — see sfxForCapitalDistance, which is ring-based.
 const CAPITAL_NEAR_MI = 50
 
 // City-mode point tiers — closer guesses score more. Two scales: the US
@@ -129,6 +133,18 @@ const pointsForDistance = (mi: number, tiers: number[]): number => {
     if (mi <= tiers[i]) return tiers.length - i
   }
   return 0
+}
+
+// Cities mode's per-guess drop sound: positive (bing) inside the second
+// scoring ring, a flat neutral blip inside the third, otherwise the "wrong"
+// buzz. The rings are the same tiers WorldViewer draws as concentric circles
+// on reveal (see capitalPointTierMilesFor) — tiers[1]/tiers[2] are the
+// second/third ring radii.
+const sfxForCapitalDistance = (distance: number, subMode: string): void => {
+  const tiers = capitalPointTierMilesFor(subMode)
+  if (distance <= tiers[1]) sfxCorrect()
+  else if (distance <= tiers[2]) sfxNeutral()
+  else sfxWrong()
 }
 const REGION_BONUS_POINTS = 1
 export const MAX_CAPITAL_POINTS = CAPITAL_ROUNDS * (5 + REGION_BONUS_POINTS)
@@ -307,6 +323,10 @@ interface SavedMatch {
   // this match — see GameState.masteredThisMatch. Optional so legacy saves
   // without it just resume at 0.
   masteredThisMatch?: number
+  // Snapshot of `unlockedCountFor(...)` taken when this match started — see
+  // GameState.unlockedAtMatchStart. Optional so legacy saves without it fall
+  // back to the live unlocked count (showing 0 progress this match) on resume.
+  unlockedAtMatchStart?: number
   // Draw mode only: the % overlap score for each completed round.
   drawScores?: number[]
   // Draw mode only: which target's post-match reveal is showing, if any —
@@ -551,6 +571,15 @@ interface GameState {
   // message. Never incremented for multiplayer (party guesses don't touch
   // itemWeights at all).
   masteredThisMatch: number
+
+  // Snapshot of `unlockedCountFor(...)` (the sub-mode's currently-unlocked
+  // item count) taken when the match started — set by `startGame`, reset by
+  // `resetGame`/`endPartyMatch`. App.tsx diffs this against the live count
+  // (which grows as `itemWeights` updates during play) to show "unlocked N
+  // countries/states/cities" at the end of the match. Not bumped per-guess
+  // like `masteredThisMatch` — unlocking is a derived, not an event-driven,
+  // quantity.
+  unlockedAtMatchStart: number
 
   // The item currently being "browsed" from the item-list panel (see
   // App.tsx's weightsSub UI) — drives WorldViewer's fly-to + flag-pin so the
@@ -969,7 +998,12 @@ export const generateSeed = (): string =>
 // pass a small selected object instead of subscribing to the whole store.
 export type PoolSource = Pick<
   GameState,
-  'cities' | 'states' | 'countries' | 'countryAreas' | 'hideTinyIslands'
+  | 'cities'
+  | 'states'
+  | 'countries'
+  | 'countryAreas'
+  | 'countryPopulations'
+  | 'hideTinyIslands'
 >
 
 // Min total polygon area (deg²) for a country to count as a "tiny island" —
@@ -1011,30 +1045,90 @@ export const poolForSubMode = (s: PoolSource, sub: SubMode): string[] => {
     for (const k of stateCapitalKeys) keys.add(k)
     return [...keys].sort((a, b) => s.cities[b].pop - s.cities[a].pop || (a < b ? -1 : 1))
   }
-  if (sub.family === 'states') return s.states
+  // Most-populous-first so the top-N slice used by unlockedPoolForSubMode is
+  // literally "the top N by population". Natural Earth's admin-1 dataset
+  // carries no population field, so states are ranked from the static
+  // usStatePopulations table instead.
+  if (sub.family === 'states') {
+    return s.states
+      .slice()
+      .sort(
+        (a, b) =>
+          usStatePopulation(b) - usStatePopulation(a) || (a < b ? -1 : 1),
+      )
+  }
   if (sub.family === 'draw-states') {
     if (sub.pool === 'all') return s.states
     const playableStates = new Set(s.states)
     return (sub.pool as string[]).filter((n) => playableStates.has(n))
   }
+  const byPopulation = (a: string, b: string): number =>
+    (s.countryPopulations[b] ?? 0) - (s.countryPopulations[a] ?? 0) ||
+    (a < b ? -1 : 1)
   if (sub.pool === 'all') {
-    if (!s.hideTinyIslands) return s.countries
-    return s.countries.filter(
-      (n) => (s.countryAreas[n] ?? Infinity) >= MIN_TARGET_AREA,
-    )
+    const list = s.hideTinyIslands
+      ? s.countries.filter(
+          (n) => (s.countryAreas[n] ?? Infinity) >= MIN_TARGET_AREA,
+        )
+      : s.countries
+    return list.slice().sort(byPopulation)
   }
   const playable = new Set(s.countries)
-  return (sub.pool as string[]).filter((n) => playable.has(n))
+  return (sub.pool as string[]).filter((n) => playable.has(n)).sort(byPopulation)
 }
 
-// How much of a sub-mode's pool the player has "solved" — driven to the
-// minimum adaptive-difficulty weight (see `nextWeightEntry`). Shown next to
-// each mode in the menu so mastery is visible per region/category.
+// Progressive item unlocking: a sub-mode starts with only its top N (by
+// population) items in play, and unlocks more as the player demonstrates
+// mastery on what's already unlocked. Only applies to the families that have
+// a "mastered" concept in the UI (countries/states/cities) — the draw
+// families keep their small curated pools available in full from the start.
+export const INITIAL_UNLOCK_COUNT = 10
+const GATED_FAMILIES: ModeFamily[] = ['countries', 'states', 'cities']
+
+// How many of `poolForSubMode`'s (population-sorted) items are currently
+// unlocked. An item counts toward unlocking once its weight has dropped
+// below the default (the union of the item-list's "solved"/green and
+// "under"/yellow buckets — i.e. `percent < 100%`). A locked item is never
+// drawn, so it can never have a weight entry of its own — this is a pure
+// function of `itemWeights` + the full pool, no separate "unlocked" flag is
+// ever stored.
+export const unlockedCountFor = (
+  s: PoolSource & Pick<GameState, 'itemWeights'>,
+  sub: SubMode,
+): number => {
+  const pool = poolForSubMode(s, sub)
+  if (!GATED_FAMILIES.includes(sub.family)) return pool.length
+  let greenOrYellow = 0
+  for (const item of pool) {
+    const w =
+      s.itemWeights[itemWeightKey(sub.family, item)]?.weight ??
+      DEFAULT_ITEM_WEIGHT
+    if (w < DEFAULT_ITEM_WEIGHT) greenOrYellow++
+  }
+  return Math.min(
+    pool.length,
+    Math.max(INITIAL_UNLOCK_COUNT, greenOrYellow * 2),
+  )
+}
+
+// The sub-mode's currently-playable pool — the top-N (population-sorted)
+// slice per `unlockedCountFor`. This is what the draw pool, the item-list
+// panel, and the progress pill should all use instead of the raw (full)
+// `poolForSubMode`.
+export const unlockedPoolForSubMode = (
+  s: PoolSource & Pick<GameState, 'itemWeights'>,
+  sub: SubMode,
+): string[] => poolForSubMode(s, sub).slice(0, unlockedCountFor(s, sub))
+
+// How much of a sub-mode's currently-unlocked pool the player has "solved" —
+// driven to the minimum adaptive-difficulty weight (see `nextWeightEntry`).
+// Shown next to each mode in the menu so mastery is visible per
+// region/category; `total` grows as more items unlock.
 export const subModeProgress = (
   s: PoolSource & Pick<GameState, 'itemWeights'>,
   sub: SubMode,
 ): { solved: number; total: number } => {
-  const pool = poolForSubMode(s, sub)
+  const pool = unlockedPoolForSubMode(s, sub)
   let solved = 0
   for (const item of pool) {
     const w = s.itemWeights[itemWeightKey(sub.family, item)]?.weight
@@ -1087,6 +1181,39 @@ export const usPopulationRank = (
     .sort((a, b) => b - a)
   const rank = pops.indexOf(city.pop)
   return rank === -1 ? null : rank + 1
+}
+
+// A city's rank by population among every loaded city worldwide (no country
+// filter) — "the Nth most populous city in the world" — for the non-US city
+// sub-modes (World Capitals, Latin America, Europe, …), which have nothing
+// like usPopulationRank's in-country pool to rank against instead.
+export const worldPopulationRank = (
+  cities: Record<string, CityInfo>,
+  key: string,
+): number | null => {
+  const city = cities[key]
+  if (!city) return null
+  const pops = Object.values(cities)
+    .map((c) => c.pop)
+    .sort((a, b) => b - a)
+  const rank = pops.indexOf(city.pop)
+  return rank === -1 ? null : rank + 1
+}
+
+// A city's population rank, picking whichever of the two above is the more
+// meaningful pool: among US cities if it's American (matches the "United
+// States" sub-mode's in-country framing), among every loaded city worldwide
+// otherwise. The one function every caller displaying a city's "(#N)" rank
+// should use, regardless of which sub-mode it's showing.
+export const cityPopulationRank = (
+  cities: Record<string, CityInfo>,
+  key: string,
+): number | null => {
+  const city = cities[key]
+  if (!city) return null
+  return city.country === US_NAME
+    ? usPopulationRank(cities, key)
+    : worldPopulationRank(cities, key)
 }
 
 // A country's rank by population among every loaded country (1 = most
@@ -1252,6 +1379,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   itemWeights: loadItemWeights(),
   itemWeightsUpdatedAt: loadItemWeightsUpdatedAt(),
   masteredThisMatch: 0,
+  unlockedAtMatchStart: 0,
 
   browseTarget: null,
   setBrowseTarget: (t) => set({ browseTarget: t }),
@@ -1431,7 +1559,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const sub = resolveSubMode(sel)
     const mode = behavioralModeOf(sub)
     const state = get()
-    const pool = poolForSubMode(state, sub)
+    const pool = unlockedPoolForSubMode(state, sub)
     if (pool.length === 0) return
     const matchSeed = seed ?? generateSeed()
     const roundCount = roundsForMode(mode)
@@ -1481,6 +1609,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const targetIndex = restore?.targetIndex ?? 0
     const roundGuess = restore?.roundGuess ?? null
     const masteredThisMatch = restore?.masteredThisMatch ?? 0
+    const unlockedAtMatchStart =
+      restore?.unlockedAtMatchStart ?? unlockedCountFor(state, sub)
     // Capitals mode records one distance per completed capital, and draw mode
     // one score per completed round, so each finishes once that array fills —
     // except draw mode also has to have finished walking through its
@@ -1523,6 +1653,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       multiplayer: false,
       partyAnswered: false,
       masteredThisMatch,
+      unlockedAtMatchStart,
       // Settle the intro camera before the first click can land.
       inputLockUntil: finished ? 0 : lockUntil(),
     })
@@ -1558,6 +1689,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       endingTarget: null,
       multiplayer: false,
       masteredThisMatch: 0,
+      unlockedAtMatchStart: 0,
       partyAnswered: false,
     }),
 
@@ -1829,7 +1961,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     // The true great-circle miss, uncapped — a wild guess shows its actual
     // distance rather than being clamped, so the "X mi" text is always honest.
     const distance = haversineMiles(lat, lon, cap.lat, cap.lon)
-    const near = distance <= NEAR_MI
 
     // Whether THIS click landed in the target's actual country — or, in the
     // US state-lines sub-mode, its actual state — for the +1 region bonus.
@@ -1866,8 +1997,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // (golf-scored) and reveals the answer, locking the round.
     if (s.multiplayer) {
       if (s.partyAnswered) return
-      if (near) sfxCorrect()
-      else sfxWrong()
+      sfxForCapitalDistance(distance, s.subMode)
 
       // First of two guesses: show the pin + distance only, no answer, no submit.
       if (s.roundGuess === null) {
@@ -1928,8 +2058,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // ---- Single-player path ----
     if (s.distances.length >= CAPITAL_ROUNDS) return
 
-    if (near) sfxCorrect()
-    else sfxWrong()
+    sfxForCapitalDistance(distance, s.subMode)
 
     // ---- First of two guesses: show the pin + distance, hide the answer. ----
     // The round doesn't advance and nothing is scored yet — the player gets a
@@ -2091,7 +2220,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       s.masteredThisMatch +
       (isNewlyMastered(prevWeight, nextEntry.weight) ? 1 : 0)
 
-    if (outcome === 'first') sfxCorrect()
+    // No guess at all before the timer ran out is an unambiguous miss; a
+    // guess that was dropped gets the usual ring-based sfx treatment.
+    if (first) sfxForCapitalDistance(best, s.subMode)
     else sfxWrong()
 
     set({
@@ -2243,6 +2374,7 @@ useGameStore.subscribe((state, prev) => {
     markers: state.markers,
     roundGuess: state.roundGuess,
     masteredThisMatch: state.masteredThisMatch,
+    unlockedAtMatchStart: state.unlockedAtMatchStart,
   })
 })
 

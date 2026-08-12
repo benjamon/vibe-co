@@ -134,6 +134,12 @@ export const sfxCorrect = (): void =>
     { midi: 84, start: 0.09, dur: 0.22, wave: 'triangle', gain: 0.32 }, // C6
   ])
 
+// A flat, single mid-pitched blip — neither the rising "correct" bing nor the
+// descending "wrong" buzz. Used for a cities-mode guess that's close but not
+// close enough to count as a hit (see sfxForCapitalDistance in store.ts).
+export const sfxNeutral = (): void =>
+  play([{ midi: 67, start: 0, dur: 0.16, wave: 'triangle', gain: 0.24 }]) // G4, flat
+
 // Low descending buzz that bends further down — a clear "nope".
 export const sfxWrong = (): void =>
   play(

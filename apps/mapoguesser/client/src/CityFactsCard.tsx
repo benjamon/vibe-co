@@ -10,7 +10,9 @@ export interface CityFactsData {
   flagCode?: string
   flagSrc?: string
   pop: number
-  // Rank among every loaded US city, or null outside the US / if unranked.
+  // Population rank among every loaded US city (if American) or every
+  // loaded city worldwide (otherwise) — see store.ts's cityPopulationRank.
+  // Null if unranked.
   rank: number | null
   founded?: number
   // Whether this city is its state's (or country's) capital — shown with a

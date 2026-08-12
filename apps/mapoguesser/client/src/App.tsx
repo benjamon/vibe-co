@@ -18,15 +18,20 @@ import {
   HINT_PENALTY,
   cityRevealName,
   cityFlagUrl,
-  usPopulationRank,
+  cityPopulationRank,
   subModeProgress,
   poolForSubMode,
+  unlockedPoolForSubMode,
+  unlockedCountFor,
   itemWeightKey,
   MIN_ITEM_WEIGHT,
   DEFAULT_ITEM_WEIGHT,
   capitalPointTierMilesFor,
   type AttemptResult,
   type MapStyleChoice,
+  type PoolSource,
+  type ItemWeights,
+  type CityInfo,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
 import { usStateFlagUrl } from './usStateFlags'
@@ -233,6 +238,57 @@ const StatusDot = ({ status }: { status: ItemStatus }) => (
   />
 )
 
+// A single row's display data for an item-list-style row (item list panel,
+// and the mastery/unlock modal's Mastered/Newly Unlocked lists) — name +
+// flag + mastery status, derived the same way regardless of which list it
+// ends up in.
+interface WeightRow {
+  key: string
+  label: string
+  percent: number
+  status: ItemStatus
+  flagCode?: string
+  flagSrc?: string
+}
+const buildWeightRow = (
+  poolSource: PoolSource & { itemWeights: ItemWeights },
+  cities: Record<string, CityInfo>,
+  countryCodes: Record<string, string>,
+  sub: SubMode,
+  item: string,
+): WeightRow => {
+  const weight =
+    poolSource.itemWeights[itemWeightKey(sub.family, item)]?.weight ??
+    DEFAULT_ITEM_WEIGHT
+  const city = sub.family === 'cities' ? cities[item] : undefined
+  const label =
+    sub.family === 'cities'
+      ? city
+        ? `${city.city}, ${cityRevealName(city, sub.id)}`
+        : item
+      : item
+  const flagCode =
+    sub.family === 'countries'
+      ? countryCodes[item]
+      : city
+        ? countryCodes[city.country]
+        : undefined
+  const flagSrc =
+    sub.family === 'states'
+      ? usStateFlagUrl(item)
+      : city
+        ? cityFlagUrl(city, sub.id)
+        : undefined
+  return {
+    key: item,
+    label,
+    percent: Math.round(weight * 100),
+    status: statusOf(weight),
+    flagCode,
+    flagSrc,
+  }
+}
+
 const Checkbox = ({
   result,
   code,
@@ -326,6 +382,10 @@ const masteredLabel = (family: keyof typeof MASTERED_NOUN, count: number): strin
   const [singular, plural] = MASTERED_NOUN[family]
   return `${count} ${count === 1 ? singular : plural} mastered`
 }
+const unlockedLabel = (family: keyof typeof MASTERED_NOUN, count: number): string => {
+  const [singular, plural] = MASTERED_NOUN[family]
+  return `unlocked ${count} ${count === 1 ? singular : plural}`
+}
 
 // Hamburger / menu / stats / start-screen all share this button look so the
 // HUD reads as one consistent UI rather than a pile of bespoke styles. Pair
@@ -414,13 +474,47 @@ export function App() {
     MAP_STYLE_OPTIONS.findIndex((opt) => opt.value === mapStyle),
   )
   const poolSource = useMemo(
-    () => ({ cities, states, countries, itemWeights, countryAreas, hideTinyIslands }),
-    [cities, states, countries, itemWeights, countryAreas, hideTinyIslands],
+    () => ({
+      cities,
+      states,
+      countries,
+      itemWeights,
+      countryAreas,
+      countryPopulations,
+      hideTinyIslands,
+    }),
+    [
+      cities,
+      states,
+      countries,
+      itemWeights,
+      countryAreas,
+      countryPopulations,
+      hideTinyIslands,
+    ],
   )
 
-  // Which family the active/last-played sub-mode belongs to — drives flag
-  // sourcing (state flags vs country flags) in the HUD below.
-  const subFamily = resolveSubMode(subMode).family
+  // The active/last-played sub-mode — drives flag sourcing (state flags vs
+  // country flags) in the HUD below, and the unlocked-items math following it.
+  const currentSub = resolveSubMode(subMode)
+  const subFamily = currentSub.family
+  // How many items are unlocked right now vs. when this match started (see
+  // store.ts's unlockedCountFor/unlockedAtMatchStart) — drives the "unlocked
+  // N countries/states/cities" end-of-match message and the mastery modal's
+  // Newly Unlocked list. Always 0 for the draw families (they aren't gated).
+  const unlockedAtMatchStart = useGameStore((s) => s.unlockedAtMatchStart)
+  const unlockedNow = useMemo(
+    () => unlockedCountFor(poolSource, currentSub),
+    [poolSource, currentSub],
+  )
+  const unlockedThisMatch = Math.max(0, unlockedNow - unlockedAtMatchStart)
+  // Whether the finished-match score pill shows its expand icon (opens the
+  // mastery/unlock modal) — only once something happened worth browsing.
+  const showExpandIcon =
+    phase === 'finished' &&
+    subFamily !== 'draw' &&
+    subFamily !== 'draw-states' &&
+    (masteredThisMatch > 0 || unlockedThisMatch > 0)
   // Whether the just-played mode's pool is loaded, gating the "Play Again"
   // button the same way the start-screen pickers gate their own buttons.
   const playAgainReady =
@@ -483,6 +577,10 @@ export function App() {
     setWeightsSub(sub)
     setBrowseSubMode(sub?.id ?? null)
   }
+  // Whether the post-match mastery/unlock modal (expand icon on the
+  // finished-match score pill) is open. Reset on "Play Again" / "Main Menu"
+  // so it doesn't carry over into the next match.
+  const [showMasteryModal, setShowMasteryModal] = useState(false)
   const [showConfetti, setShowConfetti] = useState(false)
   const [confettiIntensity, setConfettiIntensity] = useState<'small' | 'full'>(
     'full',
@@ -502,39 +600,10 @@ export function App() {
   // a city dataset key for the cities family (see poolForSubMode).
   const weightsRows = useMemo(() => {
     if (!weightsSub) return []
-    const pool = poolForSubMode(poolSource, weightsSub)
-    const rows = pool.map((item) => {
-      const weight =
-        poolSource.itemWeights[itemWeightKey(weightsSub.family, item)]
-          ?.weight ?? DEFAULT_ITEM_WEIGHT
-      const city = weightsSub.family === 'cities' ? cities[item] : undefined
-      const label =
-        weightsSub.family === 'cities'
-          ? city
-            ? `${city.city}, ${cityRevealName(city, weightsSub.id)}`
-            : item
-          : item
-      const flagCode =
-        weightsSub.family === 'countries'
-          ? countryCodes[item]
-          : city
-            ? countryCodes[city.country]
-            : undefined
-      const flagSrc =
-        weightsSub.family === 'states'
-          ? usStateFlagUrl(item)
-          : city
-            ? cityFlagUrl(city, weightsSub.id)
-            : undefined
-      return {
-        key: item,
-        label,
-        percent: Math.round(weight * 100),
-        status: statusOf(weight),
-        flagCode,
-        flagSrc,
-      }
-    })
+    const pool = unlockedPoolForSubMode(poolSource, weightsSub)
+    const rows = pool.map((item) =>
+      buildWeightRow(poolSource, cities, countryCodes, weightsSub, item),
+    )
     rows.sort((a, b) =>
       weightsSort === 'mastery'
         ? STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
@@ -544,6 +613,53 @@ export function App() {
     )
     return rows
   }, [weightsSub, weightsSort, poolSource, cities, countryCodes])
+
+  // Mastery/unlock modal content — see the expand icon on the finished-match
+  // HUD pill below. "All the mastered" items in the current sub-mode (not
+  // just this match's), plus whichever items crossed from locked into
+  // unlocked during this match specifically.
+  const masteredRows = useMemo(() => {
+    if (subFamily === 'draw' || subFamily === 'draw-states') return []
+    return unlockedPoolForSubMode(poolSource, currentSub)
+      .map((item) => buildWeightRow(poolSource, cities, countryCodes, currentSub, item))
+      .filter((row) => row.status === 'solved')
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [subFamily, currentSub, poolSource, cities, countryCodes])
+  const newlyUnlockedRows = useMemo(() => {
+    if (subFamily === 'draw' || subFamily === 'draw-states') return []
+    return poolForSubMode(poolSource, currentSub)
+      .slice(unlockedAtMatchStart, unlockedNow)
+      .map((item) => buildWeightRow(poolSource, cities, countryCodes, currentSub, item))
+  }, [
+    subFamily,
+    currentSub,
+    poolSource,
+    cities,
+    countryCodes,
+    unlockedAtMatchStart,
+    unlockedNow,
+  ])
+  // Up-to-date mastery mix for the modal's ring chart header — same
+  // mastered/working/at/above buckets as the region-picker's donut icon,
+  // scoped to the currently-unlocked pool.
+  const modalDonut = useMemo(() => {
+    if (subFamily === 'draw' || subFamily === 'draw-states') {
+      return { mastered: 0, working: 0, at: 0, above: 0 }
+    }
+    return unlockedPoolForSubMode(poolSource, currentSub).reduce(
+      (acc, item) => {
+        const weight =
+          poolSource.itemWeights[itemWeightKey(currentSub.family, item)]
+            ?.weight ?? DEFAULT_ITEM_WEIGHT
+        if (weight <= MIN_ITEM_WEIGHT) acc.mastered++
+        else if (weight < DEFAULT_ITEM_WEIGHT) acc.working++
+        else if (weight === DEFAULT_ITEM_WEIGHT) acc.at++
+        else acc.above++
+        return acc
+      },
+      { mastered: 0, working: 0, at: 0, above: 0 },
+    )
+  }, [subFamily, currentSub, poolSource])
 
   // The per-guess log and the click markers grow together (one of each per
   // click), so they pair 1:1 in order — guess i was the country of click marker
@@ -730,7 +846,7 @@ export function App() {
           flagCode: countryCodes[lastCity.country],
           flagSrc: cityFlagUrl(lastCity, subMode),
           pop: lastCity.pop,
-          rank: usPopulationRank(cities, lastCityKey),
+          rank: cityPopulationRank(cities, lastCityKey),
           founded: US_CITY_FOUNDED[lastCity.city],
           isCapital: lastCity.stateCapital || lastCity.capital,
         }
@@ -978,6 +1094,7 @@ export function App() {
     setSubmenu(null)
     updateWeightsSub(null)
     closeWeightsItem()
+    setShowMasteryModal(false)
     // Back to the unseeded URL + the idle main-menu screen. Without clearing the
     // seed, the auto-start effect would just replay the same match.
     clearSeedFromUrl()
@@ -1231,8 +1348,55 @@ export function App() {
             // Cut 40% off the gap between the round/score row and the target
             // title below it (12 → 7).
             gap: 7,
+            // The expand icon (below) sits bottom-right inside this pill —
+            // give it some breathing room instead of crowding the score text.
+            ...(showExpandIcon ? { paddingLeft: 30, paddingRight: 30 } : {paddingLeft: 15, paddingRight: 15}),
           }}
         >
+          {/* Only shown once something happened worth browsing — opens the
+              mastery/unlock modal below (ring chart + Mastered/Newly
+              Unlocked lists). The pill above is already position:absolute,
+              so this just anchors to its own corner. */}
+          {showExpandIcon && (
+              <button
+                type="button"
+                className="arcade-btn"
+                aria-label="View mastery details"
+                title="View mastery details"
+                onClick={() => setShowMasteryModal(true)}
+                style={{
+                  ...buttonStyle(COLOR.yellow),
+                  position: 'absolute',
+                  bottom: 6,
+                  right: 6,
+                  width: 28,
+                  height: 28,
+                  padding: 0,
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  pointerEvents: 'auto',
+                }}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              </button>
+            )}
           {timedSecondsLeft !== null && (
             <span
               style={{
@@ -1369,6 +1533,11 @@ export function App() {
                       🎓 {masteredLabel(subFamily, masteredThisMatch)}
                     </span>
                   )}
+                  {unlockedThisMatch > 0 && subFamily !== 'draw' && subFamily !== 'draw-states' && (
+                    <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
+                      🔓 {unlockedLabel(subFamily, unlockedThisMatch)}
+                    </span>
+                  )}
                   {totalCapitalPoints >= MAX_CAPITAL_POINTS && (
                     <span
                       style={{
@@ -1490,6 +1659,11 @@ export function App() {
                     🎓 {masteredLabel(subFamily, masteredThisMatch)}
                   </span>
                 )}
+                {unlockedThisMatch > 0 && subFamily !== 'draw' && subFamily !== 'draw-states' && (
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#1E8E4A' }}>
+                    🔓 {unlockedLabel(subFamily, unlockedThisMatch)}
+                  </span>
+                )}
                 {correctCount >= ROUNDS && (
                   <span
                     style={{
@@ -1529,7 +1703,10 @@ export function App() {
               <button
                 type="button"
                 className="arcade-btn"
-                onClick={() => startGame(undefined, subMode)}
+                onClick={() => {
+                  setShowMasteryModal(false)
+                  startGame(undefined, subMode)
+                }}
                 disabled={!playAgainReady}
                 style={{
                   ...buttonStyle(COLOR.yellow),
@@ -1885,7 +2062,7 @@ export function App() {
                 // list's own 4-status legend (solved/under/exact/over).
                 const donut =
                   subReady && hasMastery
-                    ? poolForSubMode(poolSource, sub).reduce(
+                    ? unlockedPoolForSubMode(poolSource, sub).reduce(
                         (acc, item) => {
                           const weight =
                             poolSource.itemWeights[itemWeightKey(sub.family, item)]
@@ -2509,6 +2686,127 @@ export function App() {
           </div>
             </>
           )}
+        </div>
+      )}
+
+      {showMasteryModal && phase === 'finished' && (
+        <div
+          onClick={() => setShowMasteryModal(false)}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 40,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              ...panelStyle,
+              width: 'min(380px, 92vw)',
+              maxHeight: '80vh',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              padding: 14,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 18,
+                  fontWeight: 800,
+                  letterSpacing: 0.3,
+                }}
+              >
+                <DonutIcon
+                  mastered={modalDonut.mastered}
+                  working={modalDonut.working}
+                  at={modalDonut.at}
+                  above={modalDonut.above}
+                  size={28}
+                />
+                {currentSub.label}
+              </div>
+              <button
+                type="button"
+                className="arcade-btn"
+                onClick={() => setShowMasteryModal(false)}
+                style={{ ...buttonStyle(COLOR.coral, COLOR.cream), padding: '6px 10px', fontSize: 14 }}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {masteredRows.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
+                    🎓 Mastered
+                  </div>
+                  <div style={{ background: COLOR.cream, border: border(2), borderRadius: 12 }}>
+                    {masteredRows.map((row) => (
+                      <div
+                        key={row.key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 12px',
+                          borderBottom: '1px solid rgba(30,32,34,0.15)',
+                        }}
+                      >
+                        {(row.flagCode || row.flagSrc) && (
+                          <FlagIcon code={row.flagCode} src={row.flagSrc} height={18} />
+                        )}
+                        <span style={{ fontSize: 14 }}>{row.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {newlyUnlockedRows.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
+                    🔓 Newly Unlocked
+                  </div>
+                  <div style={{ background: COLOR.cream, border: border(2), borderRadius: 12 }}>
+                    {newlyUnlockedRows.map((row) => (
+                      <div
+                        key={row.key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 12px',
+                          borderBottom: '1px solid rgba(30,32,34,0.15)',
+                        }}
+                      >
+                        {(row.flagCode || row.flagSrc) && (
+                          <FlagIcon code={row.flagCode} src={row.flagSrc} height={18} />
+                        )}
+                        <span style={{ fontSize: 14 }}>{row.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </>

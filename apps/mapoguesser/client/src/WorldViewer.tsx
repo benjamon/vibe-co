@@ -794,10 +794,11 @@ export function WorldViewer() {
     // than snapping back to the default side. "Near" is a plain distance-to-
     // pole-centre check, not a hit-test against the flag's own (possibly
     // already-swapped) bounding box, so it can't flicker between states.
-    // Driven imperatively off the map's own mousemove, not React state, so
-    // it stays smooth at pointer speed. The side-swap and its mirror both
-    // animate too (CSS transitions on flagSlot's left and flagImg's
-    // transform), not just the tilt.
+    // Driven imperatively off the map's own pointermove (mouse only — see
+    // onFlagHoverPointerMove below), not React state, so it stays smooth at
+    // pointer speed. The side-swap and its mirror both animate too (CSS
+    // transitions on flagSlot's left and flagImg's transform), not just the
+    // tilt.
     // Measured to the top of the flag, straight up from the pole's base (the
     // anchor point) — the pin's static, untilted layout, not wherever the
     // flag currently is once rotate()/scaleX() are applied.
@@ -861,17 +862,25 @@ export function WorldViewer() {
     const unregisterFlagHoverTarget = (marker: maplibregl.Marker): void => {
       flagHoverTargets = flagHoverTargets.filter((t) => t.marker !== marker)
     }
-    const onFlagHoverMouseMove = (e: MouseEvent): void => {
+    // Pointer events (not mousemove/mouseleave) so touch input can be told
+    // apart from real mouse movement: mobile browsers fire a synthetic
+    // mousemove/mouseleave-less "compatibility" mouse event after a tap,
+    // which used to leave a flag stuck mid-tilt/flip with no further
+    // mousemove to reset it. pointerType reports 'touch'/'pen' vs 'mouse'
+    // natively, with no such synthetic-event quirk to work around.
+    const onFlagHoverPointerMove = (e: PointerEvent): void => {
+      if (e.pointerType !== 'mouse') return
       const rect = map.getCanvas().getBoundingClientRect()
       hoverMousePx = { x: e.clientX - rect.left, y: e.clientY - rect.top }
       scheduleFlagHoverUpdate()
     }
-    const onFlagHoverMouseLeave = (): void => {
+    const onFlagHoverPointerLeave = (e: PointerEvent): void => {
+      if (e.pointerType !== 'mouse') return
       hoverMousePx = null
       scheduleFlagHoverUpdate()
     }
-    map.getCanvas().addEventListener('mousemove', onFlagHoverMouseMove)
-    map.getCanvas().addEventListener('mouseleave', onFlagHoverMouseLeave)
+    map.getCanvas().addEventListener('pointermove', onFlagHoverPointerMove)
+    map.getCanvas().addEventListener('pointerleave', onFlagHoverPointerLeave)
     map.on('move', scheduleFlagHoverUpdate)
 
     const makeDotMarkerEl = (best: boolean, label?: string): HTMLDivElement => {
@@ -1303,6 +1312,10 @@ export function WorldViewer() {
           element: root,
           anchor: 'bottom-left',
           offset: [-POLE_W / 2, 0],
+          // Fully hide the flag once the globe's curvature occludes it,
+          // rather than maplibre's default faint 0.2 "still visible through
+          // the globe" look.
+          opacityWhenCovered: '0',
         })
           .setLngLat([m.lon, m.lat])
           .addTo(map)
@@ -1344,6 +1357,10 @@ export function WorldViewer() {
             element: root,
             anchor: 'bottom-left',
             offset: [-POLE_W / 2, 0],
+            // Fully hide the flag once the globe's curvature occludes it,
+            // rather than maplibre's default faint 0.2 "still visible
+            // through the globe" look.
+            opacityWhenCovered: '0',
           })
             .setLngLat([lon, lat])
             .addTo(map)
@@ -1996,8 +2013,8 @@ export function WorldViewer() {
       canvas.removeEventListener('pointerup', endDrag)
       canvas.removeEventListener('pointercancel', endDrag)
       map.off('click', onMapClick)
-      map.getCanvas().removeEventListener('mousemove', onFlagHoverMouseMove)
-      map.getCanvas().removeEventListener('mouseleave', onFlagHoverMouseLeave)
+      map.getCanvas().removeEventListener('pointermove', onFlagHoverPointerMove)
+      map.getCanvas().removeEventListener('pointerleave', onFlagHoverPointerLeave)
       map.off('move', scheduleFlagHoverUpdate)
       if (hoverRaf) cancelAnimationFrame(hoverRaf)
       if (revealHoldTimeout !== null) clearTimeout(revealHoldTimeout)
