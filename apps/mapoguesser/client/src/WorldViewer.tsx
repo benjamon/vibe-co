@@ -29,6 +29,7 @@ maplibregl.setWorkerUrl(workerUrl)
 
 // --- Camera ------------------------------------------------------------
 const INITIAL_ZOOM = 1.6
+const BROWSE_ZOOM = 3
 const MIN_ZOOM = 1.0
 const MAX_ZOOM = 9
 const REVEAL_MS = 1200
@@ -1393,9 +1394,17 @@ export function WorldViewer() {
       lon: number,
       onDone: () => void,
       durationMs: number = REVEAL_MS,
+      // Target zoom level, or undefined to keep whatever zoom the camera is
+      // already at (the default — most flyTo calls just pan).
+      zoom?: number,
     ): void => {
       cinematic = true
-      map.flyTo({ center: [lon, lat] as LngLatLike, duration: durationMs, essential: true })
+      map.flyTo({
+        center: [lon, lat] as LngLatLike,
+        duration: durationMs,
+        essential: true,
+        ...(zoom !== undefined ? { zoom } : {}),
+      })
       map.once('moveend', () => {
         cinematic = false
         onDone()
@@ -1914,13 +1923,14 @@ export function WorldViewer() {
         prevBrowseTarget = bt
         if (bt) {
           renderBrowseFlag()
+          const browseZoom = BROWSE_ZOOM
           if (bt.family === 'cities') {
             const city = state.cities[bt.item]
-            if (city) flyTo(city.lat, city.lon, () => {}, BROWSE_FLY_MS)
+            if (city) flyTo(city.lat, city.lon, () => {}, BROWSE_FLY_MS, browseZoom)
           } else {
             const entries = bt.family === 'states' ? stateEntries : countryEntries
             const entry = entries?.find((c) => c.name === bt.item)
-            if (entry) flyTo(entry.centroid.lat, entry.centroid.lon, () => {}, BROWSE_FLY_MS)
+            if (entry) flyTo(entry.centroid.lat, entry.centroid.lon, () => {}, BROWSE_FLY_MS, browseZoom)
           }
         } else {
           if (browseFlagMarker) unregisterFlagHoverTarget(browseFlagMarker)
