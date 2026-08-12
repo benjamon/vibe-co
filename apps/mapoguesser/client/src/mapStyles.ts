@@ -1,11 +1,6 @@
 import type { StyleSpecification } from 'maplibre-gl'
 import type { MapStyleChoice } from './store'
 
-// OpenFreeMap: free, keyless vector tiles built from OpenStreetMap data.
-// https://openfreemap.org — Liberty is its general-purpose style. Matches the
-// stack spiked in apps/osm_globe.
-const OSM_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty'
-
 // Esri World Imagery: free, keyless satellite raster, up to ~z19 — the same
 // source the old Cesium build used. No labels or boundary lines come with it
 // (see the entry-borders overlay below, which supplies borders when this
@@ -339,7 +334,7 @@ export const styleFor = (choice: MapStyleChoice): string | StyleSpecification =>
   // diffing treating it as a no-op and skipping the reload that
   // addGameSourcesAndLayers relies on to re-toggle the fill's visibility.
   if (choice === 'colorful') return { ...DESERT_STYLE, name: 'Colorful' }
-  return OSM_STYLE_URL
+  return DESERT_STYLE
 }
 
 // Every Liberty label/POI/road-shield/highway-name layer id, plus the road
@@ -456,7 +451,6 @@ export const HIDDEN_LAYER_IDS = [
 export const COUNTRY_LINE_LAYERS_BY_STYLE: Partial<Record<MapStyleChoice, string[]>> = {
   // admin_level 2, plus disputed borders and the coastline stroke Liberty
   // draws as a separate layer from the water fill.
-  osm: ['boundary_2', 'boundary_disputed', 'coastline_stroke'],
   toner: ['boundary_country'],
   desert: ['boundary_country'],
   dark: ['boundary_country'],

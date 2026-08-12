@@ -95,7 +95,6 @@ const POINT_TOAST_FADE_MS = 500
 const MAP_STYLE_OPTIONS: { value: MapStyleChoice; label: string }[] = [
   { value: 'satellite', label: '🛰️ Satellite' },
   { value: 'colorful', label: '🎨 Colorful' },
-  { value: 'osm', label: '🗺️ Street' },
   { value: 'toner', label: '🫟 Toner' },
   { value: 'desert', label: '🏜️ Desert' },
   { value: 'dark', label: '🌑 Dark' },
@@ -405,7 +404,15 @@ export function App() {
   const setTimedMode = useGameStore((s) => s.setTimedMode)
   const mapStyle = useGameStore((s) => s.mapStyle)
   const setMapStyle = useGameStore((s) => s.setMapStyle)
-  const mapStyleIndex = MAP_STYLE_OPTIONS.findIndex((opt) => opt.value === mapStyle)
+  // Falls back to the first option (rather than -1, which would crash
+  // MAP_STYLE_OPTIONS[mapStyleIndex].label below) if the stored/default
+  // mapStyle isn't in the current option list — e.g. 'osm' used to be an
+  // entry here and is still store.ts's persisted default, but was dropped
+  // from this carousel.
+  const mapStyleIndex = Math.max(
+    0,
+    MAP_STYLE_OPTIONS.findIndex((opt) => opt.value === mapStyle),
+  )
   const poolSource = useMemo(
     () => ({ cities, states, countries, itemWeights, countryAreas, hideTinyIslands }),
     [cities, states, countries, itemWeights, countryAreas, hideTinyIslands],
