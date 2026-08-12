@@ -581,6 +581,14 @@ export function App() {
   // finished-match score pill) is open. Reset on "Play Again" / "Main Menu"
   // so it doesn't carry over into the next match.
   const [showMasteryModal, setShowMasteryModal] = useState(false)
+  // Closes the modal and clears whatever row it was browsing (see the
+  // Mastered/Newly Unlocked rows' onClick below) so its fly-to flag doesn't
+  // linger on the globe once the modal itself is gone.
+  const closeMasteryModal = () => {
+    setShowMasteryModal(false)
+    setBrowseTarget(null)
+    setBrowseSubMode(null)
+  }
   const [showConfetti, setShowConfetti] = useState(false)
   const [confettiIntensity, setConfettiIntensity] = useState<'small' | 'full'>(
     'full',
@@ -1094,7 +1102,7 @@ export function App() {
     setSubmenu(null)
     updateWeightsSub(null)
     closeWeightsItem()
-    setShowMasteryModal(false)
+    closeMasteryModal()
     // Back to the unseeded URL + the idle main-menu screen. Without clearing the
     // seed, the auto-start effect would just replay the same match.
     clearSeedFromUrl()
@@ -1204,7 +1212,7 @@ export function App() {
         </>
       )}
 
-      {phase !== 'idle' && !partyUI && (
+      {phase !== 'idle' && !partyUI && !showMasteryModal && (
         <div
           style={{
             position: 'absolute',
@@ -1332,7 +1340,7 @@ export function App() {
         </div>
       )}
 
-      {phase !== 'idle' && !partyUI && (
+      {phase !== 'idle' && !partyUI && !showMasteryModal && (
         <div
           style={{
             ...overlayBase,
@@ -1684,7 +1692,7 @@ export function App() {
         </div>
       )}
 
-      {!partyUI && !friendsOpen && (phase === 'idle' || phase === 'finished') && (
+      {!partyUI && !friendsOpen && !showMasteryModal && (phase === 'idle' || phase === 'finished') && (
         <div
           style={{
             position: 'absolute',
@@ -1704,7 +1712,7 @@ export function App() {
                 type="button"
                 className="arcade-btn"
                 onClick={() => {
-                  setShowMasteryModal(false)
+                  closeMasteryModal()
                   startGame(undefined, subMode)
                 }}
                 disabled={!playAgainReady}
@@ -2690,32 +2698,30 @@ export function App() {
       )}
 
       {showMasteryModal && phase === 'finished' && (
+        // No dimming overlay and no full-screen click-catcher — the panel
+        // sits at the exact top-center spot the finished-match score pill
+        // uses (which is hidden while this is open, see showMasteryModal
+        // above), standing in for it. The globe stays fully interactive
+        // everywhere else (panning it must NOT close this), so only the
+        // Close button below does.
         <div
-          onClick={() => setShowMasteryModal(false)}
           style={{
+            ...panelStyle,
             position: 'absolute',
-            inset: 0,
-            background: 'rgba(0,0,0,0.45)',
+            top: 64,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 'min(380px, 92vw)',
+            maxHeight: '33vh',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            flexDirection: 'column',
+            gap: 12,
+            padding: 14,
             zIndex: 40,
             pointerEvents: 'auto',
           }}
         >
           <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              ...panelStyle,
-              width: 'min(380px, 92vw)',
-              maxHeight: '80vh',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-              padding: 14,
-            }}
-          >
-            <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -2745,7 +2751,7 @@ export function App() {
               <button
                 type="button"
                 className="arcade-btn"
-                onClick={() => setShowMasteryModal(false)}
+                onClick={closeMasteryModal}
                 style={{ ...buttonStyle(COLOR.coral, COLOR.cream), padding: '6px 10px', fontSize: 14 }}
               >
                 Close
@@ -2760,21 +2766,33 @@ export function App() {
                   </div>
                   <div style={{ background: COLOR.cream, border: border(2), borderRadius: 12 }}>
                     {masteredRows.map((row) => (
-                      <div
+                      <button
                         key={row.key}
+                        type="button"
+                        onClick={() => {
+                          setBrowseSubMode(currentSub.id)
+                          setBrowseTarget({ family: currentSub.family, item: row.key })
+                        }}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
                           gap: 10,
                           padding: '8px 12px',
+                          width: '100%',
+                          background: 'transparent',
+                          border: 'none',
                           borderBottom: '1px solid rgba(30,32,34,0.15)',
+                          color: COLOR.charcoal,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontFamily: 'inherit',
                         }}
                       >
                         {(row.flagCode || row.flagSrc) && (
                           <FlagIcon code={row.flagCode} src={row.flagSrc} height={18} />
                         )}
                         <span style={{ fontSize: 14 }}>{row.label}</span>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -2786,28 +2804,39 @@ export function App() {
                   </div>
                   <div style={{ background: COLOR.cream, border: border(2), borderRadius: 12 }}>
                     {newlyUnlockedRows.map((row) => (
-                      <div
+                      <button
                         key={row.key}
+                        type="button"
+                        onClick={() => {
+                          setBrowseSubMode(currentSub.id)
+                          setBrowseTarget({ family: currentSub.family, item: row.key })
+                        }}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
                           gap: 10,
                           padding: '8px 12px',
+                          width: '100%',
+                          background: 'transparent',
+                          border: 'none',
                           borderBottom: '1px solid rgba(30,32,34,0.15)',
+                          color: COLOR.charcoal,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontFamily: 'inherit',
                         }}
                       >
                         {(row.flagCode || row.flagSrc) && (
                           <FlagIcon code={row.flagCode} src={row.flagSrc} height={18} />
                         )}
                         <span style={{ fontSize: 14 }}>{row.label}</span>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
               )}
             </div>
           </div>
-        </div>
       )}
     </>
   )
