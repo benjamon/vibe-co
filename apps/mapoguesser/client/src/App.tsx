@@ -628,16 +628,23 @@ export function App() {
   }, [weightsSub, weightsSort, poolSource, cities, countryCodes])
 
   // Mastery/unlock modal content — see the expand icon on the finished-match
-  // HUD pill below. "All the mastered" items in the current sub-mode (not
-  // just this match's), plus whichever items crossed from locked into
-  // unlocked during this match specifically.
+  // HUD pill below. Just the items that crossed into "mastered" *this
+  // match* (paired off guess-by-guess via masteredOnAttempt, same as the
+  // guess boxes' stamp badge below), plus whichever items crossed from
+  // locked into unlocked during this match specifically.
   const masteredRows = useMemo(() => {
     if (subFamily === 'draw' || subFamily === 'draw-states') return []
+    const clickMarkers = markers.filter((m) => m.kind !== 'reveal')
+    const newlyMasteredKeys = new Set(
+      clickMarkers
+        .map((m, i) => (masteredOnAttempt[i] ? m.label : null))
+        .filter((label): label is string => label !== null),
+    )
     return unlockedPoolForSubMode(poolSource, currentSub)
       .map((item) => buildWeightRow(poolSource, cities, countryCodes, currentSub, item))
-      .filter((row) => row.status === 'solved')
+      .filter((row) => newlyMasteredKeys.has(row.key))
       .sort((a, b) => a.label.localeCompare(b.label))
-  }, [subFamily, currentSub, poolSource, cities, countryCodes])
+  }, [subFamily, currentSub, poolSource, cities, countryCodes, markers, masteredOnAttempt])
   const newlyUnlockedRows = useMemo(() => {
     if (subFamily === 'draw' || subFamily === 'draw-states') return []
     return poolForSubMode(poolSource, currentSub)
@@ -758,7 +765,7 @@ export function App() {
     return boxes
   }, [attempts, clickMarkers, countryCodes, subFamily, masteredOnAttempt])
 
-  const [shareLabel, setShareLabel] = useState<'idle' | 'copied'>('idle')
+  const [confirmAbandon, setConfirmAbandon] = useState(false)
 
   useEffect(() => {
     ;(window as any).__gameState = useGameStore.getState()
@@ -1081,26 +1088,6 @@ export function App() {
       ? Math.max(0, Math.ceil((timedDeadline - timedNow) / 1000))
       : null
 
-  const handleShareSeed = async () => {
-    if (!seed) return
-    const url = new URL(window.location.href)
-    url.searchParams.set('seed', seed)
-    const shareUrl = url.toString()
-    try {
-      // Prefer the native share sheet on mobile; fall back to clipboard so
-      // desktop users still get a working "copy link" affordance.
-      if (typeof navigator.share === 'function') {
-        await navigator.share({ title: 'mapoguesser', url: shareUrl })
-      } else {
-        await navigator.clipboard.writeText(shareUrl)
-      }
-      setShareLabel('copied')
-      window.setTimeout(() => setShareLabel('idle'), 2000)
-    } catch {
-      // User cancelled the share sheet, or clipboard is blocked.
-    }
-  }
-
   // Launch a match from a chosen sub-mode (region). Used by every button in the
   // Countries / Cities sub-menus on the start screen.
   const handleStartSubMode = (sub: SubMode) => {
@@ -1290,31 +1277,88 @@ export function App() {
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 8,
+                padding: 8,
+                gap: 16,
               }}
             >
-              {seed && (
-                <button
-                  type="button"
-                  className="arcade-btn"
-                  // Don't close the menu — keep it open so the "Copied!"
-                  // confirmation is visible after a clipboard copy.
-                  onClick={handleShareSeed}
-                  style={menuButtonStyle}
-                >
-                  {shareLabel === 'copied' ? 'Copied!' : 'Share Seed'}
-                </button>
-              )}
               <button
                 type="button"
                 className="arcade-btn"
-                onClick={handleMainMenu}
+                aria-label="Cycle map theme"
+                onClick={() =>
+                  setMapStyle(
+                    MAP_STYLE_OPTIONS[(mapStyleIndex + 1) % MAP_STYLE_OPTIONS.length].value,
+                  )
+                }
+                style={menuButtonStyle}
+              >
+                {MAP_STYLE_OPTIONS[mapStyleIndex].label}
+              </button>
+              <button
+                type="button"
+                className="arcade-btn"
+                onClick={() => setConfirmAbandon(true)}
                 style={{ ...menuButtonStyle, background: COLOR.coral, color: COLOR.cream }}
+              >
+                👋 Abandon
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {confirmAbandon && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(30,32,34,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2000,
+            pointerEvents: 'auto',
+          }}
+          onClick={() => setConfirmAbandon(false)}
+        >
+          <div
+            style={{
+              ...panelStyle,
+              width: 'min(320px, 88vw)',
+              padding: 18,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14,
+              textAlign: 'center',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 16, fontWeight: 800 }}>Abandon this game?</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: COLOR.charcoal }}>
+              Your progress in this match will be lost.
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="arcade-btn"
+                onClick={() => setConfirmAbandon(false)}
+                style={{ ...buttonStyle(COLOR.cream), flex: 1 }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="arcade-btn"
+                onClick={() => {
+                  setConfirmAbandon(false)
+                  handleMainMenu()
+                }}
+                style={{ ...buttonStyle(COLOR.coral, COLOR.cream), flex: 1 }}
               >
                 Abandon
               </button>
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -2789,13 +2833,13 @@ export function App() {
             </div>
 
             <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {masteredRows.length > 0 && (
+              {newlyUnlockedRows.length > 0 && (
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
-                    🎓 Mastered
+                    🔓 Newly Unlocked
                   </div>
                   <div style={{ background: COLOR.cream, border: border(2), borderRadius: 12 }}>
-                    {masteredRows.map((row) => (
+                    {newlyUnlockedRows.map((row) => (
                       <button
                         key={row.key}
                         type="button"
@@ -2827,13 +2871,13 @@ export function App() {
                   </div>
                 </div>
               )}
-              {newlyUnlockedRows.length > 0 && (
+              {masteredRows.length > 0 && (
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
-                    🔓 Newly Unlocked
+                    🎓 Mastered
                   </div>
                   <div style={{ background: COLOR.cream, border: border(2), borderRadius: 12 }}>
-                    {newlyUnlockedRows.map((row) => (
+                    {masteredRows.map((row) => (
                       <button
                         key={row.key}
                         type="button"

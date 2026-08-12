@@ -350,13 +350,19 @@ export function WorldViewer() {
       // which is what actually re-renders this on every mode change — this
       // initial render just covers the moment the layer is first created).
       // Visibility, unlike the data, is keyed on mapStyle alone: always on
-      // for 'colorful', always off otherwise. Sits directly under
-      // boundary_country (when that layer exists — every style but
-      // 'colorful' hides this anyway) so the country border stays legible on
-      // top of the fill.
+      // for 'colorful', always off otherwise. Sits directly under the base
+      // style's 'water' layer (when it exists — every style but 'colorful'
+      // hides this anyway) so lakes/rivers stay visible on top of the fill
+      // instead of being painted over by it; falls back to boundary_country
+      // (then to appending on top) on a style with no 'water' layer of its
+      // own, e.g. satellite's raster tiles.
       map.addSource(COLORFUL_FILL_SRC, { type: 'geojson', data: emptyFC() })
       const colorfulVisible = useGameStore.getState().mapStyle === 'colorful' ? 'visible' : 'none'
-      const beforeCountryLine = map.getLayer('boundary_country') ? 'boundary_country' : undefined
+      const beforeWater = map.getLayer('water')
+        ? 'water'
+        : map.getLayer('boundary_country')
+          ? 'boundary_country'
+          : undefined
       map.addLayer(
         {
           id: 'colorful-fill',
@@ -365,7 +371,7 @@ export function WorldViewer() {
           layout: { visibility: colorfulVisible },
           paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.8 },
         },
-        beforeCountryLine,
+        beforeWater,
       )
       map.addLayer(
         {
@@ -375,7 +381,7 @@ export function WorldViewer() {
           layout: { visibility: colorfulVisible },
           paint: { 'line-color': 'rgba(255, 255, 255, 0.7)', 'line-width': 1 },
         },
-        beforeCountryLine,
+        beforeWater,
       )
       renderColorfulFill(
         wantStateLines(useGameStore.getState().browseSubModeId ?? useGameStore.getState().subMode),
