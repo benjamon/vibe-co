@@ -1,12 +1,11 @@
 import type { Marker } from './store'
-import { usStateFlagUrl } from './usStateFlags'
-import { US_STATE_FACTS, usStatePopulationRank } from './usStateFacts'
+import { stateFlagUrl, stateFacts, statePopulationRankFor } from './store'
 import { SlideUpCard, FactsGrid, FactRow } from './SlideUpCard'
 import { border } from './theme'
 
-// The US States mode's after-guess info card: flag + population/capital/
-// statehood facts for whichever state a round just resolved on (a correct
-// guess, or the miss-twice reveal).
+// The States family's after-guess info card (US States, Brazil): flag +
+// population/capital facts (+ statehood year, US only) for whichever state
+// a round just resolved on (a correct guess, or the miss-twice reveal).
 export function StateFactsCard({
   marker,
   seed,
@@ -22,13 +21,13 @@ export function StateFactsCard({
       data={marker}
       seed={seed}
       renderContent={(m) => {
-        const facts = US_STATE_FACTS[m.label]
-        const rank = usStatePopulationRank(m.label)
+        const facts = stateFacts(m.label)
+        const rank = statePopulationRankFor(m.label)
         return (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
               <img
-                src={usStateFlagUrl(m.label)}
+                src={stateFlagUrl(m.label)}
                 alt=""
                 width={42}
                 height={31}
@@ -57,7 +56,9 @@ export function StateFactsCard({
                   }
                 />
                 <FactRow label="Capital" value={<>{facts.capital} 🏛️</>} />
-                <FactRow label="Statehood" value={facts.admitted} />
+                {facts.admitted !== undefined && (
+                  <FactRow label="Statehood" value={facts.admitted} />
+                )}
               </FactsGrid>
             ) : (
               <div style={{ fontSize: 13, fontWeight: 600 }}>No facts available.</div>

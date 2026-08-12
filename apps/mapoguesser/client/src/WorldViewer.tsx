@@ -15,9 +15,11 @@ import {
   type Marker,
   type CityInfo,
   type MapStyleChoice,
+  type BrowseTarget,
+  type BrowseSetEntry,
+  stateFlagUrl,
 } from './store'
 import { resolveSubMode } from './gameModes'
-import { usStateFlagUrl } from './usStateFlags'
 import {
   styleFor,
   HIDDEN_LAYER_IDS,
@@ -169,9 +171,10 @@ const COUNTRY_POLYGONS_URL =
 // country's capital, validated inside).
 const POPULATED_PLACES_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_populated_places_simple.geojson'
-// US state polygons — CPU point-in-polygon hit-testing for the US States
-// mode. Filtered to `type === 'State'`, which drops DC and every territory,
-// leaving exactly the 50 states.
+// State/province polygons — CPU point-in-polygon hit-testing for the States
+// family (US States, Brazil). Filtered to `type_en === 'State'` for the US
+// and Brazil, which drops DC/Distrito Federal and every territory, leaving
+// exactly the 50 US states + 26 Brazilian states.
 const STATE_POLYGONS_URL =
   'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_1_states_provinces.geojson'
 
@@ -270,6 +273,21 @@ export function WorldViewer() {
       return sm.cities?.usStateLines === true || sm.family === 'states'
     }
 
+    // Which of `stateEntries` belong to the active states sub-mode's own
+    // country (US and Brazil states are both permanently loaded into
+    // `stateEntries` as one dataset — see STATE_POLYGONS_URL above, and
+    // gameModes.ts's STATE_SUBMODES, where each sub-mode's `pool` lists just
+    // its own country's state names). Null means "no filtering" — not a
+    // states sub-mode, or (hypothetically) one using `pool: 'all'`, which
+    // none currently do. Used to keep the Colorful style's mosaic and the
+    // state border-line layer scoped to whichever country is actually being
+    // played, rather than showing/coloring both at once.
+    const activeStatePool = (subModeId: string): Set<string> | null => {
+      const sm = resolveSubMode(subModeId)
+      if (sm.family !== 'states' || !Array.isArray(sm.pool)) return null
+      return new Set(sm.pool)
+    }
+
     // Country/state border visibility, routed to whichever layer actually
     // carries borders for the active basemap: most vector styles ship their
     // own country boundary lines (id scheme varies per style — see
@@ -286,7 +304,10 @@ export function WorldViewer() {
     // State lines always use our own entry-borders-state overlay, on every
     // basemap — unlike country lines, no vector style's admin_level-4
     // boundary layer carries a country code to filter on, and the States
-    // game is US-only (stateEntries is hard-filtered to adm0_a3 === 'USA').
+    // game only ever plays one country's states at a time (see
+    // activeStatePool — renderEntryBorders filters `stateEntries` down to
+    // just the active sub-mode's country before this layer's source data is
+    // built, even though the full US+Brazil dataset stays loaded).
     // A `within`-filter mask against a US polygon was tried instead of this,
     // clipping Liberty's/Toner's native worldwide layer down to just the US,
     // but tile geometry gets simplified more aggressively than our reference
@@ -509,7 +530,17 @@ export function WorldViewer() {
         }
       }
       addEntries(countryEntries, 'country')
-      addEntries(stateEntries, 'state')
+      // stateEntries holds every loaded country's states at once (US +
+      // Brazil) — scope the line geometry down to whichever one the active
+      // sub-mode is actually playing, so the other country's borders don't
+      // ride along baked into the source (the line layer's visibility is a
+      // single on/off switch, not per-entry — see showStateBorders).
+      const st = useGameStore.getState()
+      const activePool = activeStatePool(st.browseSubModeId ?? st.subMode)
+      addEntries(
+        activePool ? stateEntries?.filter((e) => activePool.has(e.name)) ?? null : stateEntries,
+        'state',
+      )
       setSourceData(ENTRY_BORDERS_SRC, { type: 'FeatureCollection', features })
     }
 
@@ -522,12 +553,19 @@ export function WorldViewer() {
     // keyed by name over an alphabetically-sorted copy so they're stable
     // across reloads/mode-switches instead of depending on fetch order.
     // Which entry list to use is the whole "split into two behaviors" of
-    // this style — US states while state lines are shown (stateEntries,
-    // hard-filtered to just the US — see its fetch below), every country
-    // otherwise (countryEntries) — driven by showStateBorders/
-    // syncColorfulFill so it flips in lockstep with the actual line layer.
+    // this style — the active sub-mode's own country's states while state
+    // lines are shown (stateEntries, scoped via activeStatePool since it
+    // holds every loaded country's states at once — see its fetch below),
+    // every country otherwise (countryEntries) — driven by
+    // showStateBorders/syncColorfulFill so it flips in lockstep with the
+    // actual line layer.
     const renderColorfulFill = (showStates: boolean): void => {
-      const entries = showStates ? stateEntries : countryEntries
+      let entries = showStates ? stateEntries : countryEntries
+      if (showStates && entries) {
+        const st = useGameStore.getState()
+        const activePool = activeStatePool(st.browseSubModeId ?? st.subMode)
+        if (activePool) entries = entries.filter((e) => activePool.has(e.name))
+      }
       if (!entries) return
       const sortedNames = [...entries].map((e) => e.name).sort()
       const colorByName = new Map(
@@ -602,7 +640,11 @@ export function WorldViewer() {
     map.on('style.load', applyStyleExtras)
 
     // --- Flag-pin sprite composition (canvas, no maplibre dependency) ------
-    type PinKind = Marker['kind'] | 'stats'
+    // 'mastered'/'unlocked' are the mastery modal's "show them all" flag set
+    // (see renderBrowseSet below) — green/grey poles, reusing the same
+    // greens/greys already established for 'correct'/'wrong' below rather
+    // than introducing new one-off shades.
+    type PinKind = Marker['kind'] | 'stats' | 'mastered' | 'unlocked'
     const PIN_BG: Record<PinKind, string> = {
       correct: '#3fb84e',
       wrong: '#9aa0a6',
@@ -610,6 +652,8 @@ export function WorldViewer() {
       stats: '#3d7bdb',
       guess: '#9aa0a6',
       'guess-best': '#ffd93b',
+      mastered: '#3fb84e',
+      unlocked: '#9aa0a6',
     }
     const POLE_W = 6
     const POLE_H = 48
@@ -1157,8 +1201,14 @@ export function WorldViewer() {
           for (const feature of geo.features ?? []) {
             const props = feature.properties ?? {}
             const adm0 = props.adm0_a3 ?? props.ADM0_A3
-            const type = props.type ?? props.TYPE
-            if (adm0 !== 'USA' || type !== 'State') continue
+            // `type_en` (English-language type) rather than `type` — for the
+            // US it's already 'State' either way, but Brazil's `type` is the
+            // Portuguese 'Estado'. Filtering on `type_en` uniformly excludes
+            // each country's federal-district-equivalent (DC / Distrito
+            // Federal) the same way, for parity with the original "drops
+            // DC, leaving exactly the 50 states" behavior.
+            const typeEn = props.type_en ?? props.TYPE_EN
+            if ((adm0 !== 'USA' && adm0 !== 'BRA') || typeEn !== 'State') continue
             const name =
               typeof props.name === 'string'
                 ? props.name
@@ -1297,7 +1347,7 @@ export function WorldViewer() {
       const imageUrl =
         m.flagUrl ??
         (resolveSubMode(st.subMode).family === 'states'
-          ? usStateFlagUrl(m.label)
+          ? stateFlagUrl(m.label)
           : (() => {
               const code = m.code ?? st.countryCodes[m.label]
               return code ? flagCdnUrl(code) : undefined
@@ -1333,6 +1383,57 @@ export function WorldViewer() {
       gameMarkers = []
     }
 
+    // Shared by renderBrowseFlag (one flag) and renderBrowseSet (the mastery
+    // modal's whole flag set): where a {family,item} lives and what to draw
+    // on its flag, resolved from whichever dataset the family uses.
+    const resolveBrowseLocation = (
+      st: ReturnType<typeof useGameStore.getState>,
+      bt: { family: BrowseTarget['family']; item: string },
+    ): { lat: number; lon: number; label: string; code?: string; flagUrl?: string } | null => {
+      if (bt.family === 'cities') {
+        const city = st.cities[bt.item]
+        if (!city) return null
+        return { lat: city.lat, lon: city.lon, label: city.city, code: st.countryCodes[city.country] }
+      }
+      const entries = bt.family === 'states' ? stateEntries : countryEntries
+      const entry = entries?.find((c) => c.name === bt.item)
+      if (!entry) return null
+      const pt = flagPointFor(entry)
+      return bt.family === 'states'
+        ? { lat: pt.lat, lon: pt.lon, label: bt.item, flagUrl: stateFlagUrl(bt.item) }
+        : { lat: pt.lat, lon: pt.lon, label: bt.item, code: st.countryCodes[bt.item] }
+    }
+
+    // Builds and drops one flag pin, resolving `isStale` right before adding
+    // it to the map so a superseded render (browseGen/browseSetGen bumped
+    // again mid-flight) is silently dropped instead of leaving a stray flag.
+    const placeFlag = (
+      isStale: () => boolean,
+      lat: number,
+      lon: number,
+      label: string,
+      code: string | undefined,
+      flagUrl: string | undefined,
+      kind: PinKind,
+    ): Promise<maplibregl.Marker | null> =>
+      buildFlagPin(flagUrl ?? (code ? flagCdnUrl(code) : undefined), kind).then((images) => {
+        if (isStale() || destroyed || !images) return null
+        const { root, pinWrap, flagSlot, flagImg, labelEl } = makeFlagMarkerEl(images, label)
+        const mk = new maplibregl.Marker({
+          element: root,
+          anchor: 'bottom-left',
+          offset: [-POLE_W / 2, 0],
+          // Fully hide the flag once the globe's curvature occludes it,
+          // rather than maplibre's default faint 0.2 "still visible through
+          // the globe" look.
+          opacityWhenCovered: '0',
+        })
+          .setLngLat([lon, lat])
+          .addTo(map)
+        registerFlagHoverTarget(mk, pinWrap, flagSlot, flagImg, labelEl)
+        return mk
+      })
+
     let browseGen = 0
     const renderBrowseFlag = (): void => {
       browseGen++
@@ -1343,46 +1444,49 @@ export function WorldViewer() {
       const st = useGameStore.getState()
       const bt = st.browseTarget
       if (!bt) return
+      const loc = resolveBrowseLocation(st, bt)
+      if (!loc) return
+      placeFlag(() => gen !== browseGen, loc.lat, loc.lon, loc.label, loc.code, loc.flagUrl, 'stats').then(
+        (mk) => {
+          browseFlagMarker = mk
+        },
+      )
+    }
 
-      const place = (
-        lat: number,
-        lon: number,
-        label: string,
-        code: string | undefined,
-        flagUrl: string | undefined,
-      ) => {
-        buildFlagPin(flagUrl ?? (code ? flagCdnUrl(code) : undefined), 'stats').then((images) => {
-          if (gen !== browseGen || destroyed || !images) return
-          const { root, pinWrap, flagSlot, flagImg, labelEl } = makeFlagMarkerEl(images, label)
-          browseFlagMarker = new maplibregl.Marker({
-            element: root,
-            anchor: 'bottom-left',
-            offset: [-POLE_W / 2, 0],
-            // Fully hide the flag once the globe's curvature occludes it,
-            // rather than maplibre's default faint 0.2 "still visible
-            // through the globe" look.
-            opacityWhenCovered: '0',
-          })
-            .setLngLat([lon, lat])
-            .addTo(map)
-          registerFlagHoverTarget(browseFlagMarker, pinWrap, flagSlot, flagImg, labelEl)
+    // The mastery/unlock modal's full flag set — every mastered (green) +
+    // newly-unlocked (grey) item at once, replacing whatever renderBrowseSet
+    // last drew (or clearing to nothing once the modal closes and
+    // state.browseSet goes back to null).
+    let browseSetMarkers: maplibregl.Marker[] = []
+    let browseSetGen = 0
+    const clearBrowseSet = (): void => {
+      for (const mk of browseSetMarkers) {
+        unregisterFlagHoverTarget(mk)
+        mk.remove()
+      }
+      browseSetMarkers = []
+    }
+    const renderBrowseSet = (): void => {
+      browseSetGen++
+      const gen = browseSetGen
+      clearBrowseSet()
+      const st = useGameStore.getState()
+      const set = st.browseSet
+      if (!set) return
+      for (const entry of set) {
+        const loc = resolveBrowseLocation(st, entry)
+        if (!loc) continue
+        placeFlag(
+          () => gen !== browseSetGen,
+          loc.lat,
+          loc.lon,
+          loc.label,
+          loc.code,
+          loc.flagUrl,
+          entry.kind,
+        ).then((mk) => {
+          if (mk) browseSetMarkers.push(mk)
         })
-      }
-
-      if (bt.family === 'cities') {
-        const city = st.cities[bt.item]
-        if (!city) return
-        place(city.lat, city.lon, city.city, st.countryCodes[city.country], undefined)
-        return
-      }
-      const entries = bt.family === 'states' ? stateEntries : countryEntries
-      const entry = entries?.find((c) => c.name === bt.item)
-      if (!entry) return
-      const pt = flagPointFor(entry)
-      if (bt.family === 'states') {
-        place(pt.lat, pt.lon, bt.item, undefined, usStateFlagUrl(bt.item))
-      } else {
-        place(pt.lat, pt.lon, bt.item, st.countryCodes[bt.item], undefined)
       }
     }
 
@@ -1800,6 +1904,7 @@ export function WorldViewer() {
     let prevSubMode = useGameStore.getState().subMode
     let prevBrowseSubModeId = useGameStore.getState().browseSubModeId
     let prevBrowseTarget = useGameStore.getState().browseTarget
+    let prevBrowseSet = useGameStore.getState().browseSet
     let prevMode = useGameStore.getState().mode
     let prevPhase = useGameStore.getState().phase
     let prevMapStyle = useGameStore.getState().mapStyle
@@ -1847,6 +1952,11 @@ export function WorldViewer() {
         const want = wantStateLines(state.browseSubModeId ?? state.subMode)
         showStateBorders(want)
         tinyDots.show(resolveSubMode(state.browseSubModeId ?? state.subMode).family === 'countries')
+        // stateEntries holds every loaded country's states — rebuild the
+        // border geometry (activeStatePool-filtered) so switching between,
+        // say, US States and Brazil shows the newly-active country's lines
+        // instead of whichever one last rebuilt this source.
+        if (map.getSource(ENTRY_BORDERS_SRC)) renderEntryBorders()
       }
 
       if (state.mapStyle !== prevMapStyle) {
@@ -1937,6 +2047,11 @@ export function WorldViewer() {
           browseFlagMarker?.remove()
           browseFlagMarker = null
         }
+      }
+
+      if (state.browseSet !== prevBrowseSet) {
+        prevBrowseSet = state.browseSet
+        renderBrowseSet()
       }
 
       if (state.mode === 'draw' && state.seed !== prevDrawMatchSeed) {

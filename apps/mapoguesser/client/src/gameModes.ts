@@ -156,6 +156,16 @@ const COUNTRY_SUBMODES: SubMode[] = [
 const CITY_SUBMODES: SubMode[] = [
   { id: 'world-capitals', label: 'World Capitals', icon: '📍', blurb: 'Drop a pin on the capital — closest wins', family: 'cities', cities: { capitalsOnly: true } },
   {
+    id: 'megacities',
+    label: 'Megacities',
+    icon: '🌃',
+    blurb: 'The 100 largest cities on Earth',
+    family: 'cities',
+    // No `countries` filter (= world) and no capitalsOnly/minPopulation —
+    // just the top 100 loaded cities by population, wherever they are.
+    cities: { limit: 100 },
+  },
+  {
     id: 'cities-north-america',
     label: 'United States',
     icon: '🗽',
@@ -209,10 +219,13 @@ const CITY_SUBMODES: SubMode[] = [
   },
 ]
 
-// ---- STATES: locate the US state on the globe. -----------------------------
+// ---- STATES: locate the state/province on the globe. -----------------------
 // Same behaviour as the countries family (classic, 9 rounds, hit/miss) — just
-// a different polygon dataset (US state borders instead of country borders)
+// a different polygon dataset (admin-1 borders instead of country borders)
 // wired up in WorldViewer.tsx / store.ts wherever `family === 'states'`.
+// `s.states` is a union across every loaded country's admin-1 divisions, so
+// (like the countries family's regional pools) each sub-mode below lists its
+// own country's state names explicitly rather than using `pool: 'all'`.
 const STATE_SUBMODES: SubMode[] = [
   {
     id: 'us-states',
@@ -220,7 +233,33 @@ const STATE_SUBMODES: SubMode[] = [
     icon: '🗺️',
     blurb: 'Every US state',
     family: 'states',
-    pool: 'all',
+    pool: [
+      'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
+      'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
+      'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana',
+      'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota',
+      'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
+      'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
+      'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon',
+      'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota',
+      'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
+      'West Virginia', 'Wisconsin', 'Wyoming',
+    ],
+  },
+  {
+    id: 'brazil-states',
+    label: 'Brazil',
+    icon: '🦜',
+    blurb: 'Every Brazilian state',
+    family: 'states',
+    pool: [
+      'Acre', 'Alagoas', 'Amapá', 'Amazonas', 'Bahia', 'Ceará',
+      'Espírito Santo', 'Goiás', 'Maranhão', 'Mato Grosso',
+      'Mato Grosso do Sul', 'Minas Gerais', 'Paraná', 'Paraíba', 'Pará',
+      'Pernambuco', 'Piauí', 'Rio Grande do Norte', 'Rio Grande do Sul',
+      'Rio de Janeiro', 'Rondônia', 'Roraima', 'Santa Catarina', 'Sergipe',
+      'São Paulo', 'Tocantins',
+    ],
   },
 ]
 

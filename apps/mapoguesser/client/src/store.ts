@@ -20,6 +20,10 @@ import {
 } from './gameModes'
 import { usStateFlagUrl } from './usStateFlags'
 import { usStatePopulation } from './usStatePopulations'
+import { US_STATE_FACTS, usStatePopulationRank } from './usStateFacts'
+import { brazilStateFlagUrl } from './brazilStateFlags'
+import { brazilStatePopulation } from './brazilStatePopulations'
+import { BRAZIL_STATE_FACTS, brazilStatePopulationRank } from './brazilStateFacts'
 
 export type AttemptResult = 'pending' | 'correct' | 'wrong'
 export type GamePhase = 'idle' | 'playing' | 'finished'
@@ -217,6 +221,15 @@ export type ItemWeights = Record<string, WeightEntry>
 export interface BrowseTarget {
   family: ModeFamily
   item: string
+}
+
+// One flag in the mastery/unlock modal's "show them all" set (see
+// GameState.browseSet) — same identity as BrowseTarget, plus which colour
+// its flag pole should render in (WorldViewer's PIN_BG).
+export interface BrowseSetEntry {
+  family: ModeFamily
+  item: string
+  kind: 'mastered' | 'unlocked'
 }
 
 export const DEFAULT_ITEM_WEIGHT = 1
@@ -587,6 +600,19 @@ interface GameState {
   // place of the list. null = nothing being browsed.
   browseTarget: BrowseTarget | null
   setBrowseTarget: (t: BrowseTarget | null) => void
+
+  // The full flag set shown by the mastery/unlock modal (see App.tsx's
+  // showMasteryModal) — every mastered + newly-unlocked item at once, each
+  // flagged green or grey (BrowseSetEntry.kind) — set when the modal opens,
+  // cleared (null) when it closes. Independent of `browseTarget` (the
+  // item-list panel's single click-through browse flag).
+  browseSet: BrowseSetEntry[] | null
+  setBrowseSet: (set: BrowseSetEntry[] | null) => void
+
+  // Wipes every marker currently on the globe (guess pins, reveal pins, …)
+  // without touching anything else — used by the mastery modal to clear the
+  // just-finished match's clutter before showing its own flag set.
+  clearMarkers: () => void
 
   // The sub-mode id of whichever item-list panel is currently open (see
   // App.tsx's weightsSub), or null when it's closed. While open, this
@@ -1045,16 +1071,28 @@ export const poolForSubMode = (s: PoolSource, sub: SubMode): string[] => {
     for (const k of stateCapitalKeys) keys.add(k)
     return [...keys].sort((a, b) => s.cities[b].pop - s.cities[a].pop || (a < b ? -1 : 1))
   }
-  // Most-populous-first so the top-N slice used by unlockedPoolForSubMode is
-  // literally "the top N by population". Natural Earth's admin-1 dataset
-  // carries no population field, so states are ranked from the static
-  // usStatePopulations table instead.
+  // `s.states` is a union across every loaded country's admin-1 divisions
+  // (US + Brazil), same idea as `s.countries` unioning every country
+  // regardless of which regional countries sub-mode is active — so, exactly
+  // like the countries branch below, `sub.pool` picks out just this
+  // sub-mode's own country's states. Most-populous-first so the top-N slice
+  // used by unlockedPoolForSubMode is literally "the top N by population".
+  // Natural Earth's admin-1 dataset carries no population field, so states
+  // are ranked from the static per-country population tables instead (see
+  // statePopulationFor).
   if (sub.family === 'states') {
-    return s.states
+    const list =
+      sub.pool === 'all'
+        ? s.states
+        : (() => {
+            const playable = new Set(s.states)
+            return (sub.pool as string[]).filter((n) => playable.has(n))
+          })()
+    return list
       .slice()
       .sort(
         (a, b) =>
-          usStatePopulation(b) - usStatePopulation(a) || (a < b ? -1 : 1),
+          statePopulationFor(b) - statePopulationFor(a) || (a < b ? -1 : 1),
       )
   }
   if (sub.family === 'draw-states') {
@@ -1231,6 +1269,32 @@ export const countryPopulationRank = (
   return rank === -1 ? null : rank + 1
 }
 
+// States family dispatchers: state names never collide between the US and
+// Brazil tables, so trying the Brazil one first and falling back to the US
+// one unambiguously picks the right country's data for any state name,
+// without needing a separate "which country is this" concept threaded
+// through every caller (item-list rows, reveal cards, marker flags, …).
+export const statePopulationFor = (name: string): number =>
+  brazilStatePopulation(name) || usStatePopulation(name)
+
+export const stateFlagUrl = (name: string): string =>
+  brazilStateFlagUrl(name) ?? usStateFlagUrl(name)
+
+// Unified shape for both countries' facts tables — `admitted` (US statehood
+// year) is US-only; Brazilian state formation history doesn't map onto a
+// single clean date, so it's simply absent for Brazil entries. Callers
+// should render the "Statehood" row only when `admitted !== undefined`.
+export interface StateFacts {
+  population: number
+  capital: string
+  admitted?: number
+}
+export const stateFacts = (name: string): StateFacts | undefined =>
+  BRAZIL_STATE_FACTS[name] ?? US_STATE_FACTS[name]
+
+export const statePopulationRankFor = (name: string): number | null =>
+  brazilStatePopulationRank(name) ?? usStatePopulationRank(name)
+
 // The country served for a given position in the pre-drawn sequence, or null
 // once the sequence is exhausted (game over).
 const targetAt = (targets: string[], index: number): string | null =>
@@ -1383,6 +1447,10 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   browseTarget: null,
   setBrowseTarget: (t) => set({ browseTarget: t }),
+
+  browseSet: null,
+  setBrowseSet: (browseSet) => set({ browseSet }),
+  clearMarkers: () => set({ markers: [] }),
 
   browseSubModeId: null,
   setBrowseSubMode: (id) => set({ browseSubModeId: id }),

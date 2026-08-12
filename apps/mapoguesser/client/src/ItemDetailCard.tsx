@@ -4,10 +4,11 @@ import {
   cityPopulationRank,
   cityRevealName,
   cityFlagUrl,
+  stateFlagUrl,
+  stateFacts,
+  statePopulationRankFor,
 } from './store'
 import type { ModeFamily } from './gameModes'
-import { usStateFlagUrl } from './usStateFlags'
-import { US_STATE_FACTS, usStatePopulationRank } from './usStateFacts'
 import { US_CITY_FOUNDED } from './usCityFacts'
 import { FactsGrid, FactRow } from './SlideUpCard'
 import { COLOR, border, buttonStyle } from './theme'
@@ -46,9 +47,9 @@ export function ItemDetailCard({
   let body: React.ReactNode
 
   if (family === 'states') {
-    flagSrc = usStateFlagUrl(item)
-    const facts = US_STATE_FACTS[item]
-    const rank = usStatePopulationRank(item)
+    flagSrc = stateFlagUrl(item)
+    const facts = stateFacts(item)
+    const rank = statePopulationRankFor(item)
     body = facts ? (
       <FactsGrid>
         <FactRow
@@ -61,7 +62,9 @@ export function ItemDetailCard({
           }
         />
         <FactRow label="Capital" value={<>{facts.capital} 🏛️</>} />
-        <FactRow label="Statehood" value={facts.admitted} />
+        {facts.admitted !== undefined && (
+          <FactRow label="Statehood" value={facts.admitted} />
+        )}
       </FactsGrid>
     ) : (
       <div style={{ fontSize: 13, fontWeight: 600 }}>No facts available.</div>

@@ -32,6 +32,8 @@ import {
   type PoolSource,
   type ItemWeights,
   type CityInfo,
+  type BrowseSetEntry,
+  stateFlagUrl,
 } from './store'
 import { US_CITY_FOUNDED } from './usCityFacts'
 import { usStateFlagUrl } from './usStateFlags'
@@ -275,7 +277,7 @@ const buildWeightRow = (
         : undefined
   const flagSrc =
     sub.family === 'states'
-      ? usStateFlagUrl(item)
+      ? stateFlagUrl(item)
       : city
         ? cityFlagUrl(city, sub.id)
         : undefined
@@ -565,6 +567,8 @@ export function App() {
   const [weightsItem, setWeightsItem] = useState<string | null>(null)
   const setBrowseTarget = useGameStore((s) => s.setBrowseTarget)
   const setBrowseSubMode = useGameStore((s) => s.setBrowseSubMode)
+  const setBrowseSet = useGameStore((s) => s.setBrowseSet)
+  const clearMarkers = useGameStore((s) => s.clearMarkers)
   // Close the item-list panel's detail view (if any) and clear its flag pin.
   const closeWeightsItem = () => {
     setWeightsItem(null)
@@ -588,6 +592,7 @@ export function App() {
     setShowMasteryModal(false)
     setBrowseTarget(null)
     setBrowseSubMode(null)
+    setBrowseSet(null)
   }
   const [showConfetti, setShowConfetti] = useState(false)
   const [confettiIntensity, setConfettiIntensity] = useState<'small' | 'full'>(
@@ -669,6 +674,31 @@ export function App() {
     )
   }, [subFamily, currentSub, poolSource])
 
+  // Mastery modal open: wipe the just-finished match's guess/reveal pins and
+  // replace them with a flag for every item the modal is listing (green =
+  // mastered, grey = newly unlocked) — see WorldViewer's renderBrowseSet.
+  // The cleanup clears the set again on close (or if the rows themselves
+  // change while open, though in practice they're stable once the match has
+  // finished — nothing further updates itemWeights until a new match starts).
+  useEffect(() => {
+    if (!showMasteryModal) return
+    clearMarkers()
+    const set: BrowseSetEntry[] = [
+      ...masteredRows.map((row) => ({
+        family: currentSub.family,
+        item: row.key,
+        kind: 'mastered' as const,
+      })),
+      ...newlyUnlockedRows.map((row) => ({
+        family: currentSub.family,
+        item: row.key,
+        kind: 'unlocked' as const,
+      })),
+    ]
+    setBrowseSet(set)
+    return () => setBrowseSet(null)
+  }, [showMasteryModal, masteredRows, newlyUnlockedRows, currentSub, setBrowseSet, clearMarkers])
+
   // The per-guess log and the click markers grow together (one of each per
   // click), so they pair 1:1 in order — guess i was the country of click marker
   // i. Reveal markers are interleaved separately and filtered out. We want the
@@ -718,7 +748,7 @@ export function App() {
         boxes.push({
           result: attempts[i],
           code: label && !isStates ? countryCodes[label] : undefined,
-          flagSrc: label && isStates ? usStateFlagUrl(label) : undefined,
+          flagSrc: label && isStates ? stateFlagUrl(label) : undefined,
           justMastered: masteredOnAttempt[i],
         })
       } else {
@@ -1635,7 +1665,7 @@ export function App() {
                 <span style={{ fontWeight: 700 }}>Was:</span>
                 <FlagIcon
                   code={subFamily === 'states' ? undefined : countryCodes[revealTarget]}
-                  src={subFamily === 'states' ? usStateFlagUrl(revealTarget) : undefined}
+                  src={subFamily === 'states' ? stateFlagUrl(revealTarget) : undefined}
                   height={22}
                 />
                 <span>{revealTarget}</span>
@@ -1645,7 +1675,7 @@ export function App() {
                 <span style={{ fontWeight: 700 }}>Find:</span>
                 <FlagIcon
                   code={subFamily === 'states' ? undefined : countryCodes[target]}
-                  src={subFamily === 'states' ? usStateFlagUrl(target) : undefined}
+                  src={subFamily === 'states' ? stateFlagUrl(target) : undefined}
                   height={22}
                 />
                 <span>{target}</span>
@@ -2227,7 +2257,7 @@ export function App() {
               >
                 🎨 Border Artist
               </button>
-              <button
+              {/* <button
                 type="button"
                 className="arcade-btn"
                 onClick={() => {
@@ -2238,7 +2268,7 @@ export function App() {
                 style={{ ...buttonStyle(COLOR.yellow), minWidth: 220, whiteSpace: 'nowrap' }}
               >
                 👥 Play With Friends
-              </button>
+              </button> */}
               <button
                 type="button"
                 className="arcade-btn"
@@ -2356,7 +2386,7 @@ export function App() {
           <span style={{ fontWeight: 700 }}>Guessed:</span>
           <FlagIcon
             code={subFamily === 'states' ? undefined : countryCodes[guess]}
-            src={subFamily === 'states' ? usStateFlagUrl(guess) : undefined}
+            src={subFamily === 'states' ? stateFlagUrl(guess) : undefined}
             height={18}
           />
           <span>{guess}</span>
