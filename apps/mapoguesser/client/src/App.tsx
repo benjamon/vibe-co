@@ -627,24 +627,42 @@ export function App() {
     return rows
   }, [weightsSub, weightsSort, poolSource, cities, countryCodes])
 
+  // Snapshot of which items crossed into "mastered" this match (paired off
+  // guess-by-guess via masteredOnAttempt, same as the guess boxes' stamp
+  // badge below), captured once when the match finishes rather than derived
+  // live from `markers` — the mastery modal's open effect (below) clears
+  // `markers` to repaint the globe with its browse flags, and a live
+  // dependency on `markers` here would make masteredRows recompute (to
+  // empty) right after that clear, which would then re-trigger that same
+  // effect via its own masteredRows dependency: an infinite render loop.
+  const [matchMasteredKeys, setMatchMasteredKeys] = useState<Set<string>>(
+    () => new Set(),
+  )
+  useEffect(() => {
+    if (phase !== 'finished') return
+    const clickMarkers = markers.filter((m) => m.kind !== 'reveal')
+    setMatchMasteredKeys(
+      new Set(
+        clickMarkers
+          .map((m, i) => (masteredOnAttempt[i] ? m.label : null))
+          .filter((label): label is string => label !== null),
+      ),
+    )
+    // Deliberately keyed on `phase` alone — see the comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
+
   // Mastery/unlock modal content — see the expand icon on the finished-match
-  // HUD pill below. Just the items that crossed into "mastered" *this
-  // match* (paired off guess-by-guess via masteredOnAttempt, same as the
-  // guess boxes' stamp badge below), plus whichever items crossed from
-  // locked into unlocked during this match specifically.
+  // HUD pill below. Just the items that crossed into "mastered" this match,
+  // plus whichever items crossed from locked into unlocked during this
+  // match specifically.
   const masteredRows = useMemo(() => {
     if (subFamily === 'draw' || subFamily === 'draw-states') return []
-    const clickMarkers = markers.filter((m) => m.kind !== 'reveal')
-    const newlyMasteredKeys = new Set(
-      clickMarkers
-        .map((m, i) => (masteredOnAttempt[i] ? m.label : null))
-        .filter((label): label is string => label !== null),
-    )
     return unlockedPoolForSubMode(poolSource, currentSub)
       .map((item) => buildWeightRow(poolSource, cities, countryCodes, currentSub, item))
-      .filter((row) => newlyMasteredKeys.has(row.key))
+      .filter((row) => matchMasteredKeys.has(row.key))
       .sort((a, b) => a.label.localeCompare(b.label))
-  }, [subFamily, currentSub, poolSource, cities, countryCodes, markers, masteredOnAttempt])
+  }, [subFamily, currentSub, poolSource, cities, countryCodes, matchMasteredKeys])
   const newlyUnlockedRows = useMemo(() => {
     if (subFamily === 'draw' || subFamily === 'draw-states') return []
     return poolForSubMode(poolSource, currentSub)
