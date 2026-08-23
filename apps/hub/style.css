@@ -145,12 +145,12 @@ body {
 .aqi-dot.serious { background: var(--status-serious); }
 .aqi-dot.critical { background: var(--status-critical); }
 
+.flights-value { letter-spacing: 0; }
 .flight-link {
-  font-size: 1.05rem;
-  line-height: 1;
+  color: var(--series-blue);
   text-decoration: none;
-  cursor: pointer;
 }
+.flight-link:hover { text-decoration: underline; }
 .flights-muted { color: var(--text-muted); font-weight: 500; }
 
 .forecast-strip {

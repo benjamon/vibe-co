@@ -10,36 +10,40 @@ const CITIES = [
     region: "California, US",
     lat: 33.8622,
     lon: -118.3995,
-    flight: { originCode: "BLI", originName: "Bellingham", destCode: "LAX", estimate: "$180–260" },
+    flight: { destCode: "LAX" },
   },
   {
     name: "Austin",
     region: "Texas, US",
     lat: 30.2672,
     lon: -97.7431,
-    flight: { originCode: "SEA", originName: "Seattle", destCode: "AUS", estimate: "$300–350" },
+    flight: { destCode: "AUS" },
   },
   {
     name: "Miami",
     region: "Florida, US",
     lat: 25.7617,
     lon: -80.1918,
-    flight: { originCode: "SEA", originName: "Seattle", destCode: "MIA", estimate: "$300–350" },
+    flight: { destCode: "MIA" },
   },
   {
     name: "New York",
     region: "New York, US",
     lat: 40.7128,
     lon: -74.006,
-    flight: { originCode: "SEA", originName: "Seattle", destCode: "JFK", estimate: "$280–330" },
+    flight: { destCode: "JFK" },
   },
 ];
 
-// Round-trip fare estimates are researched (Skyscanner/Expedia/momondo/Google
-// Flights snapshots), not a live feed — no free keyless flight-price API
-// exists. Each tile links to a Google Flights search for a live quote on a
-// 7-day round trip departing a few days out, picking whichever of
-// BLI (Bellingham) or SEA (Seattle) came up cheaper in that research.
+const FLIGHT_ORIGINS = [
+  { code: "BLI", name: "Bellingham" },
+  { code: "SEA", name: "Seattle" },
+];
+
+// No free keyless flight-price API exists, so each city links straight to a
+// live Google Flights search — a 7-day round trip departing a few days out —
+// rather than showing a fetched (or stale researched) number. One link per
+// candidate origin airport: Bellingham (BLI) or Seattle (SEA).
 function flightWindow() {
   const out = new Date();
   out.setDate(out.getDate() + 5);
@@ -137,19 +141,21 @@ function renderFlightTile(card, city) {
     valueEl.innerHTML = `<span class="flights-muted">&mdash;</span>`;
     return;
   }
-  const { originCode, originName, destCode, estimate } = city.flight;
+  const { destCode } = city.flight;
   const { out, back } = flightWindow();
-  const url = googleFlightsUrl(originCode, destCode, out, back);
-  const link = document.createElement("a");
-  link.href = url;
-  link.target = "_blank";
-  link.rel = "noopener";
-  link.className = "flight-link";
-  link.title = `Round trip, ${originName} (${originCode}) → ${destCode}, ${out} → ${back}, est. ${estimate}`;
-  link.setAttribute("aria-label", `Search round-trip flights from ${originName} to ${destCode}, estimated ${estimate}`);
-  link.textContent = "✈️";
   valueEl.innerHTML = "";
-  valueEl.appendChild(link);
+  FLIGHT_ORIGINS.forEach((origin, i) => {
+    if (i > 0) valueEl.appendChild(document.createTextNode(" / "));
+    const link = document.createElement("a");
+    link.href = googleFlightsUrl(origin.code, destCode, out, back);
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.className = "flight-link";
+    link.title = `Round trip, ${origin.name} (${origin.code}) → ${destCode}, ${out} → ${back}`;
+    link.setAttribute("aria-label", `Search round-trip flights from ${origin.name} to ${destCode}`);
+    link.textContent = origin.code;
+    valueEl.appendChild(link);
+  });
 }
 
 function buildCard(city) {
