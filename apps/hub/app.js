@@ -41,9 +41,12 @@ const FLIGHT_ORIGINS = [
 ];
 
 // No free keyless flight-price API exists, so each city links straight to a
-// live Google Flights search — a 7-day round trip departing a few days out —
-// rather than showing a fetched (or stale researched) number. One link per
-// candidate origin airport: Bellingham (BLI) or Seattle (SEA).
+// live flight search — a 7-day round trip departing a few days out — rather
+// than showing a fetched (or stale researched) number. One link per
+// candidate origin airport: Bellingham (BLI) or Seattle (SEA). Kayak's
+// search URL is a plain origin-dest/date/date path (no free-text NL parsing
+// to misfire), unlike Google Flights' unofficial `q=` param, which would
+// sometimes drop or swap the airports.
 function flightWindow() {
   const out = new Date();
   out.setDate(out.getDate() + 5);
@@ -53,9 +56,8 @@ function flightWindow() {
   return { out: fmt(out), back: fmt(back) };
 }
 
-function googleFlightsUrl(originCode, destCode, dateOut, dateBack) {
-  const q = `Flights to ${destCode} from ${originCode} on ${dateOut} through ${dateBack}`;
-  return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
+function flightSearchUrl(originCode, destCode, dateOut, dateBack) {
+  return `https://www.kayak.com/flights/${originCode}-${destCode}/${dateOut}/${dateBack}`;
 }
 
 // WMO weather codes -> [emoji, short label]
@@ -147,7 +149,7 @@ function renderFlightTile(card, city) {
   FLIGHT_ORIGINS.forEach((origin, i) => {
     if (i > 0) valueEl.appendChild(document.createTextNode(" / "));
     const link = document.createElement("a");
-    link.href = googleFlightsUrl(origin.code, destCode, out, back);
+    link.href = flightSearchUrl(origin.code, destCode, out, back);
     link.target = "_blank";
     link.rel = "noopener";
     link.className = "flight-link";
