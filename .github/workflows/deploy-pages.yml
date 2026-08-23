@@ -77,7 +77,7 @@ jobs:
 
       - name: Stage site
         run: |
-          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser _site/sky-strike _site/osm_globe
+          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser _site/sky-strike _site/osm_globe _site/hub
           cp -r apps/auto-battles/client/dist/. _site/auto-battles/
           cp apps/auto-battles/client/dist/index.html _site/auto-battles/404.html
           cp -r apps/coin-flip/client/dist/. _site/coin-flip/
@@ -88,6 +88,8 @@ jobs:
           cp apps/sky-strike/client/dist/index.html _site/sky-strike/404.html
           cp -r apps/osm_globe/client/dist/. _site/osm_globe/
           cp apps/osm_globe/client/dist/index.html _site/osm_globe/404.html
+          cp -r apps/hub/. _site/hub/
+          cp apps/hub/index.html _site/hub/404.html
           cp site/index.html _site/index.html
           echo '--- artifact tree ---'
           find _site -maxdepth 3 -print

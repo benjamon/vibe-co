@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weather Hub — vibe-co</title>
+  <meta name="description" content="Current conditions and 10-day forecast for six cities, sourced free from Open-Meteo.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="page-header">
+      <a class="back-link" href="../">&larr; vibe-co</a>
+      <h1>Weather Hub</h1>
+      <p class="tagline">Live conditions &amp; 10-day outlook, six cities at a glance.</p>
+      <div class="header-meta">
+        <span id="updated-at" class="updated-at">Loading&hellip;</span>
+        <button id="refresh-btn" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main id="cities" class="city-grid" aria-live="polite"></main>
+
+    <footer class="page-footer">
+      <p>Data from <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> (weather &amp; air quality APIs, no key required). Not for safety-critical decisions.</p>
+    </footer>
+  </div>
+
+  <template id="city-card-template">
+    <section class="city-card" aria-busy="true">
+      <div class="city-card-header">
+        <div>
+          <h2 class="city-name"></h2>
+          <p class="city-region"></p>
+        </div>
+        <div class="current-icon" aria-hidden="true"></div>
+      </div>
+
+      <div class="current-row">
+        <div class="current-temp">
+          <span class="temp-value">&mdash;</span>
+          <span class="temp-desc"></span>
+        </div>
+        <div class="feels-like"></div>
+      </div>
+
+      <div class="stat-tiles">
+        <div class="stat-tile">
+          <div class="stat-label">Wind</div>
+          <div class="stat-value wind-value">&mdash;</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label">Humidity</div>
+          <div class="stat-value humidity-value">&mdash;</div>
+        </div>
+        <div class="stat-tile aqi-tile">
+          <div class="stat-label">Air Quality</div>
+          <div class="stat-value aqi-value">
+            <span class="aqi-dot" aria-hidden="true"></span>
+            <span class="aqi-text">&mdash;</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="forecast-strip"></div>
+      <p class="card-error" hidden></p>
+    </section>
+  </template>
+
+  <template id="forecast-day-template">
+    <div class="forecast-day">
+      <div class="fday-label"></div>
+      <div class="fday-icon" aria-hidden="true"></div>
+      <div class="fday-precip"></div>
+      <div class="fday-temps">
+        <span class="fday-hi"></span>
+        <span class="fday-lo"></span>
+      </div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
