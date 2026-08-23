@@ -68,11 +68,12 @@
   <template id="forecast-day-template">
     <div class="forecast-day">
       <div class="fday-label"></div>
-      <div class="fday-icon" aria-hidden="true"></div>
-      <div class="fday-precip"></div>
+      <div class="fday-icon-row">
+        <span class="fday-icon" aria-hidden="true"></span>
+        <span class="fday-precip"></span>
+      </div>
       <div class="fday-temps">
-        <span class="fday-hi"></span>
-        <span class="fday-lo"></span>
+        <span class="fday-hi"></span><span class="fday-sep">/</span><span class="fday-lo"></span>
       </div>
     </div>
   </template>

@@ -90,26 +90,21 @@ function weatherInfo(code) {
   return WEATHER_CODES[code] || ["🌡️", "Unknown"];
 }
 
-function compassDirection(deg) {
-  const dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
-  return dirs[Math.round(deg / 22.5) % 16];
-}
-
 function aqiBucket(aqi) {
-  if (aqi == null) return { cls: "", label: "N/A" };
-  if (aqi <= 50) return { cls: "good", label: `${aqi} · Good` };
-  if (aqi <= 100) return { cls: "warning", label: `${aqi} · Moderate` };
-  if (aqi <= 150) return { cls: "warning", label: `${aqi} · Sensitive` };
-  if (aqi <= 200) return { cls: "serious", label: `${aqi} · Unhealthy` };
-  if (aqi <= 300) return { cls: "critical", label: `${aqi} · Very unhealthy` };
-  return { cls: "critical", label: `${aqi} · Hazardous` };
+  if (aqi == null) return { cls: "", text: "—" };
+  if (aqi <= 50) return { cls: "good", text: aqi };
+  if (aqi <= 100) return { cls: "warning", text: aqi };
+  if (aqi <= 150) return { cls: "warning", text: aqi };
+  if (aqi <= 200) return { cls: "serious", text: aqi };
+  if (aqi <= 300) return { cls: "critical", text: aqi };
+  return { cls: "critical", text: aqi };
 }
 
 function forecastUrl(lat, lon) {
   const params = new URLSearchParams({
     latitude: lat,
     longitude: lon,
-    current: "temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,weather_code",
+    current: "temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,weather_code",
     daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
     temperature_unit: "fahrenheit",
     wind_speed_unit: "mph",
@@ -178,7 +173,7 @@ function renderForecastDay(dayTemplate, dateStr, code, hi, lo, precipProb, isTod
   node.querySelector(".fday-hi").textContent = `${Math.round(hi)}°`;
   node.querySelector(".fday-lo").textContent = `${Math.round(lo)}°`;
   const precipEl = node.querySelector(".fday-precip");
-  precipEl.textContent = precipProb != null && precipProb >= 20 ? `${precipProb}%` : "";
+  precipEl.textContent = precipProb != null && precipProb >= 20 ? `💧${precipProb}` : "";
   return node;
 }
 
@@ -200,15 +195,14 @@ async function loadCity(city, card) {
     card.querySelector(".temp-desc").textContent = desc;
     card.querySelector(".feels-like").textContent = `Feels ${Math.round(cur.apparent_temperature)}°F`;
 
-    const windDir = compassDirection(cur.wind_direction_10m);
-    card.querySelector(".wind-value").textContent = `${Math.round(cur.wind_speed_10m)} mph ${windDir}`;
+    card.querySelector(".wind-value").textContent = `${Math.round(cur.wind_speed_10m)} mph`;
     card.querySelector(".humidity-value").textContent = `${Math.round(cur.relative_humidity_2m)}%`;
 
     const aqiValue = air.status === "fulfilled" ? air.value?.current?.us_aqi : null;
     const bucket = aqiBucket(aqiValue);
     const dot = card.querySelector(".aqi-dot");
     dot.className = "aqi-dot" + (bucket.cls ? ` ${bucket.cls}` : "");
-    card.querySelector(".aqi-text").textContent = bucket.label;
+    card.querySelector(".aqi-text").textContent = bucket.text;
 
     const strip = card.querySelector(".forecast-strip");
     strip.innerHTML = "";
