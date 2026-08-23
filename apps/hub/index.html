@@ -9,20 +9,17 @@
 </head>
 <body>
   <div class="wrap">
-    <header class="page-header">
+    <div class="topbar">
       <a class="back-link" href="../">&larr; vibe-co</a>
-      <h1>Weather Hub</h1>
-      <p class="tagline">Live conditions &amp; 10-day outlook, six cities at a glance.</p>
-      <div class="header-meta">
-        <span id="updated-at" class="updated-at">Loading&hellip;</span>
-        <button id="refresh-btn" type="button">Refresh</button>
-      </div>
-    </header>
+      <span class="topbar-spacer"></span>
+      <span id="updated-at" class="updated-at">Loading&hellip;</span>
+      <button id="refresh-btn" type="button">Refresh</button>
+    </div>
 
     <main id="cities" class="city-grid" aria-live="polite"></main>
 
     <footer class="page-footer">
-      <p>Data from <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> (weather &amp; air quality APIs, no key required). Not for safety-critical decisions.</p>
+      <p>Weather/AQI: <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a>. Flights: researched round-trip estimates, cheaper of BLI/SEA — tap for live fares.</p>
     </footer>
   </div>
 
@@ -59,6 +56,10 @@
             <span class="aqi-dot" aria-hidden="true"></span>
             <span class="aqi-text">&mdash;</span>
           </div>
+        </div>
+        <div class="stat-tile flights-tile">
+          <div class="stat-label">Flights (7d, RT)</div>
+          <div class="stat-value flights-value">&mdash;</div>
         </div>
       </div>
 

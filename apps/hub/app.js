@@ -3,13 +3,56 @@
 // Air quality: https://open-meteo.com/en/docs/air-quality-api
 
 const CITIES = [
-  { name: "Seattle", region: "Washington, US", lat: 47.6062, lon: -122.3321 },
-  { name: "Bellingham", region: "Washington, US", lat: 48.7519, lon: -122.4787 },
-  { name: "Hermosa Beach", region: "California, US", lat: 33.8622, lon: -118.3995 },
-  { name: "Austin", region: "Texas, US", lat: 30.2672, lon: -97.7431 },
-  { name: "Miami", region: "Florida, US", lat: 25.7617, lon: -80.1918 },
-  { name: "New York", region: "New York, US", lat: 40.7128, lon: -74.006 },
+  { name: "Seattle", region: "Washington, US", lat: 47.6062, lon: -122.3321, flight: null },
+  { name: "Bellingham", region: "Washington, US", lat: 48.7519, lon: -122.4787, flight: null },
+  {
+    name: "Hermosa Beach",
+    region: "California, US",
+    lat: 33.8622,
+    lon: -118.3995,
+    flight: { originCode: "BLI", originName: "Bellingham", destCode: "LAX", estimate: "$180–260" },
+  },
+  {
+    name: "Austin",
+    region: "Texas, US",
+    lat: 30.2672,
+    lon: -97.7431,
+    flight: { originCode: "SEA", originName: "Seattle", destCode: "AUS", estimate: "$300–350" },
+  },
+  {
+    name: "Miami",
+    region: "Florida, US",
+    lat: 25.7617,
+    lon: -80.1918,
+    flight: { originCode: "SEA", originName: "Seattle", destCode: "MIA", estimate: "$300–350" },
+  },
+  {
+    name: "New York",
+    region: "New York, US",
+    lat: 40.7128,
+    lon: -74.006,
+    flight: { originCode: "SEA", originName: "Seattle", destCode: "JFK", estimate: "$280–330" },
+  },
 ];
+
+// Round-trip fare estimates are researched (Skyscanner/Expedia/momondo/Google
+// Flights snapshots), not a live feed — no free keyless flight-price API
+// exists. Each tile links to a Google Flights search for a live quote on a
+// 7-day round trip departing a few days out, picking whichever of
+// BLI (Bellingham) or SEA (Seattle) came up cheaper in that research.
+function flightWindow() {
+  const out = new Date();
+  out.setDate(out.getDate() + 5);
+  const back = new Date(out);
+  back.setDate(back.getDate() + 7);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  return { out: fmt(out), back: fmt(back) };
+}
+
+function googleFlightsUrl(originCode, destCode, dateOut, dateBack) {
+  const q = `Flights to ${destCode} from ${originCode} on ${dateOut} through ${dateBack}`;
+  return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
+}
 
 // WMO weather codes -> [emoji, short label]
 const WEATHER_CODES = {
@@ -93,6 +136,25 @@ async function fetchJson(url) {
   return res.json();
 }
 
+function renderFlightTile(card, city) {
+  const valueEl = card.querySelector(".flights-value");
+  if (!city.flight) {
+    valueEl.innerHTML = `<span class="flights-muted">Home base</span>`;
+    return;
+  }
+  const { originCode, originName, destCode, estimate } = city.flight;
+  const { out, back } = flightWindow();
+  const url = googleFlightsUrl(originCode, destCode, out, back);
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.title = `Round trip, ${originName} (${originCode}) → ${destCode}, ${out} → ${back}`;
+  link.textContent = `~${estimate} · ${originCode}`;
+  valueEl.innerHTML = "";
+  valueEl.appendChild(link);
+}
+
 function buildCard(city) {
   const template = document.getElementById("city-card-template");
   const node = template.content.cloneNode(true);
@@ -100,6 +162,7 @@ function buildCard(city) {
   card.querySelector(".city-name").textContent = city.name;
   card.querySelector(".city-region").textContent = city.region;
   card.dataset.city = city.name;
+  renderFlightTile(card, city);
   return { fragment: node, card };
 }
 
