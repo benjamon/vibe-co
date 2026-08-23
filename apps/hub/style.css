@@ -75,47 +75,47 @@ body {
 
 .city-card-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.city-name { margin: 0; font-size: 1.05rem; font-weight: 600; }
-.city-region { margin: 0.1rem 0 0; color: var(--text-muted); font-size: 0.72rem; }
-.current-icon { font-size: 1.7rem; line-height: 1; }
-
-.current-row {
-  display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
-.current-temp { display: flex; align-items: baseline; gap: 0.4rem; }
+.city-title { flex: none; }
+.city-name { margin: 0; font-size: 1.05rem; font-weight: 600; display: inline; }
+.city-region { margin: 0 0 0 0.4rem; color: var(--text-muted); font-size: 0.72rem; display: inline; }
+
+.city-current {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.current-icon { font-size: 1.1rem; line-height: 1; align-self: center; }
 .temp-value {
-  font-size: 2rem;
+  font-size: 1.3rem;
   font-weight: 700;
   font-variant-numeric: proportional-nums;
 }
-.temp-desc { color: var(--text-secondary); font-size: 0.82rem; }
-.feels-like { color: var(--text-muted); font-size: 0.72rem; white-space: nowrap; }
+.temp-desc { color: var(--text-secondary); font-size: 0.78rem; }
+.feels-like { color: var(--text-muted); font-size: 0.7rem; }
 
 .stat-tiles {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.4rem;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.35rem;
 }
 
 .stat-tile {
   background: var(--surface-2);
   border-radius: 8px;
-  padding: 0.4rem 0.55rem;
+  padding: 0.35rem 0.4rem;
   min-width: 0;
 }
 
 .stat-label {
   color: var(--text-muted);
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   margin-bottom: 0.15rem;
@@ -125,15 +125,15 @@ body {
 }
 
 .stat-value {
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 600;
   overflow-wrap: break-word;
 }
 
-.aqi-value { display: flex; align-items: center; gap: 0.35rem; }
+.aqi-value { display: flex; align-items: center; gap: 0.3rem; }
 .aqi-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex: none;
   background: var(--text-muted);
@@ -143,12 +143,13 @@ body {
 .aqi-dot.serious { background: var(--status-serious); }
 .aqi-dot.critical { background: var(--status-critical); }
 
-.flights-value a {
-  color: var(--series-blue);
+.flight-link {
+  font-size: 1.05rem;
+  line-height: 1;
   text-decoration: none;
+  cursor: pointer;
 }
-.flights-value a:hover { text-decoration: underline; }
-.flights-value .flights-muted { color: var(--text-muted); font-weight: 500; }
+.flights-muted { color: var(--text-muted); font-weight: 500; }
 
 .forecast-strip {
   display: grid;
@@ -196,8 +197,6 @@ body {
 }
 .page-footer a { color: inherit; }
 
-@media (max-width: 420px) {
-  .temp-value { font-size: 1.8rem; }
-  .stat-label { font-size: 0.58rem; }
-  .stat-value { font-size: 0.78rem; }
+@media (max-width: 360px) {
+  .stat-tiles { grid-template-columns: repeat(2, 1fr); }
 }

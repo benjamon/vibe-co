@@ -26,19 +26,16 @@
   <template id="city-card-template">
     <section class="city-card" aria-busy="true">
       <div class="city-card-header">
-        <div>
+        <div class="city-title">
           <h2 class="city-name"></h2>
           <p class="city-region"></p>
         </div>
-        <div class="current-icon" aria-hidden="true"></div>
-      </div>
-
-      <div class="current-row">
-        <div class="current-temp">
+        <div class="city-current">
+          <span class="current-icon" aria-hidden="true"></span>
           <span class="temp-value">&mdash;</span>
           <span class="temp-desc"></span>
+          <span class="feels-like"></span>
         </div>
-        <div class="feels-like"></div>
       </div>
 
       <div class="stat-tiles">
@@ -58,7 +55,7 @@
           </div>
         </div>
         <div class="stat-tile flights-tile">
-          <div class="stat-label">Flights (7d, RT)</div>
+          <div class="stat-label">Flights</div>
           <div class="stat-value flights-value">&mdash;</div>
         </div>
       </div>

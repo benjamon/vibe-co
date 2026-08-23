@@ -139,7 +139,7 @@ async function fetchJson(url) {
 function renderFlightTile(card, city) {
   const valueEl = card.querySelector(".flights-value");
   if (!city.flight) {
-    valueEl.innerHTML = `<span class="flights-muted">Home base</span>`;
+    valueEl.innerHTML = `<span class="flights-muted">&mdash;</span>`;
     return;
   }
   const { originCode, originName, destCode, estimate } = city.flight;
@@ -149,8 +149,10 @@ function renderFlightTile(card, city) {
   link.href = url;
   link.target = "_blank";
   link.rel = "noopener";
-  link.title = `Round trip, ${originName} (${originCode}) → ${destCode}, ${out} → ${back}`;
-  link.textContent = `~${estimate} · ${originCode}`;
+  link.className = "flight-link";
+  link.title = `Round trip, ${originName} (${originCode}) → ${destCode}, ${out} → ${back}, est. ${estimate}`;
+  link.setAttribute("aria-label", `Search round-trip flights from ${originName} to ${destCode}, estimated ${estimate}`);
+  link.textContent = "✈️";
   valueEl.innerHTML = "";
   valueEl.appendChild(link);
 }
