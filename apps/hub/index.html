@@ -16,6 +16,14 @@
       <button id="refresh-btn" type="button">Refresh</button>
     </div>
 
+    <div class="city-search">
+      <label for="city-search-input" class="city-search-label">Add a city</label>
+      <div class="city-search-box">
+        <input id="city-search-input" type="text" placeholder="Search for a city&hellip;" autocomplete="off">
+        <ul id="city-search-results" class="city-search-results" hidden></ul>
+      </div>
+    </div>
+
     <main id="cities" class="city-grid" aria-live="polite"></main>
 
     <footer class="page-footer">
@@ -30,11 +38,14 @@
           <h2 class="city-name"></h2>
           <p class="city-region"></p>
         </div>
-        <div class="city-current">
-          <span class="current-icon" aria-hidden="true"></span>
-          <span class="temp-value">&mdash;</span>
-          <span class="temp-desc"></span>
-          <span class="feels-like"></span>
+        <div class="city-current-wrap">
+          <div class="city-current">
+            <span class="current-icon" aria-hidden="true"></span>
+            <span class="temp-value">&mdash;</span>
+            <span class="temp-desc"></span>
+            <span class="feels-like"></span>
+          </div>
+          <button class="remove-city-btn" type="button" title="Remove city" aria-label="Remove city" hidden>&times;</button>
         </div>
       </div>
 

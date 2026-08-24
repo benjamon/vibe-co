@@ -2,7 +2,7 @@
 // Forecast: https://open-meteo.com/en/docs
 // Air quality: https://open-meteo.com/en/docs/air-quality-api
 
-const CITIES = [
+const DEFAULT_CITIES = [
   { name: "Seattle", region: "Washington, US", lat: 47.6062, lon: -122.3321, flight: null },
   { name: "Bellingham", region: "Washington, US", lat: 48.7519, lon: -122.4787, flight: null },
   {
@@ -33,7 +33,88 @@ const CITIES = [
     lon: -74.006,
     flight: { destCode: "JFK" },
   },
-];
+].map((city) => ({ ...city, id: city.name, custom: false }));
+
+// --- Cookie-backed custom city list -----------------------------------
+const CUSTOM_CITIES_COOKIE = "vibeco_hub_cities";
+const CUSTOM_CITIES_MAX_AGE_DAYS = 400; // browsers cap cookie lifetime around here
+
+function setCookie(name, value, days) {
+  const maxAge = Math.round(days * 24 * 60 * 60);
+  document.cookie = `${name}=${encodeURIComponent(value)}; max-age=${maxAge}; path=/; SameSite=Lax`;
+}
+
+function getCookie(name) {
+  const escaped = name.replace(/[.$?*|{}()[\]\\/+^]/g, "\\$&");
+  const match = document.cookie.match(new RegExp("(?:^|; )" + escaped + "=([^;]*)"));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function loadCustomCities() {
+  const raw = getCookie(CUSTOM_CITIES_COOKIE);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomCities(cities) {
+  setCookie(CUSTOM_CITIES_COOKIE, JSON.stringify(cities), CUSTOM_CITIES_MAX_AGE_DAYS);
+}
+
+let customCities = loadCustomCities();
+
+function allCities() {
+  return DEFAULT_CITIES.concat(customCities);
+}
+
+function cityKey(lat, lon) {
+  return `${lat.toFixed(3)},${lon.toFixed(3)}`;
+}
+
+function isDuplicateCity(lat, lon) {
+  const key = cityKey(lat, lon);
+  return allCities().some((c) => cityKey(c.lat, c.lon) === key);
+}
+
+function addCustomCity({ name, region, lat, lon }) {
+  if (isDuplicateCity(lat, lon)) return false;
+  customCities.push({
+    id: `custom:${cityKey(lat, lon)}`,
+    name,
+    region,
+    lat,
+    lon,
+    flight: null,
+    custom: true,
+  });
+  saveCustomCities(customCities);
+  return true;
+}
+
+function removeCustomCity(id) {
+  customCities = customCities.filter((c) => c.id !== id);
+  saveCustomCities(customCities);
+}
+
+// --- Geocoding search (Open-Meteo, free & keyless) ---------------------
+function geocodeUrl(query) {
+  const params = new URLSearchParams({
+    name: query,
+    count: "8",
+    language: "en",
+    format: "json",
+  });
+  return `https://geocoding-api.open-meteo.com/v1/search?${params}`;
+}
+
+function describeResult(result) {
+  const parts = [result.admin1, result.country].filter(Boolean);
+  return parts.join(", ");
+}
 
 const FLIGHT_ORIGINS = [
   { code: "BLI", name: "Bellingham" },
@@ -166,8 +247,20 @@ function buildCard(city) {
   const card = node.querySelector(".city-card");
   card.querySelector(".city-name").textContent = city.name;
   card.querySelector(".city-region").textContent = city.region;
-  card.dataset.city = city.name;
+  card.dataset.cityId = city.id;
   renderFlightTile(card, city);
+
+  const removeBtn = card.querySelector(".remove-city-btn");
+  if (city.custom) {
+    removeBtn.hidden = false;
+    removeBtn.addEventListener("click", () => {
+      removeCustomCity(city.id);
+      loadAll();
+    });
+  } else {
+    removeBtn.remove();
+  }
+
   return { fragment: node, card };
 }
 
@@ -248,10 +341,10 @@ async function loadAll() {
   refreshBtn.disabled = true;
   container.innerHTML = "";
 
-  const cards = CITIES.map((city) => {
+  const cards = allCities().map((city) => {
     const { fragment, card } = buildCard(city);
     container.appendChild(fragment);
-    return { city, card: container.querySelector(`[data-city="${CSS.escape(city.name)}"]`) };
+    return { city, card: container.querySelector(`[data-city-id="${CSS.escape(city.id)}"]`) };
   });
 
   await Promise.all(cards.map(({ city, card }) => loadCity(city, card)));
@@ -260,5 +353,88 @@ async function loadAll() {
   refreshBtn.disabled = false;
 }
 
+// --- City search UI ------------------------------------------------------
+function initCitySearch() {
+  const input = document.getElementById("city-search-input");
+  const resultsEl = document.getElementById("city-search-results");
+  if (!input || !resultsEl) return;
+
+  let debounceHandle = null;
+  let requestToken = 0;
+
+  function closeResults() {
+    resultsEl.hidden = true;
+    resultsEl.innerHTML = "";
+  }
+
+  function renderResults(results) {
+    resultsEl.innerHTML = "";
+    if (results.length === 0) {
+      const li = document.createElement("li");
+      li.className = "city-search-empty";
+      li.textContent = "No matches";
+      resultsEl.appendChild(li);
+      resultsEl.hidden = false;
+      return;
+    }
+    results.forEach((result) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "city-search-result";
+      const region = describeResult(result);
+      const nameEl = document.createElement("span");
+      nameEl.className = "result-name";
+      nameEl.textContent = result.name;
+      btn.appendChild(nameEl);
+      if (region) {
+        const regionEl = document.createElement("span");
+        regionEl.className = "result-region";
+        regionEl.textContent = region;
+        btn.appendChild(regionEl);
+      }
+      btn.addEventListener("click", () => {
+        const added = addCustomCity({
+          name: result.name,
+          region: region || "—",
+          lat: result.latitude,
+          lon: result.longitude,
+        });
+        input.value = "";
+        closeResults();
+        if (added) loadAll();
+      });
+      li.appendChild(btn);
+      resultsEl.appendChild(li);
+    });
+    resultsEl.hidden = false;
+  }
+
+  input.addEventListener("input", () => {
+    const query = input.value.trim();
+    if (debounceHandle) clearTimeout(debounceHandle);
+    if (query.length < 2) {
+      closeResults();
+      return;
+    }
+    debounceHandle = setTimeout(async () => {
+      const token = ++requestToken;
+      try {
+        const data = await fetchJson(geocodeUrl(query));
+        if (token !== requestToken) return; // a newer query superseded this one
+        renderResults(data.results || []);
+      } catch {
+        if (token !== requestToken) return;
+        closeResults();
+      }
+    }, 300);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!resultsEl.hidden && !e.target.closest(".city-search")) closeResults();
+  });
+}
+
 document.getElementById("refresh-btn").addEventListener("click", loadAll);
+initCitySearch();
 loadAll();
