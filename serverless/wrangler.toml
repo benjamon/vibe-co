@@ -1,0 +1,26 @@
+name = "bellingham-events-aggregator"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Runs daily at 13:00 UTC (~05:00/06:00 Pacific depending on DST).
+# Adjust to taste: https://developers.cloudflare.com/workers/configuration/cron-triggers/
+[triggers]
+crons = ["0 13 * * *"]
+
+# Create with `npm run kv:create`, then paste the returned id below.
+[[kv_namespaces]]
+binding = "EVENTS_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+DIGEST_EMAIL_FROM = "events@example.com"
+DIGEST_EMAIL_TO = "you@example.com"
+DIGEST_LOOKAHEAD_DAYS = "14"
+EVENTBRITE_ORG_IDS = ""
+MEETUP_GROUP_URLNAMES = ""
+
+# Secrets (do NOT put these in [vars] / source control) — set with:
+#   wrangler secret put RESEND_API_KEY
+#   wrangler secret put EVENTBRITE_TOKEN
+#   wrangler secret put MEETUP_ACCESS_TOKEN

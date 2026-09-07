@@ -1,0 +1,6 @@
+# Copy to .dev.vars for `wrangler dev` (never commit the real file — it's gitignored).
+# In production these are set with `wrangler secret put <NAME>`.
+
+RESEND_API_KEY=re_xxxxxxxxxxxx
+EVENTBRITE_TOKEN=
+MEETUP_ACCESS_TOKEN=
