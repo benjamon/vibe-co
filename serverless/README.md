@@ -39,15 +39,20 @@ Common event schema (`src/types.ts`):
 |---|---|---|
 | WWU Events Calendar | Localist JSON API | No key needed |
 | City of Bellingham Events | iCal (`?ical=1`) | No key needed |
-| Bellingham Public Library | iCal (LibCal) | No key needed |
 | Whatcom County Library System | iCal (LibCal) | No key needed |
 | Mount Baker Theatre | HTML scrape | Best-effort selectors — verify against the live site |
 | Eventbrite | REST API, per-organizer | Opt-in, needs a token + organizer IDs |
 | Meetup | GraphQL API, per-group | Opt-in, needs Meetup Pro + an approved OAuth app |
 
-All four "no key needed" sources were found by pattern-matching well-known
+(Bellingham Public Library's LibCal calendar was also verified and available
+— same platform as WCLS below — but is left out by default since its events
+skew toward library programming rather than general community events. Add it
+back the same way as WCLS if you want it: `cid=20512` on
+`bellinghampubliclibrary.libcal.com`.)
+
+All three "no key needed" sources were found by pattern-matching well-known
 calendar platforms rather than by fetching the live pages directly — this
-sandbox's network egress proxy blocks all four domains, so `npm run
+sandbox's network egress proxy blocks all three domains, so `npm run
 aggregate:local` here just returns HTTP 403 from the proxy itself, not from
 the real sites. **Run it again after cloning outside this sandbox (or in
 `wrangler dev`) to confirm each one actually resolves** before trusting the
@@ -57,15 +62,12 @@ digest:
   it supports iCal/Google/Outlook export — that's the signature of the
   WordPress "The Events Calendar" (Tribe) plugin, whose listing pages export
   every currently-listed event via `?ical=1`. Very standard, high confidence.
-- **Bellingham Public Library** and **Whatcom County Library System** both
-  run Springshare's LibCal, which always exposes
-  `https://<subdomain>.libcal.com/ical_subscribe.php?src=p&cid=<id>`. The
-  `cid` for each (20512 and 5625) was read off search-indexed calendar-grid
-  URLs for their respective "events" calendars, not the subscribe link
-  itself — if either comes back empty, open
-  `https://bellinghampubliclibrary.libcal.com/calendar/BPL-Events` or
-  `https://wcls.libcal.com/calendar/events` in a browser and grab the exact
-  "Subscribe"/iCal link shown there.
+- **Whatcom County Library System** runs Springshare's LibCal, which always
+  exposes `https://<subdomain>.libcal.com/ical_subscribe.php?src=p&cid=<id>`.
+  Its `cid` (5625) was read off a search-indexed calendar-grid URL for its
+  "events" calendar, not the subscribe link itself — if it comes back empty,
+  open `https://wcls.libcal.com/calendar/events` in a browser and grab the
+  exact "Subscribe"/iCal link shown there.
 
 Reality check on the two "public APIs" the task mentions:
 

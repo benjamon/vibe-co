@@ -82,15 +82,6 @@ export const STATIC_SOURCES: StaticSourceConfig[] = [
     url: "https://cob.org/events/?ical=1",
   },
 
-  // Bellingham Public Library's events calendar runs on LibCal (Springshare),
-  // which exposes a per-calendar iCal subscribe endpoint. cid=20512 is the
-  // "BPL-Events" calendar (confirmed via bellinghampubliclibrary.libcal.com/calendar/BPL-Events).
-  {
-    type: "ical",
-    name: "Bellingham Public Library",
-    url: "https://bellinghampubliclibrary.libcal.com/ical_subscribe.php?src=p&cid=20512",
-  },
-
   // Whatcom County Library System (branches throughout the county, several in
   // and around Bellingham) — same LibCal platform, different instance/cid.
   {
