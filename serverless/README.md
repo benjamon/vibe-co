@@ -37,11 +37,35 @@ Common event schema (`src/types.ts`):
 
 | Source | Type | Status |
 |---|---|---|
-| WWU Events Calendar | Localist JSON API | Works out of the box, no key needed |
-| Whatcom Events (bellingham.org) | iCal | **Needs a real feed URL** — see below |
+| WWU Events Calendar | Localist JSON API | No key needed |
+| City of Bellingham Events | iCal (`?ical=1`) | No key needed |
+| Bellingham Public Library | iCal (LibCal) | No key needed |
+| Whatcom County Library System | iCal (LibCal) | No key needed |
 | Mount Baker Theatre | HTML scrape | Best-effort selectors — verify against the live site |
 | Eventbrite | REST API, per-organizer | Opt-in, needs a token + organizer IDs |
 | Meetup | GraphQL API, per-group | Opt-in, needs Meetup Pro + an approved OAuth app |
+
+All four "no key needed" sources were found by pattern-matching well-known
+calendar platforms rather than by fetching the live pages directly — this
+sandbox's network egress proxy blocks all four domains, so `npm run
+aggregate:local` here just returns HTTP 403 from the proxy itself, not from
+the real sites. **Run it again after cloning outside this sandbox (or in
+`wrangler dev`) to confirm each one actually resolves** before trusting the
+digest:
+
+- **City of Bellingham** (`cob.org/events`) confirms on its events page that
+  it supports iCal/Google/Outlook export — that's the signature of the
+  WordPress "The Events Calendar" (Tribe) plugin, whose listing pages export
+  every currently-listed event via `?ical=1`. Very standard, high confidence.
+- **Bellingham Public Library** and **Whatcom County Library System** both
+  run Springshare's LibCal, which always exposes
+  `https://<subdomain>.libcal.com/ical_subscribe.php?src=p&cid=<id>`. The
+  `cid` for each (20512 and 5625) was read off search-indexed calendar-grid
+  URLs for their respective "events" calendars, not the subscribe link
+  itself — if either comes back empty, open
+  `https://bellinghampubliclibrary.libcal.com/calendar/BPL-Events` or
+  `https://wcls.libcal.com/calendar/events` in a browser and grab the exact
+  "Subscribe"/iCal link shown there.
 
 Reality check on the two "public APIs" the task mentions:
 

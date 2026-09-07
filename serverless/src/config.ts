@@ -73,13 +73,30 @@ export const STATIC_SOURCES: StaticSourceConfig[] = [
     baseUrl: "https://calendars.wwu.edu",
   },
 
-  // Whatcom Events / Bellingham Whatcom County Tourism community calendar.
-  // Their site offers an "Export Events" (.ics) action; replace this placeholder
-  // with the exact ICS URL once you've grabbed it from the site (see README).
+  // City of Bellingham's events calendar (parks & rec, city-sponsored community
+  // events) runs on The Events Calendar (Tribe) WordPress plugin, whose listing
+  // pages support a standard `?ical=1` export of all currently-listed events.
   {
     type: "ical",
-    name: "Whatcom Events (bellingham.org)",
-    url: "https://www.bellingham.org/events.ics",
+    name: "City of Bellingham Events",
+    url: "https://cob.org/events/?ical=1",
+  },
+
+  // Bellingham Public Library's events calendar runs on LibCal (Springshare),
+  // which exposes a per-calendar iCal subscribe endpoint. cid=20512 is the
+  // "BPL-Events" calendar (confirmed via bellinghampubliclibrary.libcal.com/calendar/BPL-Events).
+  {
+    type: "ical",
+    name: "Bellingham Public Library",
+    url: "https://bellinghampubliclibrary.libcal.com/ical_subscribe.php?src=p&cid=20512",
+  },
+
+  // Whatcom County Library System (branches throughout the county, several in
+  // and around Bellingham) — same LibCal platform, different instance/cid.
+  {
+    type: "ical",
+    name: "Whatcom County Library System",
+    url: "https://wcls.libcal.com/ical_subscribe.php?src=p&cid=5625",
   },
 
   // Mount Baker Theatre doesn't publish a feed, so it's a scrape fallback.
