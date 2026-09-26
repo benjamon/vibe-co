@@ -72,7 +72,8 @@ adb logcat -s MonitorService EventSender BootReceiver
 adb shell am broadcast -a android.intent.action.BOOT_COMPLETED -p com.muse.eventbridge
 ```
 
-To find a package name for the watchlist, use **Watchlist → Pick from installed apps**, or:
+The Watchlist screen lists apps used in the last 7 days (with Add/Remove), and also offers
+**Pick from installed apps**. To look up a package name by hand:
 `adb shell pm list packages | grep -i galaxy`
 
 ## Acceptance test (Pixel + webhook.site)
@@ -83,7 +84,8 @@ To find a package name for the watchlist, use **Watchlist → Pick from installe
    *Permit usage access*. Press back.
 4. **Webhook settings**: paste the webhook.site URL, set a token (e.g. `muse-test`), keep 15s,
    and leave *Track ALL apps* on. Tap **Save**.
-5. **Watchlist**: pick one app you'll open in step 7 (e.g. Chrome, or your game).
+5. **Watchlist**: tap **Add** on an app under *Recently used* (or use *Pick from installed apps*),
+   choosing one you'll open in step 7 (e.g. Chrome, or your game).
 6. **Event log & test event**: tap **Send test event**. It should show `HTTP 200 ✓`, and
    webhook.site shows a `test` event with header `x-event-token: muse-test`.
 7. Back on the main screen, tap **Start monitoring**. Open three different apps, spending about

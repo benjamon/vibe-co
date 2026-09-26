@@ -76,3 +76,19 @@ fun backoffMillis(attempts: Int): Long {
 /** Status codes that retrying won't fix (bad token, bad URL, redirects we refuse to follow). */
 fun isPermanentFailure(code: Int): Boolean =
     code in 300..499 && code != 408 && code != 429
+
+/**
+ * Collapses (package, lastUsedMs) samples (one per usage-stats bucket) into one
+ * entry per package, most recent first.
+ */
+fun mostRecentPackages(
+    samples: List<Pair<String, Long>>,
+    exclude: Set<String>,
+    limit: Int,
+): List<Pair<String, Long>> =
+    samples
+        .filter { (pkg, t) -> t > 0 && pkg !in exclude }
+        .groupBy({ it.first }, { it.second })
+        .map { (pkg, times) -> pkg to times.max() }
+        .sortedByDescending { it.second }
+        .take(limit)

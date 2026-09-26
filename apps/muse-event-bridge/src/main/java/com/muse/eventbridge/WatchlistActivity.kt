@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
+import android.text.format.DateUtils
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -14,6 +15,8 @@ import android.widget.TextView
 class WatchlistActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var list: LinearLayout
+    private lateinit var recentList: LinearLayout
+    private var recent: List<Pair<String, Long>> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -25,8 +28,27 @@ class WatchlistActivity : Activity() {
             heading("WATCHING")
             list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             addView(list)
+            heading("RECENTLY USED (LAST 7 DAYS)")
+            recentList = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            addView(recentList)
         }
         render()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        loadRecent()
+    }
+
+    private fun loadRecent() {
+        val app = applicationContext
+        EventSender.io.execute {
+            val apps = recentlyUsedApps(app)
+            runOnUiThread {
+                recent = apps
+                render()
+            }
+        }
     }
 
     private fun addTyped() {
@@ -62,28 +84,42 @@ class WatchlistActivity : Activity() {
     }
 
     private fun render() {
+        val watchlist = Prefs(this).watchlist
         list.removeAllViews()
-        val prefs = Prefs(this)
-        val items = prefs.watchlist.sorted()
-        if (items.isEmpty()) {
-            list.addView(TextView(this).apply { text = "Nothing yet."; textSize = 14f })
-            return
+        if (watchlist.isEmpty()) list.addView(note("Nothing yet."))
+        for (pkg in watchlist.sorted()) list.addView(row(pkg, appLabel(this, pkg), watched = true))
+
+        recentList.removeAllViews()
+        when {
+            !hasUsageAccess(this) -> recentList.addView(note("Grant usage access to see recently used apps."))
+            recent.isEmpty() -> recentList.addView(note("No recent app usage found."))
+            else -> for ((pkg, lastUsed) in recent) {
+                val ago = DateUtils.getRelativeTimeSpanString(
+                    lastUsed, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS
+                )
+                recentList.addView(row(pkg, "${appLabel(this, pkg)} · $ago", watched = pkg in watchlist))
+            }
         }
-        for (pkg in items) {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(
-                TextView(this).apply { text = "${appLabel(this@WatchlistActivity, pkg)}\n$pkg"; textSize = 15f },
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            )
-            row.addView(Button(this).apply {
-                text = "Remove"
-                isAllCaps = false
-                setOnClickListener {
-                    prefs.watchlist = prefs.watchlist - pkg
-                    render()
-                }
-            })
-            list.addView(row)
-        }
+    }
+
+    private fun note(value: String) = TextView(this).apply { text = value; textSize = 14f }
+
+    /** One app with an Add/Remove toggle; both sections re-render so they stay in sync. */
+    private fun row(pkg: String, title: String, watched: Boolean): LinearLayout {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(
+            TextView(this).apply { text = "$title\n$pkg"; textSize = 15f },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        row.addView(Button(this).apply {
+            text = if (watched) "Remove" else "Add"
+            isAllCaps = false
+            setOnClickListener {
+                val prefs = Prefs(this@WatchlistActivity)
+                prefs.watchlist = if (watched) prefs.watchlist - pkg else prefs.watchlist + pkg
+                render()
+            }
+        })
+        return row
     }
 }

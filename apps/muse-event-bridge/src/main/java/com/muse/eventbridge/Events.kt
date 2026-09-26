@@ -2,6 +2,7 @@ package com.muse.eventbridge
 
 import android.Manifest
 import android.app.AppOpsManager
+import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Process
@@ -26,6 +27,20 @@ fun appLabel(context: Context, packageName: String): String = try {
     pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
 } catch (e: PackageManager.NameNotFoundException) {
     packageName
+}
+
+/** Apps the user has had on screen recently, most recent first: (package, lastVisibleMs). */
+fun recentlyUsedApps(context: Context, days: Int = 7, limit: Int = 25): List<Pair<String, Long>> {
+    if (!hasUsageAccess(context)) return emptyList()
+    val now = System.currentTimeMillis()
+    val stats = context.getSystemService(UsageStatsManager::class.java)
+        .queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - days * 24L * 60 * 60 * 1000, now)
+        ?: return emptyList()
+    return mostRecentPackages(
+        stats.filter { it.totalTimeVisible > 0 }.map { it.packageName to it.lastTimeVisible },
+        exclude = setOf(context.packageName, "android", "com.android.systemui"),
+        limit = limit,
+    )
 }
 
 /** Builds the JSON payload. Only package name, label and timestamps: nothing else leaves the device. */

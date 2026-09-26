@@ -99,4 +99,16 @@ class LogicTest {
         assertFalse(isPermanentFailure(500))
         assertFalse(isPermanentFailure(503))
     }
+
+    @Test
+    fun recentPackagesAreMergedSortedAndFiltered() {
+        val samples = listOf(
+            "a.game" to 100L, "b.chat" to 300L, "a.game" to 500L,
+            "c.mail" to 200L, "self.app" to 900L, "d.never" to 0L,
+        )
+        assertEquals(
+            listOf("a.game" to 500L, "b.chat" to 300L),
+            mostRecentPackages(samples, exclude = setOf("self.app"), limit = 2)
+        )
+    }
 }
