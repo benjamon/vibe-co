@@ -8,7 +8,6 @@ import android.os.Looper
 import android.text.format.DateFormat
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import java.util.Date
 
 /** Last 50 events with delivery status; refreshes itself while visible. */
@@ -27,7 +26,7 @@ class LogActivity : Activity() {
         super.onCreate(savedInstanceState)
         screen {
             button("Send test event") { sendTest() }
-            button("Retry queued now") { retry() }
+            button("Publish queued now") { retry() }
             summary = text(sizeSp = 13f)
             list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             addView(list)
@@ -45,14 +44,9 @@ class LogActivity : Activity() {
     }
 
     private fun sendTest() {
-        val prefs = Prefs(this)
-        if (!isHttpsUrl(prefs.endpoint)) {
-            Toast.makeText(this, "Set an https:// endpoint in Webhook settings first", Toast.LENGTH_LONG).show()
-            return
-        }
         val app = applicationContext
-        EventSender.io.execute {
-            EventSender.sendTestEvent(app) // immediate single POST, unaffected by batching
+        NotificationTransport.io.execute {
+            NotificationTransport.sendTestEvent(app) // updates the notification immediately
             ui.post { render() }
         }
         render()
@@ -60,9 +54,8 @@ class LogActivity : Activity() {
 
     private fun retry() {
         val app = applicationContext
-        EventSender.io.execute {
-            EventStore.get(app).makePendingDueNow()
-            EventSender.flush(app, force = true) // explicit retry: send the batch now
+        NotificationTransport.io.execute {
+            NotificationTransport.flush(app, force = true) // publish the whole queue now
             ui.post { render() }
         }
     }
@@ -75,15 +68,15 @@ class LogActivity : Activity() {
         val timeFormat = if (DateFormat.is24HourFormat(this)) "MMM d HH:mm:ss" else "MMM d h:mm:ss a"
         for (r in rows) {
             val time = DateFormat.format(timeFormat, Date(r.createdMs))
-            // Batch rows are log-only markers; show their one-line summary as-is.
-            if (r.type == EventStore.EVENT_TYPE_BATCH) {
-                list.addView(batchRow("$time  ${r.detail ?: "batch"}", r.state))
+            // Notify rows are log-only markers; show their one-line summary as-is.
+            if (r.type == EventStore.EVENT_TYPE_NOTIFY) {
+                list.addView(markerRow("$time  ${r.detail ?: "notify"}", r.state))
                 continue
             }
             val status = when (r.state) {
-                EventStore.SENT -> "HTTP ${r.httpCode} ✓"
-                EventStore.FAILED -> "HTTP ${r.httpCode} ✗ ${r.detail ?: ""}"
-                else -> listOfNotNull(r.httpCode?.let { "HTTP $it" }, r.detail).joinToString(" · ")
+                EventStore.SENT -> "synced ✓"
+                EventStore.FAILED -> "✗ ${r.detail ?: ""}"
+                else -> r.detail ?: "queued"
             }
             val flag = if (r.priority == Priority.HIGH) "  ★ HIGH" else ""
             list.addView(TextView(this).apply {
@@ -102,8 +95,8 @@ class LogActivity : Activity() {
         }
     }
 
-    /** A batch-send marker: one bold line, green when delivered, red when it failed. */
-    private fun batchRow(text: String, state: String): TextView = TextView(this).apply {
+    /** A notification-update marker: one bold line, green when published, red on failure. */
+    private fun markerRow(text: String, state: String): TextView = TextView(this).apply {
         this.text = text
         textSize = 13f
         setTypeface(typeface, android.graphics.Typeface.BOLD)

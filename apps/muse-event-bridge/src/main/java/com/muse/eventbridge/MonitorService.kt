@@ -9,8 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
-import android.net.ConnectivityManager
-import android.net.Network
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -38,7 +36,7 @@ class MonitorService : Service() {
             context.stopService(Intent(context, MonitorService::class.java))
         }
 
-        /** Ask a running service to retry the queue now (e.g. after settings changed). */
+        /** Ask a running service to publish the queue now (e.g. after settings changed). */
         fun flushNow(context: Context) {
             if (Prefs(context).monitoringEnabled && hasUsageAccess(context)) {
                 context.startForegroundService(Intent(context, MonitorService::class.java).setAction(ACTION_FLUSH))
@@ -49,7 +47,6 @@ class MonitorService : Service() {
     private lateinit var worker: HandlerThread
     private lateinit var handler: Handler
     private lateinit var monitor: ForegroundMonitor
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val pollTask = Runnable { poll() }
     private val flushTask = Runnable { flush() }
 
@@ -66,7 +63,6 @@ class MonitorService : Service() {
         worker = HandlerThread("muse-monitor").also { it.start() }
         handler = Handler(worker.looper)
         monitor = ForegroundMonitor(this)
-        registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -77,10 +73,7 @@ class MonitorService : Service() {
         // Every startForegroundService() must be answered with startForeground().
         goForeground(statusText())
         if (intent?.action == ACTION_FLUSH) {
-            handler.post {
-                EventStore.get(this).makePendingDueNow()
-                flush()
-            }
+            handler.post { flush(force = true) }
         } else {
             handler.removeCallbacks(pollTask)
             handler.post(pollTask)
@@ -89,7 +82,6 @@ class MonitorService : Service() {
     }
 
     override fun onDestroy() {
-        networkCallback?.let { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         handler.removeCallbacksAndMessages(null)
         worker.quitSafely()
         super.onDestroy()
@@ -113,10 +105,10 @@ class MonitorService : Service() {
         handler.postDelayed(pollTask, prefs.pollSeconds * 1000L)
     }
 
-    private fun flush() {
+    private fun flush(force: Boolean = false) {
         handler.removeCallbacks(flushTask)
         val delay = try {
-            EventSender.flush(this)
+            NotificationTransport.flush(this, force)
         } catch (e: Exception) {
             Log.e(TAG, "flush failed", e)
             null
@@ -125,24 +117,12 @@ class MonitorService : Service() {
         updateNotification()
     }
 
-    private fun registerNetworkCallback() {
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                // Connectivity is back: skip the remaining backoff and retry right away.
-                handler.post {
-                    EventStore.get(this@MonitorService).makePendingDueNow()
-                    flush()
-                }
-            }
-        }
-        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(cb)
-        networkCallback = cb
-    }
-
     private fun statusText(): String {
         if (!hasUsageAccess(this)) return "Usage access missing: tap to fix"
+        val prefs = Prefs(this)
+        if (!prefs.notifyEnabled) return "Watching · sync notification off"
         val pending = EventStore.get(this).pendingCount()
-        val mode = if (Prefs(this).trackAllApps) "all apps" else "watchlist"
+        val mode = if (prefs.trackAllApps) "all apps" else "watchlist"
         return if (pending == 0) "Watching $mode" else "Watching $mode · $pending queued"
     }
 

@@ -23,7 +23,7 @@ class MainActivity : Activity() {
             grantButton = button("Grant usage access…") { open(UsageAccessActivity::class.java) }
             toggleButton = button("") { toggleMonitoring() }
             heading("CONFIGURE")
-            button("Webhook settings") { open(WebhookActivity::class.java) }
+            button("Settings") { open(SettingsActivity::class.java) }
             button("Watchlist") { open(WatchlistActivity::class.java) }
             button("Event log & test event") { open(LogActivity::class.java) }
             heading("PRIVACY")
@@ -58,8 +58,8 @@ class MainActivity : Activity() {
             }
             else -> {
                 MonitorService.start(this)
-                if (!isHttpsUrl(prefs.endpoint)) {
-                    Toast.makeText(this, "Events will queue until an https:// endpoint is set", Toast.LENGTH_LONG).show()
+                if (!prefs.notifyEnabled) {
+                    Toast.makeText(this, "Sync notification is off — events will queue. Enable it in Settings.", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -70,17 +70,15 @@ class MainActivity : Activity() {
         val prefs = Prefs(this)
         val access = hasUsageAccess(this)
         val notifications = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
-        val endpoint = prefs.endpoint
         val mode = if (prefs.trackAllApps) "all apps" else "watchlist only"
         status.text = buildString {
             appendLine("Monitoring: " + if (prefs.monitoringEnabled) "ON" else "off")
             appendLine("Usage access: " + if (access) "granted ✓" else "MISSING ✗")
-            appendLine("Notifications: " + if (notifications) "allowed" else "blocked (monitoring still works)")
             appendLine(
-                "Endpoint: " + when {
-                    endpoint.isBlank() -> "not set"
-                    !isHttpsUrl(endpoint) -> "INVALID (https:// only)"
-                    else -> endpoint
+                "Sync notification: " + when {
+                    !prefs.notifyEnabled -> "OFF (events queue only)"
+                    !notifications -> "BLOCKED (allow notifications)"
+                    else -> "on · synced ${prefs.syncedTotal}"
                 }
             )
             appendLine("Tracking: $mode · ${prefs.watchlist.size} watched · every ${prefs.pollSeconds}s")

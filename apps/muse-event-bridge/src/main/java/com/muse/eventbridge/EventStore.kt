@@ -42,8 +42,8 @@ class EventStore private constructor(context: Context) :
         const val SENT = "sent"
         const val FAILED = "failed"
 
-        /** Synthetic log-only rows recording a batch POST; never queued for sending. */
-        const val EVENT_TYPE_BATCH = "batch"
+        /** Synthetic log-only row recording a notification update; never queued for sending. */
+        const val EVENT_TYPE_NOTIFY = "notify"
 
         private const val KEEP_HISTORY = 200
         private const val MAX_PENDING = 5000
@@ -137,36 +137,42 @@ class EventStore private constructor(context: Context) :
         put("detail", detail)
     })
 
-    /** Mark every event in a delivered batch as sent, in one transaction. */
-    fun markSentBatch(events: List<QueuedEvent>, code: Int) = inTransaction {
-        for (e in events) markSent(e.id, e.attempts + 1, code)
+    /** Mark every event published in a notification update as synced, in one transaction. */
+    fun markSyncedBatch(events: List<QueuedEvent>) = inTransaction {
+        for (e in events) markSynced(e.id)
     }
 
-    /** Endpoint permanently rejected the batch: mark each failed and drop from the queue. */
-    fun markFailedBatch(events: List<QueuedEvent>, code: Int, detail: String) = inTransaction {
-        for (e in events) markFailed(e.id, e.attempts + 1, code, detail)
-    }
+    /** Mark one event as published to the notification (no HTTP code involved). */
+    fun markSynced(id: Long) = update(id, ContentValues().apply {
+        put("state", SENT)
+        putNull("http_code")
+        put("detail", "Synced")
+    })
 
-    /** Transient batch failure: bump each event's attempt count and defer it to [nextAttemptMs]. */
-    fun rescheduleBatch(events: List<QueuedEvent>, nextAttemptMs: Long, code: Int?, detail: String) = inTransaction {
-        for (e in events) reschedule(e.id, e.attempts + 1, nextAttemptMs, code, detail)
-    }
-
-    /** Records one batch POST in the event log. Not queued for sending (state is terminal). */
-    fun logBatch(count: Int, code: Int?, ok: Boolean, detail: String) {
+    /** Records one notification update in the event log. Not queued for sending. */
+    fun logNotify(count: Int) {
         writableDatabase.insert("events", null, ContentValues().apply {
             put("created_ms", System.currentTimeMillis())
-            put("event_type", EVENT_TYPE_BATCH)
+            put("event_type", EVENT_TYPE_NOTIFY)
             put("package_name", "")
             put("app_label", "")
             put("priority", "normal")
             put("payload", "")
-            put("state", if (ok) SENT else FAILED)
+            put("state", SENT)
             put("attempts", count)
-            if (code == null) putNull("http_code") else put("http_code", code)
-            put("detail", detail)
+            putNull("http_code")
+            put("detail", "notify ($count events)")
         })
     }
+
+    /** Payloads of the most recent synced app/test events, oldest first (for the rolling window). */
+    fun recentSyncedPayloads(limit: Int): List<String> =
+        readableDatabase.rawQuery(
+            "SELECT payload FROM events WHERE state = ? AND event_type != ? ORDER BY id DESC LIMIT $limit",
+            arrayOf(SENT, EVENT_TYPE_NOTIFY)
+        ).use { c ->
+            buildList { while (c.moveToNext()) add(c.getString(0)) }.asReversed()
+        }
 
     fun reschedule(id: Long, attempts: Int, nextAttemptMs: Long, code: Int?, detail: String) =
         update(id, ContentValues().apply {
@@ -201,6 +207,11 @@ class EventStore private constructor(context: Context) :
     fun pendingCount(): Int =
         readableDatabase.rawQuery("SELECT COUNT(*) FROM events WHERE state = ?", arrayOf(PENDING))
             .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    fun oldestPendingCreatedMs(): Long? =
+        readableDatabase.rawQuery(
+            "SELECT MIN(created_ms) FROM events WHERE state = ?", arrayOf(PENDING)
+        ).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null }
 
     fun recent(limit: Int = 50): List<LogRow> =
         readableDatabase.rawQuery(

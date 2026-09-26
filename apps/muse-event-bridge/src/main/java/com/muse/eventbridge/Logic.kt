@@ -1,6 +1,5 @@
 package com.muse.eventbridge
 
-import java.net.URI
 
 // Pure (Android-free) logic, covered by src/test unit tests.
 
@@ -47,13 +46,6 @@ class SessionTracker(current: String? = null, since: Long = 0L) {
     }
 }
 
-fun isHttpsUrl(url: String): Boolean = try {
-    val uri = URI(url.trim())
-    uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
-} catch (e: Exception) {
-    false
-}
-
 private val PACKAGE_NAME = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
 
 fun isValidPackageName(name: String): Boolean = PACKAGE_NAME.matches(name)
@@ -64,61 +56,50 @@ fun shouldReport(packageName: String, trackAllApps: Boolean, watchlist: Set<Stri
 fun priorityFor(packageName: String, watchlist: Set<String>): String =
     if (packageName in watchlist) Priority.HIGH else Priority.NORMAL
 
-const val BACKOFF_BASE_MS = 10_000L
-const val BACKOFF_MAX_MS = 30 * 60_000L
-
-/** Delay before retry number [attempts] (1-based): 10s, 20s, 40s ... capped at 30 min. */
-fun backoffMillis(attempts: Int): Long {
-    val exp = (attempts - 1).coerceIn(0, 20)
-    return minOf(BACKOFF_BASE_MS shl exp, BACKOFF_MAX_MS)
-}
-
-/** Status codes that retrying won't fix (bad token, bad URL, redirects we refuse to follow). */
-fun isPermanentFailure(code: Int): Boolean =
-    code in 300..499 && code != 408 && code != 429
-
 // --- Batch delivery ---
 
-/** Trigger a batch send once this many events are queued, without waiting for the window. */
+/** Trigger a batch publish once this many events are queued, without waiting for the window. */
 const val BATCH_MAX_SIZE = 20
 
-/** Otherwise send whatever is queued once the oldest event has waited this long. */
+/** Otherwise publish whatever is queued once the oldest event has waited this long. */
 const val BATCH_WINDOW_MS = 60_000L
 
-const val BATCH_BACKOFF_BASE_MS = 30_000L
-const val BATCH_BACKOFF_MAX_MS = 15 * 60_000L
+/** Notification big-text payloads stay under this so Android never truncates them. */
+const val NOTIFY_MAX_BYTES = 4096
 
-/** Upper bound we'll ever wait, even if a server's Retry-After asks for more. */
-const val BATCH_RETRY_CAP_MS = 60 * 60_000L
-
-/** Delay before batch retry number [attempts] (1-based): 30s, 60s, 120s ... capped at 15 min. */
-fun batchBackoffMillis(attempts: Int): Long {
-    val exp = (attempts - 1).coerceIn(0, 20)
-    return minOf(BATCH_BACKOFF_BASE_MS shl exp, BATCH_BACKOFF_MAX_MS)
-}
-
-/**
- * Equal jitter: keep half the delay fixed and randomize the other half, so retries
- * spread out but never collapse to zero. [rand] is a value in [0, 1).
- */
-fun withJitter(baseMs: Long, rand: Double): Long {
-    val half = baseMs / 2
-    return half + (rand.coerceIn(0.0, 1.0) * half).toLong()
-}
+/** Number of most-recent events the sync notification keeps in its rolling window. */
+const val NOTIFY_WINDOW = 50
 
 /** Each payload is already a JSON object; join them into one array without re-parsing. */
 fun batchArrayJson(payloads: List<String>): String =
     payloads.joinToString(separator = ",", prefix = "[", postfix = "]")
 
+/** UTF-8 byte size of the JSON array these payloads would form. */
+fun batchArrayBytes(payloads: List<String>): Int =
+    batchArrayJson(payloads).toByteArray(Charsets.UTF_8).size
+
 /**
- * Parses a Retry-After header expressed as a number of seconds. Returns milliseconds,
- * or null if it is absent or an HTTP-date (the caller handles the date form). Clamped
- * so a hostile or absurd value can't wedge the queue.
+ * Longest prefix of [payloads] (oldest first) whose JSON array fits within [maxBytes].
+ * Always returns at least the first event, so an over-large single event still makes
+ * progress instead of wedging the queue. The rest ride the next flush.
  */
-fun retryAfterMillis(headerValue: String?): Long? {
-    val seconds = headerValue?.trim()?.toLongOrNull() ?: return null
-    if (seconds < 0) return null
-    return (seconds * 1000L).coerceIn(1_000L, BATCH_RETRY_CAP_MS)
+fun takePrefixWithinBytes(payloads: List<String>, maxBytes: Int): List<String> {
+    if (payloads.isEmpty()) return emptyList()
+    var end = 1
+    while (end < payloads.size && batchArrayBytes(payloads.subList(0, end + 1)) <= maxBytes) end++
+    return payloads.subList(0, end)
+}
+
+/**
+ * Longest suffix of [payloads] (chronological in, most-recent kept) whose JSON array
+ * fits within [maxBytes]. Used to build the rolling notification window; always keeps
+ * at least the most recent event.
+ */
+fun takeSuffixWithinBytes(payloads: List<String>, maxBytes: Int): List<String> {
+    if (payloads.isEmpty()) return emptyList()
+    var start = payloads.size - 1
+    while (start > 0 && batchArrayBytes(payloads.subList(start - 1, payloads.size)) <= maxBytes) start--
+    return payloads.subList(start, payloads.size)
 }
 
 /**

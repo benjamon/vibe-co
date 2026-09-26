@@ -1,15 +1,16 @@
 # Muse Event Bridge (Android)
 
-A small background app that watches which app is in the foreground and POSTs a
-JSON event to your HTTPS webhook every time it changes. Muse polls that webhook
-and uses the events (e.g. "you just opened the game again").
+A small background app that watches which app is in the foreground and publishes a
+JSON event every time it changes. Events are written to a single silent, ongoing
+**notification** that Muse reads on-device (e.g. "you just opened the game again").
+Nothing is sent over the network.
 
 - Kotlin, single module, minSdk 30, targetSdk 34, **no third-party dependencies**
-  (framework Views, SQLite, `HttpsURLConnection`).
+  (framework Views, SQLite, framework notifications).
 - Foreground service (`specialUse` type, Android 14+ compliant) with a persistent
-  notification; restarts after reboot and app updates.
-- Unsent events are stored in SQLite and retried with exponential backoff
-  (10s → 20s → 40s … capped at 30 min), and retried immediately when the network returns.
+  status notification; restarts after reboot and app updates.
+- Events are queued in SQLite so nothing is lost across restarts; the queue is
+  published to the sync notification in batches.
 
 ## Event schema
 
@@ -25,24 +26,35 @@ and uses the events (e.g. "you just opened the game again").
 }
 ```
 
-`session_seconds` only appears on `app_background`. Headers are `Content-Type: application/json`
-and `X-Event-Token: <shared secret>`. Non-`https://` endpoints are refused, both in settings and
-at send time, and cleartext traffic is disabled for the whole app.
+`session_seconds` only appears on `app_background`. `priority` is `high` for watchlisted
+apps, `normal` otherwise.
 
-How detection works: every poll interval (15s by default) the service reads
+## How it works
+
+Detection: every poll interval (15s by default) the service reads
 `UsageStatsManager.queryEvents()` since the last poll and replays each `ACTIVITY_RESUMED`,
 so even switches shorter than the interval are reported with their real timestamps.
 Screen-off (`SCREEN_NON_INTERACTIVE`) ends the current session, so you get an `app_background`
-event with its duration.
+event with its duration. The watchlist decides what is reported (in watchlist-only mode) and
+which events are `priority: high`.
 
-Delivery is **batched**: queued events are POSTed as a single JSON array (same per-event schema,
-same headers) every 60 seconds, or immediately once 20 events are queued. A 2xx clears exactly the
-events in that batch; each batch send is logged as `batch (N events) -> HTTP <code>`. A transient
-failure (5xx, network) backs off exponentially with jitter (30s, doubling, capped at 15 min), and
-an HTTP 429 honours the `Retry-After` header when present. Only one send is ever in flight at a
-time. 3xx/4xx (except 408/429) are marked failed and not retried, because a bad token or URL won't
-fix itself. **Send test event** is the exception: it POSTs one event immediately as a single JSON
-object, outside the batch.
+Transport — the **notification**:
+
+- A dedicated `NotificationChannel` at `IMPORTANCE_MIN`: completely silent, no sound, no
+  vibration, minimal visual interruption.
+- **One** persistent notification (fixed ID, `setOngoing`, never auto-cancelled). Each flush
+  rewrites it in place with `BigTextStyle`.
+- Title `Muse Event Bridge`; summary `Synced <N> events` (N = running total published).
+- Big text is a compact JSON array of the most recent events — the exact same event objects
+  the app would otherwise send — kept as a rolling window of ~50 events and always under 4 KB.
+  If a batch would exceed 4 KB it is split across flushes. The notification is never cleared;
+  a receiver dedupes by event identity (`device_id` + `timestamp` + `event_type` + `package_name`).
+- Batching: a flush publishes once the window is due (60s) or 20 events are queued; each update
+  is logged as `notify (N events)`. Only one update is ever in flight at a time.
+- **Send test event** publishes/refreshes the notification immediately with a test payload.
+
+The transport can be toggled independently of monitoring in **Settings**: with it off, events
+still capture into the queue but aren't published.
 
 ## Build
 
@@ -66,14 +78,17 @@ adb install -r build/outputs/apk/debug/muse-event-bridge-debug.apk
 adb shell appops set com.muse.eventbridge GET_USAGE_STATS allow
 adb shell appops get com.muse.eventbridge GET_USAGE_STATS      # -> "GET_USAGE_STATS: allow"
 
-# Notifications (Android 13+), if you skipped the prompt:
+# Notifications (Android 13+) — required for the transport, if you skipped the prompt:
 adb shell pm grant com.muse.eventbridge android.permission.POST_NOTIFICATIONS
+
+# Read the current sync notification's big text (the event array)
+adb shell dumpsys notification --noredact | grep -A3 "Muse Event Bridge"
 
 # Is the service running?
 adb shell dumpsys activity services com.muse.eventbridge | grep -E "ServiceRecord|isForeground"
 
 # Logs
-adb logcat -s MonitorService EventSender BootReceiver
+adb logcat -s MonitorService NotificationTransport BootReceiver
 
 # Simulate a reboot broadcast to test the boot receiver
 adb shell am broadcast -a android.intent.action.BOOT_COMPLETED -p com.muse.eventbridge
@@ -83,35 +98,35 @@ The Watchlist screen lists apps used in the last 7 days (with Add/Remove), and a
 **Pick from installed apps**. To look up a package name by hand:
 `adb shell pm list packages | grep -i galaxy`
 
-## Acceptance test (Pixel + webhook.site)
+## Acceptance test (Pixel)
 
-1. Open https://webhook.site and copy your unique URL.
-2. Install the APK, open **Muse Event Bridge**, and allow notifications.
-3. Tap **Grant usage access…**, then **Open Usage access settings**, and turn on
+1. Install the APK, open **Muse Event Bridge**, and allow notifications when prompted.
+2. Tap **Grant usage access…**, then **Open Usage access settings**, and turn on
    *Permit usage access*. Press back.
-4. **Webhook settings**: paste the webhook.site URL, set a token (e.g. `muse-test`), keep 15s,
-   and leave *Track ALL apps* on. Tap **Save**.
-5. **Watchlist**: tap **Add** on an app under *Recently used* (or use *Pick from installed apps*),
-   choosing one you'll open in step 7 (e.g. Chrome, or your game).
-6. **Event log & test event**: tap **Send test event**. It should show `HTTP 200 ✓`, and
-   webhook.site shows a `test` event with header `x-event-token: muse-test`.
-7. Back on the main screen, tap **Start monitoring**. Open three different apps, spending about
-   10s in each, then go home.
-8. webhook.site should show `app_foreground` / `app_background` pairs with the correct
-   `package_name` values. The watchlisted app's events carry `"priority": "high"` and a
-   `session_seconds` value on its `app_background`. Events usually arrive within one poll
-   interval (≤15s).
+3. **Settings**: confirm *Publish events to the sync notification* is on, keep 15s, leave
+   *Track ALL apps* on. Tap **Save**.
+4. **Watchlist**: tap **Add** on an app under *Recently used* (or use *Pick from installed apps*),
+   choosing one you'll open in step 6.
+5. **Event log & test event**: tap **Send test event**. A silent "Muse Event Bridge"
+   notification appears reading `Synced 1 events`; expand it to see the `test` event JSON. The
+   log shows `notify (1 events)`.
+6. Back on the main screen, tap **Start monitoring**. Open three different apps, ~10s each, then
+   go home. Within a poll interval, expand the notification: its big-text JSON array holds the
+   recent `app_foreground` / `app_background` events with the correct `package_name`s. The
+   watchlisted app's events carry `"priority": "high"` and a `session_seconds` on `app_background`.
+   Read the array programmatically with the `dumpsys notification` command above.
 
 ## Privacy
 
-Only package names, app labels, timestamps and a random install id leave the device. The app
-does not use accessibility services or a notification listener, does not capture the screen, and
-does not read input. Backups are disabled (`allowBackup=false`), so the shared secret is never
-copied off the phone.
+Events (package names, app labels and timestamps only, plus a random install id) are written to
+a local, silent notification for Muse to read on-device — nothing leaves the phone over the
+network (the app has no `INTERNET` permission). It does not use accessibility services or a
+notification listener, does not capture the screen, and does not read input. Backups are disabled
+(`allowBackup=false`).
 
 ## Notes / limits
 
 - Android may batch usage events slightly. Detection latency is about one poll interval.
 - Monitoring stops if you force-stop the app; it resumes the next time you open it or on reboot.
-- If Muse needs a stable stream through app restarts, it can deduplicate on
-  `(device_id, timestamp, event_type, package_name)`.
+- The notification shows a rolling window (~50 events, ≤4 KB), so a reader that polls slower than
+  events arrive should read on every change and dedupe; older events scroll out of the window.

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Muse Event Bridge</string>
-    <string name="privacy_note">Privacy: only package names, app labels and timestamps leave this phone, sent to the HTTPS endpoint you configure. The app never reads notification contents, keystrokes, or anything on your screen.</string>
+    <string name="privacy_note">Privacy: events (package names, app labels and timestamps only) are written to a silent on-device notification for Muse to read. Nothing is sent over the network. The app never reads notification contents, keystrokes, or anything on your screen.</string>
 </resources>

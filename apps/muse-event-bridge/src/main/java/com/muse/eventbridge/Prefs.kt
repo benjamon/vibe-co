@@ -10,13 +10,15 @@ const val MAX_POLL_SECONDS = 3600
 class Prefs(context: Context) {
     private val sp = context.applicationContext.getSharedPreferences("bridge", Context.MODE_PRIVATE)
 
-    var endpoint: String
-        get() = sp.getString("endpoint", "") ?: ""
-        set(value) = sp.edit().putString("endpoint", value.trim()).apply()
+    /** Whether the notification transport publishes events. Independent of monitoring. */
+    var notifyEnabled: Boolean
+        get() = sp.getBoolean("notify_enabled", true)
+        set(value) = sp.edit().putBoolean("notify_enabled", value).apply()
 
-    var token: String
-        get() = sp.getString("token", "") ?: ""
-        set(value) = sp.edit().putString("token", value.trim()).apply()
+    /** Running total of events published to the sync notification. */
+    var syncedTotal: Long
+        get() = sp.getLong("synced_total", 0L)
+        set(value) = sp.edit().putLong("synced_total", value).apply()
 
     var pollSeconds: Int
         get() = sp.getInt("poll_seconds", DEFAULT_POLL_SECONDS)

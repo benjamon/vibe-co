@@ -42,7 +42,7 @@ class WatchlistActivity : Activity() {
 
     private fun loadRecent() {
         val app = applicationContext
-        EventSender.io.execute {
+        NotificationTransport.io.execute {
             val apps = recentlyUsedApps(app)
             runOnUiThread {
                 recent = apps

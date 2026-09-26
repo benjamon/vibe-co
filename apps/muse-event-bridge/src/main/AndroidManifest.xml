@@ -2,8 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -25,8 +23,7 @@
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.Material.Light.DarkActionBar"
-        android:usesCleartextTraffic="false">
+        android:theme="@android:style/Theme.Material.Light.DarkActionBar">
 
         <activity
             android:name=".MainActivity"
@@ -40,8 +37,8 @@
             android:name=".UsageAccessActivity"
             android:label="Usage access" />
         <activity
-            android:name=".WebhookActivity"
-            android:label="Webhook settings"
+            android:name=".SettingsActivity"
+            android:label="Settings"
             android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".WatchlistActivity"
@@ -59,7 +56,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Detects foreground app changes via UsageStatsManager and forwards them to the user's own webhook for personal accountability." />
+                android:value="Detects foreground app changes via UsageStatsManager and reports them to the user's on-device Muse assistant through a local notification, for personal accountability." />
         </service>
 
         <receiver
