@@ -1,0 +1,48 @@
+name: Build Muse Event Bridge (Android)
+
+on:
+  push:
+    paths:
+      - apps/muse-event-bridge/**
+      - .github/workflows/android-muse-event-bridge.yml
+  pull_request:
+    paths:
+      - apps/muse-event-bridge/**
+      - .github/workflows/android-muse-event-bridge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/muse-event-bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: APK path
+        run: |
+          ls -l build/outputs/apk/debug/
+          echo "Debug APK: apps/muse-event-bridge/build/outputs/apk/debug/muse-event-bridge-debug.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muse-event-bridge-debug-apk
+          path: apps/muse-event-bridge/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
