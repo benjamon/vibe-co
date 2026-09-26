@@ -14,7 +14,7 @@ data class OutgoingEvent(
     val payload: String,
 )
 
-data class QueuedEvent(val id: Long, val payload: String, val attempts: Int)
+data class QueuedEvent(val id: Long, val payload: String, val attempts: Int, val createdMs: Long)
 
 data class LogRow(
     val id: Long,
@@ -41,6 +41,9 @@ class EventStore private constructor(context: Context) :
         const val PENDING = "pending"
         const val SENT = "sent"
         const val FAILED = "failed"
+
+        /** Synthetic log-only rows recording a batch POST; never queued for sending. */
+        const val EVENT_TYPE_BATCH = "batch"
 
         private const val KEEP_HISTORY = 200
         private const val MAX_PENDING = 5000
@@ -77,11 +80,12 @@ class EventStore private constructor(context: Context) :
         onCreate(db)
     }
 
-    fun enqueue(event: OutgoingEvent) {
+    /** Returns the new row id so a single/immediate send can update just that row. */
+    fun enqueue(event: OutgoingEvent): Long {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            db.insert("events", null, ContentValues().apply {
+            val id = db.insert("events", null, ContentValues().apply {
                 put("created_ms", event.timeMs)
                 put("event_type", event.type)
                 put("package_name", event.packageName)
@@ -103,6 +107,7 @@ class EventStore private constructor(context: Context) :
                 arrayOf(PENDING, PENDING)
             )
             db.setTransactionSuccessful()
+            return id
         } finally {
             db.endTransaction()
         }
@@ -110,10 +115,12 @@ class EventStore private constructor(context: Context) :
 
     fun due(nowMs: Long, limit: Int): List<QueuedEvent> =
         readableDatabase.rawQuery(
-            "SELECT id, payload, attempts FROM events WHERE state = ? AND next_attempt_ms <= ? ORDER BY id LIMIT $limit",
+            "SELECT id, payload, attempts, created_ms FROM events WHERE state = ? AND next_attempt_ms <= ? ORDER BY id LIMIT $limit",
             arrayOf(PENDING, nowMs.toString())
         ).use { c ->
-            buildList { while (c.moveToNext()) add(QueuedEvent(c.getLong(0), c.getString(1), c.getInt(2))) }
+            buildList {
+                while (c.moveToNext()) add(QueuedEvent(c.getLong(0), c.getString(1), c.getInt(2), c.getLong(3)))
+            }
         }
 
     fun markSent(id: Long, attempts: Int, code: Int) = update(id, ContentValues().apply {
@@ -129,6 +136,37 @@ class EventStore private constructor(context: Context) :
         put("http_code", code)
         put("detail", detail)
     })
+
+    /** Mark every event in a delivered batch as sent, in one transaction. */
+    fun markSentBatch(events: List<QueuedEvent>, code: Int) = inTransaction {
+        for (e in events) markSent(e.id, e.attempts + 1, code)
+    }
+
+    /** Endpoint permanently rejected the batch: mark each failed and drop from the queue. */
+    fun markFailedBatch(events: List<QueuedEvent>, code: Int, detail: String) = inTransaction {
+        for (e in events) markFailed(e.id, e.attempts + 1, code, detail)
+    }
+
+    /** Transient batch failure: bump each event's attempt count and defer it to [nextAttemptMs]. */
+    fun rescheduleBatch(events: List<QueuedEvent>, nextAttemptMs: Long, code: Int?, detail: String) = inTransaction {
+        for (e in events) reschedule(e.id, e.attempts + 1, nextAttemptMs, code, detail)
+    }
+
+    /** Records one batch POST in the event log. Not queued for sending (state is terminal). */
+    fun logBatch(count: Int, code: Int?, ok: Boolean, detail: String) {
+        writableDatabase.insert("events", null, ContentValues().apply {
+            put("created_ms", System.currentTimeMillis())
+            put("event_type", EVENT_TYPE_BATCH)
+            put("package_name", "")
+            put("app_label", "")
+            put("priority", "normal")
+            put("payload", "")
+            put("state", if (ok) SENT else FAILED)
+            put("attempts", count)
+            if (code == null) putNull("http_code") else put("http_code", code)
+            put("detail", detail)
+        })
+    }
 
     fun reschedule(id: Long, attempts: Int, nextAttemptMs: Long, code: Int?, detail: String) =
         update(id, ContentValues().apply {
@@ -191,5 +229,16 @@ class EventStore private constructor(context: Context) :
 
     private fun update(id: Long, values: ContentValues) {
         writableDatabase.update("events", values, "id = ?", arrayOf(id.toString()))
+    }
+
+    private inline fun inTransaction(body: () -> Unit) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            body()
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 }

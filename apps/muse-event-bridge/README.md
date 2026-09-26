@@ -33,9 +33,16 @@ How detection works: every poll interval (15s by default) the service reads
 `UsageStatsManager.queryEvents()` since the last poll and replays each `ACTIVITY_RESUMED`,
 so even switches shorter than the interval are reported with their real timestamps.
 Screen-off (`SCREEN_NON_INTERACTIVE`) ends the current session, so you get an `app_background`
-event with its duration. 2xx responses are marked delivered. 3xx/4xx responses (except 408/429)
-are marked failed and not retried, because a bad token or URL won't fix itself. Everything
-else is retried.
+event with its duration.
+
+Delivery is **batched**: queued events are POSTed as a single JSON array (same per-event schema,
+same headers) every 60 seconds, or immediately once 20 events are queued. A 2xx clears exactly the
+events in that batch; each batch send is logged as `batch (N events) -> HTTP <code>`. A transient
+failure (5xx, network) backs off exponentially with jitter (30s, doubling, capped at 15 min), and
+an HTTP 429 honours the `Retry-After` header when present. Only one send is ever in flight at a
+time. 3xx/4xx (except 408/429) are marked failed and not retried, because a bad token or URL won't
+fix itself. **Send test event** is the exception: it POSTs one event immediately as a single JSON
+object, outside the batch.
 
 ## Build
 

@@ -111,4 +111,43 @@ class LogicTest {
             mostRecentPackages(samples, exclude = setOf("self.app"), limit = 2)
         )
     }
+
+    @Test
+    fun batchBackoffDoublesFrom30sAndCapsAt15Min() {
+        assertEquals(30_000L, batchBackoffMillis(1))
+        assertEquals(60_000L, batchBackoffMillis(2))
+        assertEquals(120_000L, batchBackoffMillis(3))
+        assertEquals(BATCH_BACKOFF_MAX_MS, batchBackoffMillis(6))
+        assertEquals(BATCH_BACKOFF_MAX_MS, batchBackoffMillis(999))
+    }
+
+    @Test
+    fun jitterStaysBetweenHalfAndFullDelay() {
+        assertEquals(15_000L, withJitter(30_000L, 0.0))
+        assertEquals(30_000L - 1, withJitter(30_000L, 0.999999))
+        assertEquals(22_500L, withJitter(30_000L, 0.5))
+        // Clamped input never escapes the band.
+        val j = withJitter(60_000L, 5.0)
+        assertTrue(j in 30_000L..60_000L)
+    }
+
+    @Test
+    fun batchArrayJoinsObjectsIntoOneArray() {
+        assertEquals("[]", batchArrayJson(emptyList()))
+        assertEquals("[{\"a\":1}]", batchArrayJson(listOf("{\"a\":1}")))
+        assertEquals(
+            "[{\"a\":1},{\"b\":2}]",
+            batchArrayJson(listOf("{\"a\":1}", "{\"b\":2}"))
+        )
+    }
+
+    @Test
+    fun retryAfterParsesSecondsAndRejectsGarbage() {
+        assertEquals(120_000L, retryAfterMillis("120"))
+        assertEquals(1_000L, retryAfterMillis("0"))          // clamped up to 1s minimum
+        assertEquals(BATCH_RETRY_CAP_MS, retryAfterMillis("99999")) // clamped to cap
+        assertEquals(null, retryAfterMillis(null))
+        assertEquals(null, retryAfterMillis("-5"))
+        assertEquals(null, retryAfterMillis("Wed, 21 Oct 2026 07:28:00 GMT")) // HTTP-date handled elsewhere
+    }
 }

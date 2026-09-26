@@ -52,8 +52,7 @@ class LogActivity : Activity() {
         }
         val app = applicationContext
         EventSender.io.execute {
-            EventStore.get(app).enqueue(EventFactory.test(app, prefs))
-            EventSender.flush(app)
+            EventSender.sendTestEvent(app) // immediate single POST, unaffected by batching
             ui.post { render() }
         }
         render()
@@ -63,7 +62,7 @@ class LogActivity : Activity() {
         val app = applicationContext
         EventSender.io.execute {
             EventStore.get(app).makePendingDueNow()
-            EventSender.flush(app)
+            EventSender.flush(app, force = true) // explicit retry: send the batch now
             ui.post { render() }
         }
     }
@@ -75,6 +74,12 @@ class LogActivity : Activity() {
         list.removeAllViews()
         val timeFormat = if (DateFormat.is24HourFormat(this)) "MMM d HH:mm:ss" else "MMM d h:mm:ss a"
         for (r in rows) {
+            val time = DateFormat.format(timeFormat, Date(r.createdMs))
+            // Batch rows are log-only markers; show their one-line summary as-is.
+            if (r.type == EventStore.EVENT_TYPE_BATCH) {
+                list.addView(batchRow("$time  ${r.detail ?: "batch"}", r.state))
+                continue
+            }
             val status = when (r.state) {
                 EventStore.SENT -> "HTTP ${r.httpCode} ✓"
                 EventStore.FAILED -> "HTTP ${r.httpCode} ✗ ${r.detail ?: ""}"
@@ -82,7 +87,7 @@ class LogActivity : Activity() {
             }
             val flag = if (r.priority == Priority.HIGH) "  ★ HIGH" else ""
             list.addView(TextView(this).apply {
-                text = "${DateFormat.format(timeFormat, Date(r.createdMs))}  ${r.type}$flag\n" +
+                text = "$time  ${r.type}$flag\n" +
                     "${r.appLabel} (${r.packageName})\n$status"
                 textSize = 13f
                 setPadding(0, dp(8), 0, dp(8))
@@ -95,5 +100,16 @@ class LogActivity : Activity() {
                 )
             })
         }
+    }
+
+    /** A batch-send marker: one bold line, green when delivered, red when it failed. */
+    private fun batchRow(text: String, state: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 13f
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        setPadding(0, dp(8), 0, dp(8))
+        setTextColor(
+            if (state == EventStore.SENT) Color.rgb(0x1B, 0x5E, 0x20) else Color.rgb(0xB7, 0x1C, 0x1C)
+        )
     }
 }

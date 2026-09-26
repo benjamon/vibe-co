@@ -77,6 +77,50 @@ fun backoffMillis(attempts: Int): Long {
 fun isPermanentFailure(code: Int): Boolean =
     code in 300..499 && code != 408 && code != 429
 
+// --- Batch delivery ---
+
+/** Trigger a batch send once this many events are queued, without waiting for the window. */
+const val BATCH_MAX_SIZE = 20
+
+/** Otherwise send whatever is queued once the oldest event has waited this long. */
+const val BATCH_WINDOW_MS = 60_000L
+
+const val BATCH_BACKOFF_BASE_MS = 30_000L
+const val BATCH_BACKOFF_MAX_MS = 15 * 60_000L
+
+/** Upper bound we'll ever wait, even if a server's Retry-After asks for more. */
+const val BATCH_RETRY_CAP_MS = 60 * 60_000L
+
+/** Delay before batch retry number [attempts] (1-based): 30s, 60s, 120s ... capped at 15 min. */
+fun batchBackoffMillis(attempts: Int): Long {
+    val exp = (attempts - 1).coerceIn(0, 20)
+    return minOf(BATCH_BACKOFF_BASE_MS shl exp, BATCH_BACKOFF_MAX_MS)
+}
+
+/**
+ * Equal jitter: keep half the delay fixed and randomize the other half, so retries
+ * spread out but never collapse to zero. [rand] is a value in [0, 1).
+ */
+fun withJitter(baseMs: Long, rand: Double): Long {
+    val half = baseMs / 2
+    return half + (rand.coerceIn(0.0, 1.0) * half).toLong()
+}
+
+/** Each payload is already a JSON object; join them into one array without re-parsing. */
+fun batchArrayJson(payloads: List<String>): String =
+    payloads.joinToString(separator = ",", prefix = "[", postfix = "]")
+
+/**
+ * Parses a Retry-After header expressed as a number of seconds. Returns milliseconds,
+ * or null if it is absent or an HTTP-date (the caller handles the date form). Clamped
+ * so a hostile or absurd value can't wedge the queue.
+ */
+fun retryAfterMillis(headerValue: String?): Long? {
+    val seconds = headerValue?.trim()?.toLongOrNull() ?: return null
+    if (seconds < 0) return null
+    return (seconds * 1000L).coerceIn(1_000L, BATCH_RETRY_CAP_MS)
+}
+
 /**
  * Collapses (package, lastUsedMs) samples (one per usage-stats bucket) into one
  * entry per package, most recent first.
