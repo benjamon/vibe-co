@@ -75,9 +75,19 @@ jobs:
           GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/osm_globe/
         run: npm run build
 
+      - name: Install round-robin
+        working-directory: apps/round-robin
+        run: npm ci
+
+      - name: Build round-robin
+        working-directory: apps/round-robin
+        env:
+          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/round-robin/
+        run: npm run build
+
       - name: Stage site
         run: |
-          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser _site/sky-strike _site/osm_globe _site/hub
+          mkdir -p _site/auto-battles _site/coin-flip _site/mapoguesser _site/sky-strike _site/osm_globe _site/round-robin _site/hub
           cp -r apps/auto-battles/client/dist/. _site/auto-battles/
           cp apps/auto-battles/client/dist/index.html _site/auto-battles/404.html
           cp -r apps/coin-flip/client/dist/. _site/coin-flip/
@@ -88,6 +98,7 @@ jobs:
           cp apps/sky-strike/client/dist/index.html _site/sky-strike/404.html
           cp -r apps/osm_globe/client/dist/. _site/osm_globe/
           cp apps/osm_globe/client/dist/index.html _site/osm_globe/404.html
+          cp -r apps/round-robin/client/dist/. _site/round-robin/
           cp -r apps/hub/. _site/hub/
           cp apps/hub/index.html _site/hub/404.html
           cp site/index.html _site/index.html
