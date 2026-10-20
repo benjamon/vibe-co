@@ -13,6 +13,7 @@ interface GameState {
   gold: number
   coinValue: number
   coinsPerTap: number
+  coinCount: number
   autoFlippers: number
   flips: number
   headsCount: number
@@ -21,6 +22,7 @@ interface GameState {
   tap: () => void
   autoFlipOne: () => void
   finishFlip: (id: number) => void
+  buyCoin: () => void
   buyCoinsPerTap: () => void
   buyCoinValue: () => void
   buyAutoFlipper: () => void
@@ -29,8 +31,12 @@ interface GameState {
 
 export const AUTO_FLIPPER_BASE_INTERVAL_MS = 5000
 
+export function coinCost(currentCount: number) {
+  return Math.floor(10 * Math.pow(2, currentCount - 1))
+}
+
 export function coinsPerTapCost(currentLevel: number) {
-  return Math.floor(5 * Math.pow(3, currentLevel - 1))
+  return Math.floor(100 * Math.pow(3, currentLevel - 1))
 }
 
 export function coinValueCost(currentLevel: number) {
@@ -53,6 +59,7 @@ const INITIAL_STATE = {
   gold: 0,
   coinValue: 1,
   coinsPerTap: 1,
+  coinCount: 1,
   autoFlippers: 0,
   flips: 0,
   headsCount: 0,
@@ -68,15 +75,17 @@ export const useGameStore = create<GameState>((set, get) => ({
   coins: [makeCoin(0)],
 
   tap: () => {
-    const { coins } = get()
-    if (coins.every((c) => c.flipping)) return
-    set({
-      coins: coins.map((c) =>
-        c.flipping
-          ? c
-          : { ...c, flipping: true, result: null, pendingResult: rollFace() },
-      ),
+    const { coins, coinsPerTap } = get()
+    let remaining = coinsPerTap
+    let triggered = false
+    const next = coins.map((c) => {
+      if (remaining <= 0 || c.flipping) return c
+      remaining -= 1
+      triggered = true
+      return { ...c, flipping: true, result: null, pendingResult: rollFace() }
     })
+    if (!triggered) return
+    set({ coins: next })
   },
 
   autoFlipOne: () => {
@@ -110,16 +119,24 @@ export const useGameStore = create<GameState>((set, get) => ({
     })
   },
 
-  buyCoinsPerTap: () => {
-    const { gold, coinsPerTap, coins } = get()
-    const cost = coinsPerTapCost(coinsPerTap)
+  buyCoin: () => {
+    const { gold, coinCount, coins } = get()
+    const cost = coinCost(coinCount)
     if (gold < cost) return
     const nextId = (coins[coins.length - 1]?.id ?? -1) + 1
     set({
       gold: gold - cost,
-      coinsPerTap: coinsPerTap + 1,
+      coinCount: coinCount + 1,
       coins: [...coins, makeCoin(nextId)],
     })
+  },
+
+  buyCoinsPerTap: () => {
+    const { gold, coinsPerTap, coinCount } = get()
+    if (coinsPerTap >= coinCount) return
+    const cost = coinsPerTapCost(coinsPerTap)
+    if (gold < cost) return
+    set({ gold: gold - cost, coinsPerTap: coinsPerTap + 1 })
   },
 
   buyCoinValue: () => {

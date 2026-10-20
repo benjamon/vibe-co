@@ -2,6 +2,7 @@ import {
   AUTO_FLIPPER_BASE_INTERVAL_MS,
   autoFlipIntervalMs,
   autoFlipperCost,
+  coinCost,
   coinValueCost,
   coinsPerTapCost,
   useGameStore,
@@ -61,20 +62,24 @@ export function HUD() {
   const gold = useGameStore((s) => s.gold)
   const coinValue = useGameStore((s) => s.coinValue)
   const coinsPerTap = useGameStore((s) => s.coinsPerTap)
+  const coinCount = useGameStore((s) => s.coinCount)
   const autoFlippers = useGameStore((s) => s.autoFlippers)
   const flips = useGameStore((s) => s.flips)
   const headsCount = useGameStore((s) => s.headsCount)
   const tailsCount = useGameStore((s) => s.tailsCount)
 
+  const buyCoin = useGameStore((s) => s.buyCoin)
   const buyCoinsPerTap = useGameStore((s) => s.buyCoinsPerTap)
   const buyCoinValue = useGameStore((s) => s.buyCoinValue)
   const buyAutoFlipper = useGameStore((s) => s.buyAutoFlipper)
 
+  const buyCoinPrice = coinCost(coinCount)
   const tapCost = coinsPerTapCost(coinsPerTap)
   const valueCost = coinValueCost(coinValue)
   const autoCost = autoFlipperCost(autoFlippers)
   const autoInterval = autoFlipIntervalMs(autoFlippers)
   const baseSeconds = AUTO_FLIPPER_BASE_INTERVAL_MS / 1000
+  const tapAtCap = coinsPerTap >= coinCount
 
   return (
     <div
@@ -103,6 +108,8 @@ export function HUD() {
       >
         <div style={{ fontSize: 18, color: '#ffd700' }}>{formatGold(gold)} gold</div>
         <div style={{ marginTop: 6, opacity: 0.85 }}>
+          <div>coins: {coinCount}</div>
+          <div>per tap: {coinsPerTap}</div>
           <div>flips: {flips}</div>
           <div>heads: {headsCount}</div>
           <div>tails: {tailsCount}</div>
@@ -125,10 +132,21 @@ export function HUD() {
       >
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>upgrades</div>
         <UpgradeButton
-          label={`coins per tap (${coinsPerTap})`}
-          detail={`flip ${coinsPerTap + 1} coins per tap`}
+          label={`buy a coin (${coinCount})`}
+          detail={`add another coin to the table → ${coinCount + 1} total`}
+          cost={buyCoinPrice}
+          affordable={gold >= buyCoinPrice}
+          onBuy={buyCoin}
+        />
+        <UpgradeButton
+          label={`coins per tap (${coinsPerTap}/${coinCount})`}
+          detail={
+            tapAtCap
+              ? 'buy more coins first'
+              : `flip ${coinsPerTap + 1} coins per tap`
+          }
           cost={tapCost}
-          affordable={gold >= tapCost}
+          affordable={!tapAtCap && gold >= tapCost}
           onBuy={buyCoinsPerTap}
         />
         <UpgradeButton
@@ -169,7 +187,7 @@ export function HUD() {
           textShadow: '0 2px 8px rgba(0,0,0,0.7)',
         }}
       >
-        tap anywhere to flip {coinsPerTap === 1 ? 'the coin' : `${coinsPerTap} coins`}
+        tap anywhere to flip {coinsPerTap === 1 ? 'a coin' : `${coinsPerTap} coins`}
       </div>
     </div>
   )
