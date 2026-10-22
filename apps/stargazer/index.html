@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Stargazer — vibe-co</title>
+  <meta name="description" content="Find the constellations above you — or beneath your feet — for any place, date and time.">
+  <meta name="theme-color" content="#070814">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <a class="back-link" href="../">&larr; vibe-co</a>
+      <h1>Stargazer</h1>
+      <span class="spacer"></span>
+      <button id="red-btn" class="icon-btn" type="button" title="Night vision (red) mode" aria-pressed="false">&#9673; Red</button>
+    </header>
+
+    <section class="controls" aria-label="Where and when">
+      <div class="control-group location">
+        <label for="place-input">Where</label>
+        <div class="place-box">
+          <input id="place-input" type="text" autocomplete="off" placeholder="Search a city&hellip;">
+          <ul id="place-results" class="place-results" hidden></ul>
+        </div>
+        <button id="locate-btn" type="button" title="Use my location">&#8982; Locate me</button>
+        <span id="coords" class="coords"></span>
+      </div>
+
+      <div class="control-group when">
+        <label for="date-input">When</label>
+        <input id="date-input" type="date">
+        <input id="time-input" type="time" step="60">
+        <button id="now-btn" type="button">Now</button>
+        <button id="tonight-btn" type="button" title="Jump to the darkest part of tonight">Tonight</button>
+      </div>
+
+      <div class="control-group scrub">
+        <button id="back-btn" type="button" title="Back one hour">&minus;1h</button>
+        <input id="time-slider" type="range" min="0" max="1439" step="1" aria-label="Time of night">
+        <button id="fwd-btn" type="button" title="Forward one hour">+1h</button>
+        <button id="play-btn" type="button" title="Animate the sky" aria-pressed="false">&#9654;</button>
+      </div>
+    </section>
+
+    <main class="layout">
+      <section class="chart-panel">
+        <div class="view-toggle" role="tablist" aria-label="Sky view">
+          <button type="button" role="tab" data-view="up" aria-selected="true">&#9650; Overhead</button>
+          <button type="button" role="tab" data-view="down" aria-selected="false">&#9660; Beneath my feet</button>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="sky" aria-label="Sky chart"></canvas>
+          <div id="tooltip" class="tooltip" hidden></div>
+          <div id="sky-banner" class="sky-banner" hidden></div>
+          <div class="zoom-controls">
+            <button id="zoom-in" type="button" title="Zoom in">+</button>
+            <button id="zoom-out" type="button" title="Zoom out">&minus;</button>
+            <button id="zoom-reset" type="button" title="Reset view">&#10227;</button>
+            <button id="compass-btn" type="button" title="Point your phone: rotate the chart to match the direction you face" aria-pressed="false">&#129517;</button>
+          </div>
+        </div>
+        <div class="toggles">
+          <label><input type="checkbox" id="opt-lines" checked> Lines</label>
+          <label><input type="checkbox" id="opt-labels" checked> Constellations</label>
+          <label><input type="checkbox" id="opt-stars" checked> Star names</label>
+          <label><input type="checkbox" id="opt-planets" checked> Sun, Moon &amp; planets</label>
+          <label><input type="checkbox" id="opt-bounds"> Boundaries</label>
+          <label><input type="checkbox" id="opt-grid" checked> Grid</label>
+          <label><input type="checkbox" id="opt-ecliptic"> Ecliptic</label>
+          <label class="sky-quality">Sky
+            <select id="opt-mag">
+              <option value="3">City (mag 3)</option>
+              <option value="4.2">Suburb (mag 4.2)</option>
+              <option value="5" selected>Rural (mag 5)</option>
+              <option value="5.5">Dark site (mag 5.5)</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint">Drag to pan &middot; scroll or pinch to zoom &middot; tap a star or patch of sky to identify it.</p>
+      </section>
+
+      <aside class="side">
+        <section id="selection" class="card selection" hidden></section>
+
+        <section class="card">
+          <h2>Tonight</h2>
+          <div id="tonight" class="tonight"></div>
+        </section>
+
+        <section class="card">
+          <h2>Straight up &amp; straight down</h2>
+          <div id="zenith" class="zenith"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Constellations</h2>
+            <div class="seg" role="tablist" aria-label="Filter constellations">
+              <button type="button" data-filter="up" aria-selected="true">Visible</button>
+              <button type="button" data-filter="down" aria-selected="false">Under me</button>
+              <button type="button" data-filter="best" aria-selected="false">Best tonight</button>
+            </div>
+          </div>
+          <input id="con-search" class="con-search" type="search" placeholder="Find a constellation&hellip;">
+          <ol id="con-list" class="con-list"></ol>
+        </section>
+
+        <section class="card">
+          <h2>Planets</h2>
+          <ul id="planet-list" class="planet-list"></ul>
+        </section>
+
+        <section class="card">
+          <h2>Meteor showers</h2>
+          <ul id="shower-list" class="shower-list"></ul>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="page-footer">
+      Times are local to the chosen place. Star &amp; constellation data from
+      <a href="https://github.com/ofrohn/d3-celestial" target="_blank" rel="noopener">d3-celestial</a> (BSD-3);
+      city search by <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a>.
+      <button id="share-btn" type="button" class="link-btn">Copy link to this sky</button>
+    </footer>
+  </div>
+  <div id="red-overlay" class="red-overlay" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
